@@ -211,6 +211,7 @@ public final class HostClient {
 			holdUntilReady(minecraft);
 		}
 		publishTick(minecraft);
+		DevAutorun.tick(minecraft, linked);
 	}
 
 	/**
