@@ -11,6 +11,7 @@
     "EntitySwimMixin",
     "FallingBlockMixin",
     "FlowingFluidMixin",
+    "HostMountBoatMixin",
     "ItemMixin",
     "MinecraftServerFlightMixin",
     "PlayerEdgeMixin",

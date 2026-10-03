@@ -152,6 +152,10 @@ public final class Proto {
 	public static final int SKY_IN_GAME = 1;
 	public static final int SKY_MENU_OPEN = 1 << 1;
 	public static final int SKY_LOADING = 1 << 2;
+	/** GTA IV controls the player (Niko mode, vehicle, cutscene): follow SkyState, don't simulate. */
+	public static final int SKY_HOST_DRIVES = 1 << 3;
+	/** With SKY_HOST_DRIVES: in a vehicle; pos is the rider's feet on the mount, yaw the vehicle heading. */
+	public static final int SKY_IN_VEHICLE = 1 << 4;
 
 	// McState (relative to OFF_MC_STATE)
 	public static final long MS_SEQ = 0x00;

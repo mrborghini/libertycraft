@@ -4,11 +4,18 @@ Creates the shared bridge file, streams a flat floor + a staircase of collision,
 (punch an NPC, build, shoot, drop and pick up an item), prints Minecraft's reported player state,
 and saves the overlay frame to a PNG.
 
-    python3 tools/fake_host.py [--link PATH] [seconds] [out.png] [atlas.png]
+    python3 tools/fake_host.py [--link PATH] [--drive] [seconds] [out.png] [atlas.png]
+
+--drive scripts "GTA IV drives the player" instead (kSkyHostDrives / kSkyInVehicle): Niko mode on
+foot (Minecraft follows a walking target), a vehicle (Minecraft rides its mount - boat, horse, ... per
+vehicleMount in its config/libertycraft.properties - around a fast circle, with a teleport mid-way),
+then the hand-back (teleport handshake, Minecraft lands on the floor). Prints how closely Minecraft
+followed and a PASS/FAIL line per check; the mount's spawn/mount/removal are in Minecraft's log.
 
 Ported from SkyCraft's tools/fake_skyrim.py (MIT). Stdlib only.
 """
 
+import math
 import mmap
 import os
 import struct
@@ -281,6 +288,88 @@ def read_world_entities(link):
     return kinds, sel
 
 
+SKY_IN_GAME = 1
+SKY_HOST_DRIVES = 1 << 3
+SKY_IN_VEHICLE = 1 << 4
+
+
+class DriveScenario:
+    """--drive: GTA IV drives the player on foot, then in a vehicle, then hands it back."""
+
+    WALK = (1.0, 6.0)      # host drives on foot: target walks +X at 3 m/s
+    VEHICLE = (6.0, 18.0)  # in a vehicle: a 12 m circle at 15 m/s, teleport bumped at 12 s
+    RADIUS, SPEED = 12.0, 15.0
+    SEAT = 0.4             # the rider's feet above the floor
+    BACK = 18.0            # hand-back: flags clear, teleport to the floor
+
+    def __init__(self, spawn, tseq):
+        self.spawn = spawn
+        self.tseq = tseq
+        self.devs = {"walk": [], "vehicle": []}
+        self.acks_while_driving = []
+        self.bumped = False
+        self.back_seq = None
+        self.results = []
+
+    def target(self, t):
+        """(flags, pos, yaw) GTA IV reports at script time t."""
+        sx, sy, sz = self.spawn
+        if t < self.WALK[0]:
+            return SKY_IN_GAME, self.spawn, -90.0
+        if t < self.WALK[1]:
+            d = 3.0 * (t - self.WALK[0])
+            return SKY_IN_GAME | SKY_HOST_DRIVES, (sx + d, sy, sz), -90.0
+        if t < self.VEHICLE[1]:
+            u = t - self.VEHICLE[0]
+            ang = u * self.SPEED / self.RADIUS
+            cx, cz = sx + 15.0, sz  # circle centre
+            x, z = cx - self.RADIUS * math.cos(ang), cz - self.RADIUS * math.sin(ang)
+            # Moving direction (dx, dz) = (sin, -cos) * R * w: Minecraft yaw faces (-sin(yaw), cos(yaw)).
+            yaw = math.degrees(math.atan2(-math.sin(ang), -math.cos(ang)))
+            return SKY_IN_GAME | SKY_HOST_DRIVES | SKY_IN_VEHICLE, (x, sy + self.SEAT, z), yaw
+        return SKY_IN_GAME, (sx + 2.0, sy, sz + 2.0), 0.0
+
+    def step(self, link, t, mc):
+        flags, pos, yaw = self.target(t)
+        if self.VEHICLE[0] + 6.0 <= t and not self.bumped:
+            self.bumped = True
+            self.tseq += 1  # a teleport while GTA IV drives (world change): acknowledged, no hold
+            print(f"  t={t:.1f}: teleport #{self.tseq} while driving")
+        if t >= self.BACK and self.back_seq is None:
+            self.tseq += 1
+            self.back_seq = self.tseq
+            print(f"  t={t:.1f}: GTA IV lets go; teleport #{self.tseq} to the floor at {pos}")
+        dev = math.dist(mc["pos"], pos)
+        if self.WALK[0] + 0.5 <= t < self.WALK[1]:
+            self.devs["walk"].append(dev)
+        if self.VEHICLE[0] + 1.0 <= t < self.VEHICLE[1]:
+            self.devs["vehicle"].append(dev)
+        if self.bumped and t < self.VEHICLE[1]:
+            self.acks_while_driving.append(mc["ack"] == self.tseq)
+        return flags, pos, yaw
+
+    def report(self, mc):
+        def check(name, ok, detail):
+            self.results.append(ok)
+            print(f"  {'PASS' if ok else 'FAIL'} {name}: {detail}")
+
+        for name, limit in (("walk", 0.35), ("vehicle", 1.2)):
+            d = sorted(self.devs[name])
+            if not d:
+                check(f"follow ({name})", False, "no samples")
+                continue
+            p95 = d[int(len(d) * 0.95)]
+            check(f"follow ({name})", p95 < limit, f"{len(d)} frames, median {d[len(d) // 2]:.3f} m, p95 {p95:.3f} m (limit {limit})")
+        acked = sum(self.acks_while_driving)
+        check("teleport while driving acknowledged", acked > 0, f"{acked}/{len(self.acks_while_driving)} frames acked")
+        _, pos, _ = self.target(self.BACK + 1.0)
+        landed = mc["ack"] == self.back_seq and math.dist(mc["pos"], pos) < 0.3
+        check("hand-back", landed, f"ack {mc['ack']} (want {self.back_seq}), MC at {tuple(round(v, 3) for v in mc['pos'])}, want {pos}")
+        on_floor = abs(mc["pos"][1] - FLOOR_Y) < 0.05
+        check("standing on the floor after", on_floor, f"y {mc['pos'][1]:.3f} (floor {FLOOR_Y})")
+        print(f"drive summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
+
+
 def main():
     args = sys.argv[1:]
     path = BRIDGE
@@ -288,6 +377,10 @@ def main():
         i = args.index("--link")
         path = args[i + 1]
         del args[i:i + 2]
+    drive = None
+    if "--drive" in args:
+        args.remove("--drive")
+        drive = True
     seconds = float(args[0]) if len(args) > 0 else 90
     out = args[1] if len(args) > 1 else "overlay.png"
     atlas_out = args[2] if len(args) > 2 else None
@@ -305,9 +398,21 @@ def main():
     saved = False
     checked = False
     tseq = int(time.time()) % 100000 + 2  # new teleport every run
+    if drive:
+        drive = DriveScenario(spawn, tseq)
+    mc = link.read_mc()
     while time.time() - start < seconds:
         link.heartbeat()
-        link.write_sky(1, spawn, yaw, pitch, tseq, epoch)
+        sky_flags, sky_pos, sky_yaw, sky_pitch = 1, spawn, yaw, pitch
+        if drive and script_t0 is not None:
+            t = time.time() - script_t0
+            sky_flags, sky_pos, sky_yaw = drive.step(link, t, mc)
+            sky_pitch = 0.0
+            tseq = drive.tseq
+            if t > drive.BACK + 4.0:
+                drive.report(mc)
+                break
+        link.write_sky(sky_flags, sky_pos, sky_yaw, sky_pitch, tseq, epoch)
         if link.mc_alive() and not sent:
             link.write_col(1, struct.pack("<I", epoch))
             for rx in range(X0 // 8 - 3, X0 // 8 + 3):
@@ -322,7 +427,7 @@ def main():
         if in_world and script_t0 is None:
             script_t0 = time.time()
             print("MC in world at", mc["pos"])
-        if script_t0 is not None:
+        if script_t0 is not None and not drive:
             t = time.time() - script_t0
             # A fake NPC two blocks ahead: punch it, then have it hit back.
             link.write_actor(0xFF00ABCD, X0 + 2.5, FLOOR_Y, 0.5)
