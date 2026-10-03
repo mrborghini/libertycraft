@@ -42,7 +42,7 @@ namespace lc::NikoBody
 		};
 		constexpr float kHeadProbe = 0.1f;   // GET_PED_BONE_POSITION offsets along the head bone's axes
 		constexpr float kMaxReach = 2.5f;    // a bone further than this from the pelvis: a bad read
-		constexpr int   kCalibrateFrames = 30;
+		constexpr int   kCalibrateFrames = 60;
 
 		const char* WhyName(drive::Why a_why)
 		{
@@ -369,7 +369,9 @@ namespace lc::NikoBody
 
 		void Calibrate(const B::Skeleton& a_s)
 		{
-			if (headChecked || !a_s.headOk) {
+			// Only seated in a vehicle (or getting in): the head looks the way the body faces. Tumbling
+			// (a knockdown) or in a cutscene it can stay turned for a second and fool the check.
+			if (headChecked || !a_s.headOk || targetWhy != drive::Why::kVehicle || !target) {
 				return;
 			}
 			const B::M3 torso = B::Frame(a_s.shoulderL - a_s.shoulderR, a_s.neck - (a_s.hipL + a_s.hipR) * 0.5f);

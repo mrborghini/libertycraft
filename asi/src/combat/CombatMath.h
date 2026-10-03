@@ -55,55 +55,219 @@ namespace lc::combat
 		return true;
 	}
 
-	// How far (m) a vehicle's stand-in boxes may stick out of its real outline, seen from above.
-	inline constexpr float kVehicleBoxSlack = 0.2f;
+	// How far (m) a vehicle's stand-in boxes may stick out of its body, seen from above (more only for
+	// a long vehicle turned well away from the world axes, when the boxes run out: VehicleSegments).
+	inline constexpr float kVehicleBoxSlack = 0.05f;
+	// How deep (m) the notches between two boxes along a side may reach into the body.
+	inline constexpr float kVehicleNotch = 0.2f;
 
 	// A vehicle of a_length x a_width metres as a row of upright boxes square to the world axes (all
 	// Minecraft entity boxes are): the vehicle's axis makes an angle with the world axes, and a_e is
 	// |cos| + |sin| of it (1 when it lies along an axis, sqrt 2 at 45 degrees). A square box of side s
 	// then reaches s/2 * a_e out from its centre along the vehicle's axis and across it, so boxes of
 	// side (width + 2 slack) / a_e, centred on the axis no further than (length - width) / 2 from the
-	// middle, stay within the outline grown by a_slack, whichever way the vehicle faces. They are
-	// spaced closely enough (at most half a box) that the gaps between them along the sides stay
-	// within 0.2 m. Turned away from the axes, the row leaves the corners open, so then four small
-	// boxes fill them. Piece i is centred a_offset[i] metres ahead of the middle and a_side[i] to its
-	// right (0 is the front piece), a_size[i] wide.
+	// middle, stay within the outline grown by the slack, whichever way the vehicle faces. They are
+	// spaced closely enough (at most half a box) that the notches between them along the sides stay
+	// within kVehicleNotch; when a_maxCount boxes can't do that, the slack grows instead. Turned away
+	// from the axes, the row leaves the corners open, so then four small boxes fill them (a_corners).
+	// Piece i is centred offset[i] metres ahead of the middle and side[i] to its right (0 is the front
+	// piece), size[i] wide and height[i] tall (VehiclePieces; VehicleSegments leaves 0).
 	struct VehicleLayout
 	{
 		std::uint32_t count = 1;
 		float         offset[proto::kActorVehicleSegments]{};
 		float         side[proto::kActorVehicleSegments]{};
 		float         size[proto::kActorVehicleSegments]{};
+		float         height[proto::kActorVehicleSegments]{};
 		float         boxWidth = 0.0f;  // the row's boxes
+		float         slack = 0.0f;     // what the row's boxes may stick out by
+		std::uint32_t bodyCount = 1;    // VehiclePieces: the body row (and its corners) come first, then the cabin row
 	};
 
 	inline constexpr float kVehicleCornerInset = 0.45f;  // corner boxes' centres from the two faces
 
-	inline VehicleLayout VehicleSegments(float a_length, float a_width, float a_e = 1.0f, float a_slack = kVehicleBoxSlack)
+	inline VehicleLayout VehicleSegments(float a_length, float a_width, float a_e = 1.0f, float a_slack = kVehicleBoxSlack,
+		bool a_corners = true, std::uint32_t a_maxCount = proto::kActorVehicleSegments)
 	{
 		VehicleLayout l;
 		const float length = std::max(a_length, 0.5f), width = std::max(std::min(a_width, length), 0.5f);
 		const float e = std::clamp(a_e, 1.0f, 1.41422f);
-		l.boxWidth = (width + 2.0f * a_slack) / e;
 		const float reach = std::max(0.0f, (length - width) * 0.5f);  // the end pieces' centres
+		const bool  corners = a_corners && e > 1.05f && length > 2.0f * kVehicleCornerInset + 0.2f && width > 2.0f * kVehicleCornerInset + 0.2f;
+		const int   maxRow = std::max(1, static_cast<int>(std::min(a_maxCount, proto::kActorVehicleSegments)) - (corners ? 4 : 0));
 		// Between two boxes the outline's side shows a notch (d sin 2a) / 2 - slack deep for spacing d
-		// at angle a (sin 2a = e^2 - 1): keep it within 0.2 m.
-		const float spacing = std::min(l.boxWidth * 0.5f, 2.0f * (0.2f + a_slack) / std::max(e * e - 1.0f, 1e-3f));
-		const int   n = reach > 1e-3f ? 1 + static_cast<int>(std::ceil(2.0f * reach / spacing - 1e-3f)) : 1;
-		const bool corners = e > 1.05f && length > 2.0f * kVehicleCornerInset + 0.2f && width > 2.0f * kVehicleCornerInset + 0.2f;
-		const int  maxRow = static_cast<int>(proto::kActorVehicleSegments) - (corners ? 4 : 0);
-		l.count = static_cast<std::uint32_t>(std::clamp(n, 1, maxRow));
+		// at angle a (sin 2a = e^2 - 1): keep it within kVehicleNotch.
+		float slack = a_slack;
+		float spacing = std::min((width + 2.0f * slack) / e * 0.5f, 2.0f * (kVehicleNotch + slack) / std::max(e * e - 1.0f, 1e-3f));
+		int   n = reach > 1e-3f ? 1 + static_cast<int>(std::ceil(2.0f * reach / spacing - 1e-3f)) : 1;
+		if (n > maxRow) {
+			// Out of boxes: spread them out and let them stick out a little more.
+			n = maxRow;
+			spacing = n > 1 ? 2.0f * reach / static_cast<float>(n - 1) : 0.0f;
+			slack = std::max(slack, spacing * (e * e - 1.0f) * 0.5f - kVehicleNotch);
+		}
+		l.slack = slack;
+		l.boxWidth = (width + 2.0f * slack) / e;
+		l.count = static_cast<std::uint32_t>(std::max(n, 1));
 		for (std::uint32_t i = 0; i < l.count; ++i) {
 			l.offset[i] = l.count == 1 ? 0.0f : reach - 2.0f * reach * static_cast<float>(i) / static_cast<float>(l.count - 1);
 			l.size[i] = l.boxWidth;
 		}
 		if (corners) {
-			const float cornerSize = 2.0f * (kVehicleCornerInset + a_slack) / e;
+			const float cornerSize = 2.0f * (kVehicleCornerInset + slack) / e;
 			for (int k = 0; k < 4; ++k, ++l.count) {
 				l.offset[l.count] = (k < 2 ? 1.0f : -1.0f) * (length * 0.5f - kVehicleCornerInset);
 				l.side[l.count] = (k % 2 ? 1.0f : -1.0f) * (width * 0.5f - kVehicleCornerInset);
 				l.size[l.count] = cornerSize;
 			}
+		}
+		l.bodyCount = l.count;
+		return l;
+	}
+
+	// ---- a vehicle's shape ------------------------------------------------------------------------------
+	// In its own frame (x right, y forward, z up, metres from its origin), as measured in game with
+	// line probes against its collision (Combat.cpp ProbeShape), or guessed from its model box
+	// (GuessShape): the body's ends and half width without the mirrors, the greenhouse's half width,
+	// and the top's height along it, in slices from the tail to the nose.
+	inline constexpr int kShapeSlices = 40;
+
+	struct VehicleShape
+	{
+		float bottom = 0.0f, top = 0.0f;  // z: the wheels' bottoms, the highest point
+		float tail = 0.0f, nose = 0.0f;   // y
+		float centreX = 0.0f;
+		float halfWidth = 0.5f;
+		float cabinHalfWidth = 0.0f;      // 0: no cabin row (bikes, boats: one row as tall as the vehicle)
+		int   slices = 1;
+		float tops[kShapeSlices]{};       // z of the top over slice i (y from tail + i d to tail + (i + 1) d)
+
+		float Length() const { return nose - tail; }
+		float Middle() const { return (nose + tail) * 0.5f; }
+		float SliceLength() const { return Length() / static_cast<float>(std::max(slices, 1)); }
+	};
+
+	// The lowest, highest or mean top over the slices [a_from, a_to] reaches (y, the vehicle's frame);
+	// a_none if that misses the body.
+	enum class TopOf : int
+	{
+		kLowest,
+		kHighest,
+		kMean,
+	};
+
+	inline float ShapeTop(const VehicleShape& a_s, float a_from, float a_to, TopOf a_of, float a_none)
+	{
+		const float d = a_s.SliceLength();
+		if (d <= 1e-4f || a_to < a_from) {
+			return a_none;
+		}
+		const int first = std::max(0, static_cast<int>(std::floor((a_from - a_s.tail) / d + 1e-4f)));
+		const int last = std::min(a_s.slices - 1, static_cast<int>(std::ceil((a_to - a_s.tail) / d - 1e-4f)) - 1);
+		if (first > last) {
+			return a_none;
+		}
+		float v = a_s.tops[first], sum = v;
+		for (int i = first + 1; i <= last; ++i) {
+			v = a_of == TopOf::kLowest ? std::min(v, a_s.tops[i]) : std::max(v, a_s.tops[i]);
+			sum += a_s.tops[i];
+		}
+		return a_of == TopOf::kMean ? sum / static_cast<float>(last - first + 1) : v;
+	}
+
+	// A typical car's shape in a model box [a_lo, a_hi]: mirrors 8 cm out on each side; a saloon's
+	// profile from the front: bonnet (a quarter of the length, at two thirds of the height), windscreen,
+	// roof, rear window, boot (at seven tenths). For a car never measured.
+	inline VehicleShape GuessShape(const float a_lo[3], const float a_hi[3], bool a_car)
+	{
+		VehicleShape s;
+		s.bottom = a_lo[2];
+		s.top = a_hi[2];
+		s.tail = a_lo[1];
+		s.nose = a_hi[1];
+		s.centreX = (a_lo[0] + a_hi[0]) * 0.5f;
+		const float w = a_hi[0] - a_lo[0], h = a_hi[2] - a_lo[2];
+		s.slices = kShapeSlices;
+		if (!a_car) {
+			s.halfWidth = w * 0.5f;
+			for (int i = 0; i < s.slices; ++i) {
+				s.tops[i] = a_hi[2];
+			}
+			return s;
+		}
+		s.halfWidth = std::max(w * 0.5f - 0.08f, w * 0.4f);
+		s.cabinHalfWidth = s.halfWidth * 0.78f;
+		// From the tail: boot, rear window, roof, windscreen, bonnet (fractions of the length, of the height).
+		static constexpr float kAt[] = { 0.0f, 0.18f, 0.28f, 0.60f, 0.72f, 1.0f };
+		static constexpr float kTop[] = { 0.70f, 0.70f, 1.0f, 1.0f, 0.66f, 0.66f };
+		for (int i = 0; i < s.slices; ++i) {
+			const float u = (static_cast<float>(i) + 0.5f) / static_cast<float>(s.slices);
+			int k = 0;
+			while (k < 4 && u > kAt[k + 1]) {
+				++k;
+			}
+			const float t = (u - kAt[k]) / std::max(kAt[k + 1] - kAt[k], 1e-4f);
+			s.tops[i] = a_lo[2] + h * (kTop[k] + (kTop[k + 1] - kTop[k]) * std::clamp(t, 0.0f, 1.0f));
+		}
+		return s;
+	}
+
+	// The bumpers round off: within this of either end the profile doesn't lower a piece.
+	inline constexpr float kShapeEndTrim = 0.3f;
+	// The cabin row is for what rises this far above the body row (its median height).
+	inline constexpr float kCabinRise = 0.15f;
+	inline constexpr std::uint32_t kMaxCabinPieces = 4;
+
+	// A vehicle's stand-in boxes (see VehicleSegments) for its shape, at |cos| + |sin| a_e of its
+	// heading: a row as wide as the body, each box as tall as the body's lowest top along it (the
+	// boxes never reach above the body: a hit over the bonnet goes past it), then, where the
+	// greenhouse rises above that row, a narrower row within the greenhouse (never over the bonnet or
+	// the boot), each box as tall as the greenhouse's mean top along it. Offsets are from the body's
+	// middle (VehicleShape::Middle, centreX), heights from its bottom.
+	inline VehicleLayout VehiclePieces(const VehicleShape& a_s, float a_e, float a_slack = kVehicleBoxSlack)
+	{
+		const float length = a_s.Length(), mid = a_s.Middle();
+		const bool  cabin = a_s.cabinHalfWidth > 0.2f;
+		VehicleLayout l = VehicleSegments(length, 2.0f * a_s.halfWidth, a_e, a_slack, true, proto::kActorVehicleSegments - (cabin ? kMaxCabinPieces : 0u));
+		const float e = std::clamp(a_e, 1.0f, 1.41422f);
+		const float full = a_s.top - a_s.bottom;
+		float       heights[proto::kActorVehicleSegments];
+		for (std::uint32_t i = 0; i < l.count; ++i) {
+			// The box's reach along the axis, within the body less its rounded ends.
+			const float c = mid + l.offset[i], ext = l.size[i] * 0.5f * e;
+			const float from = std::max(c - ext, a_s.tail + kShapeEndTrim), to = std::min(c + ext, a_s.nose - kShapeEndTrim);
+			const float t = from < to ? ShapeTop(a_s, from, to, TopOf::kLowest, a_s.top) : ShapeTop(a_s, c - ext, c + ext, TopOf::kHighest, a_s.top);
+			l.height[i] = std::clamp(t - a_s.bottom, std::min(0.5f, full), full);
+			heights[i] = l.height[i];
+		}
+		if (!cabin) {
+			return l;
+		}
+		// Where the greenhouse rises above the body row's typical height (its median: a box lying
+		// wholly under the cabin is taller than the rest).
+		std::sort(heights, heights + l.count);
+		const float bodyTop = heights[l.count / 2];
+		int first = -1, last = -1;
+		for (int i = 0; i < a_s.slices; ++i) {
+			if (a_s.tops[i] - a_s.bottom >= bodyTop + kCabinRise) {
+				first = first < 0 ? i : first;
+				last = i;
+			}
+		}
+		if (first < 0) {
+			return l;
+		}
+		const float d = a_s.SliceLength();
+		const float rear = a_s.tail + d * static_cast<float>(first), front = a_s.tail + d * static_cast<float>(last + 1);
+		// (No slack: the boxes stay within the greenhouse, seen from above.)
+		const VehicleLayout c = VehicleSegments(front - rear, 2.0f * a_s.cabinHalfWidth, a_e, 0.0f, false, std::min(kMaxCabinPieces, proto::kActorVehicleSegments - l.count));
+		const float cmid = (front + rear) * 0.5f;
+		for (std::uint32_t i = 0; i < c.count && l.count < proto::kActorVehicleSegments; ++i, ++l.count) {
+			const float at = cmid + c.offset[i], ext = c.size[i] * 0.5f * e;
+			l.offset[l.count] = at - mid;
+			l.side[l.count] = 0.0f;
+			l.size[l.count] = c.size[i];
+			l.height[l.count] = std::clamp(ShapeTop(a_s, at - ext, at + ext, TopOf::kMean, a_s.bottom + bodyTop) - a_s.bottom, bodyTop, full);
 		}
 		return l;
 	}
@@ -505,6 +669,21 @@ namespace lc::combat
 		const float yaw = std::atan2(-a_dx, -a_dy) * 180.0f / 3.14159265358979f;
 		const int   deg = (static_cast<int>(std::lround(yaw)) % 360 + 360) % 360;
 		return proto::kHurtHasDirection | (static_cast<std::uint32_t>(deg) << proto::kHurtDirectionShift);
+	}
+
+	// The MC yaw (0 to 359) toward the source in a_flags (HurtDirectionFlags), or -1.
+	inline int HurtSourceYaw(std::uint32_t a_flags)
+	{
+		return (a_flags & proto::kHurtHasDirection) ? static_cast<int>((a_flags >> proto::kHurtDirectionShift) & 0x1FFu) : -1;
+	}
+
+	// Minecraft's raised shield (proto::kMcBlocking) blocks what comes from within a_halfArc degrees of
+	// where the player looks: a_lookYaw, MC degrees, against the MC yaw toward the source.
+	inline bool ShieldCovers(float a_lookYaw, float a_sourceYaw, float a_halfArc = 90.0f)
+	{
+		float d = std::fmod(a_sourceYaw - a_lookYaw, 360.0f);
+		d = d < -180.0f ? d + 360.0f : d > 180.0f ? d - 360.0f : d;
+		return std::fabs(d) < a_halfArc;
 	}
 
 	// ---- Minecraft's vitals on GTA's HUD (proto::kMcVitalsValid) --------------------------------------

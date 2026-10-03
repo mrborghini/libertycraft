@@ -12,6 +12,7 @@
 #include "Link.h"
 #include "Log.h"
 #include "NpcBlocks.h"
+#include "collision/Rays.h"
 #include "combat/CombatMath.h"
 
 #include <algorithm>
@@ -170,6 +171,7 @@ namespace lc::Combat
 			int   stage = 0;  // 0 waiting, 1 model requested, 2 parked, 3 shown, 4 done
 			float timer = 0.0f;
 			int   car = 0, driver = 0, passenger = 0;
+			int   cover = 0;  // DebugCarCover: the ped beyond the bonnet
 			float logTimer = 0.0f;
 			char  last[160] = "";
 			float shotTimer = 0.0f;
@@ -327,12 +329,264 @@ namespace lc::Combat
 			}
 		}
 
+		// ---- vehicle shapes ---------------------------------------------------------------------------------
+		// Each car model's shape (CombatMath.h VehicleShape), measured once with line probes against the
+		// collision of one of its cars (VEHICLES only, nothing else counts): its top every
+		// 1/kShapeSlices of the length (five vertical probes across), its ends (bumper height) and its
+		// half width at door height (no mirrors), the greenhouse's at window height. Until a car of the
+		// model has been measured (parked, upright, unhurt, near the player), a typical saloon in its
+		// model box stands in (GuessShape). Bikes, boats and helicopters stay their model box.
+		struct ShapeEntry
+		{
+			VehicleShape  shape;
+			bool          measured = false;
+			int           tries = 0;
+			std::uint32_t nextTry = 0;  // frameNo
+			bool          logged = false;
+		};
+		std::unordered_map<std::int32_t, ShapeEntry> shapes;
+		bool                                         shapeProbed = false;  // this frame (one model a frame)
+		constexpr int                                kShapeTries = 4;
+		constexpr float                              kShapeProbeRange = 40.0f;
+
+		void LocalToWorld(const CMatrix& a_m, float a_x, float a_y, float a_z, float a_out[3])
+		{
+			// (IV-SDK's CMatrix: "up" is the forward (y) axis, "at" the up (z) axis.)
+			a_out[0] = a_m.pos.x + a_m.right.x * a_x + a_m.up.x * a_y + a_m.at.x * a_z;
+			a_out[1] = a_m.pos.y + a_m.right.y * a_x + a_m.up.y * a_y + a_m.at.y * a_z;
+			a_out[2] = a_m.pos.z + a_m.right.z * a_x + a_m.up.z * a_y + a_m.at.z * a_z;
+		}
+
+		// A probe from a_from to a_to (the vehicle's frame) against a_veh alone: where it first meets
+		// it, in the vehicle's frame. Other vehicles in the way are skipped.
+		int shapeRays = 0;
+		bool ProbeVehicle(const CVehicle* a_veh, const float a_from[3], const float a_to[3], float a_hit[3])
+		{
+			const CMatrix& m = *a_veh->m_pMatrix;
+			float          from[3], to[3];
+			LocalToWorld(m, a_from[0], a_from[1], a_from[2], from);
+			LocalToWorld(m, a_to[0], a_to[1], a_to[2], to);
+			for (int pass = 0; pass < 3; ++pass) {
+				tLineOfSightResults res;
+				++shapeRays;
+				--col::rayCounters.rays;  // not a map probe
+				if (!col::CastGta(from, to, res, VEHICLES)) {
+					return false;
+				}
+				const float* p = &res.m_vEndPosition.x;
+				if (!std::isfinite(p[0] + p[1] + p[2])) {
+					return false;
+				}
+				const auto* inst = reinterpret_cast<const rage::phInst*>(res.m_pInst);
+				if (!inst || inst->m_pEntity == a_veh) {
+					const float d[3] = { p[0] - m.pos.x, p[1] - m.pos.y, p[2] - m.pos.z };
+					a_hit[0] = d[0] * m.right.x + d[1] * m.right.y + d[2] * m.right.z;
+					a_hit[1] = d[0] * m.up.x + d[1] * m.up.y + d[2] * m.up.z;
+					a_hit[2] = d[0] * m.at.x + d[1] * m.at.y + d[2] * m.at.z;
+					return true;
+				}
+				// Something else first: go on from just past it.
+				const float dir[3] = { to[0] - from[0], to[1] - from[1], to[2] - from[2] };
+				const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+				const float along = ((p[0] - from[0]) * dir[0] + (p[1] - from[1]) * dir[1] + (p[2] - from[2]) * dir[2]) / std::max(len, 1e-4f) + 0.02f;
+				if (len < 1e-4f || along >= len) {
+					return false;
+				}
+				for (int k = 0; k < 3; ++k) {
+					from[k] += dir[k] / len * along;
+				}
+			}
+			return false;
+		}
+
+		bool ProbeShape(const CVehicle* a_veh, const float a_lo[3], const float a_hi[3], VehicleShape& a_out)
+		{
+			VehicleShape s = GuessShape(a_lo, a_hi, true);
+			const float  w = a_hi[0] - a_lo[0], len = a_hi[1] - a_lo[1], cx = s.centreX, cyBox = (a_lo[1] + a_hi[1]) * 0.5f;
+			const float  d = len / static_cast<float>(kShapeSlices);
+			float        tops[kShapeSlices];
+			int          first = -1, last = -1, topHits = 0;
+			float        hit[3];
+			// 1. The top, slice by slice.
+			for (int i = 0; i < kShapeSlices; ++i) {
+				const float y = a_lo[1] + (static_cast<float>(i) + 0.5f) * d;
+				tops[i] = -1e9f;
+				for (const float k : { -0.3f, -0.15f, 0.0f, 0.15f, 0.3f }) {
+					const float from[3] = { cx + k * w, y, a_hi[2] + 0.5f }, to[3] = { cx + k * w, y, a_lo[2] - 0.05f };
+					if (ProbeVehicle(a_veh, from, to, hit)) {
+						tops[i] = std::max(tops[i], hit[2]);
+					}
+				}
+				if (tops[i] > -1e8f) {
+					++topHits;
+					first = first < 0 ? i : first;
+					last = i;
+				}
+			}
+			if (topHits < kShapeSlices / 2) {
+				LC_LOG("vehicle shape: only %d of %d slices met the car from above", topHits, kShapeSlices);
+				return false;
+			}
+			// The lowest top (bonnet, boot) away from the ends, for the side probes' heights.
+			float low = 1e9f, high = -1e9f;
+			const int trim = std::max(1, (last - first) / 10);
+			for (int i = first + trim; i <= last - trim; ++i) {
+				if (tops[i] > -1e8f) {
+					low = std::min(low, tops[i]);
+					high = std::max(high, tops[i]);
+				}
+			}
+			if (low > high) {
+				return false;
+			}
+			s.top = high;
+			const float zLow = a_lo[2] + 0.45f * (low - a_lo[2]), zHigh = a_lo[2] + 0.8f * (low - a_lo[2]);
+			// 2. The ends, at bumper height.
+			float nose = -1e9f, tail = 1e9f;
+			for (const float k : { -0.25f, 0.0f, 0.25f }) {
+				for (const float z : { zLow, zHigh }) {
+					const float f0[3] = { cx + k * w, a_hi[1] + 0.5f, z }, f1[3] = { cx + k * w, cyBox, z };
+					if (ProbeVehicle(a_veh, f0, f1, hit)) {
+						nose = std::max(nose, hit[1]);
+					}
+					const float t0[3] = { cx + k * w, a_lo[1] - 0.5f, z }, t1[3] = { cx + k * w, cyBox, z };
+					if (ProbeVehicle(a_veh, t0, t1, hit)) {
+						tail = std::min(tail, hit[1]);
+					}
+				}
+			}
+			s.nose = nose > -1e8f ? nose : a_lo[1] + d * static_cast<float>(last + 1);
+			s.tail = tail < 1e8f ? tail : a_lo[1] + d * static_cast<float>(first);
+			if (s.nose - s.tail < 0.5f) {
+				return false;
+			}
+			// 3. The half width at door height, along the middle 70%.
+			std::vector<float> halves;
+			for (int j = 0; j < 12; ++j) {
+				const float y = s.tail + (s.nose - s.tail) * (0.15f + 0.7f * static_cast<float>(j) / 11.0f);
+				for (const float side : { -1.0f, 1.0f }) {
+					for (const float z : { zLow, zHigh }) {
+						const float from[3] = { cx + side * (w * 0.5f + 0.5f), y, z }, to[3] = { cx, y, z };
+						if (ProbeVehicle(a_veh, from, to, hit)) {
+							halves.push_back(std::fabs(hit[0] - cx));
+						}
+					}
+				}
+			}
+			if (halves.size() < 8) {
+				LC_LOG("vehicle shape: only %u side probes met the car", static_cast<unsigned>(halves.size()));
+				return false;
+			}
+			std::sort(halves.begin(), halves.end());
+			s.halfWidth = std::clamp(halves[halves.size() * 3 / 4], 0.3f, w * 0.5f);
+			// 4. The greenhouse: where the top rises above the bonnet and boot, at window height.
+			const float zWin = (low + high) * 0.5f + 0.05f;
+			std::vector<float> cabin;
+			if (high - low > 0.25f) {
+				for (int i = first; i <= last; ++i) {
+					if (tops[i] < low + 0.25f || (i - first) % 3 != 0) {
+						continue;
+					}
+					const float y = a_lo[1] + (static_cast<float>(i) + 0.5f) * d;
+					for (const float side : { -1.0f, 1.0f }) {
+						const float from[3] = { cx + side * (w * 0.5f + 0.5f), y, zWin }, to[3] = { cx, y, zWin };
+						if (ProbeVehicle(a_veh, from, to, hit)) {
+							cabin.push_back(std::fabs(hit[0] - cx));
+						}
+					}
+				}
+			}
+			if (cabin.size() >= 2) {
+				std::sort(cabin.begin(), cabin.end());
+				s.cabinHalfWidth = std::clamp(cabin[cabin.size() / 2], 0.25f, s.halfWidth);
+			} else {
+				s.cabinHalfWidth = high - low > 0.25f ? s.halfWidth * 0.78f : 0.0f;
+			}
+			// The top profile over the body's length (the probes' slices covered the model box).
+			s.slices = kShapeSlices;
+			const float sd = s.SliceLength();
+			for (int j = 0; j < s.slices; ++j) {
+				const float y0 = s.tail + sd * static_cast<float>(j), y1 = y0 + sd;
+				float       t = -1e9f;
+				for (int i = 0; i < kShapeSlices; ++i) {
+					const float a0 = a_lo[1] + d * static_cast<float>(i);
+					if (a0 < y1 && a0 + d > y0 && tops[i] > -1e8f) {
+						t = std::max(t, tops[i]);
+					}
+				}
+				if (t < -1e8f) {  // (a slice no probe met: the nearest that did)
+					const int   i = std::clamp(static_cast<int>(((y0 + y1) * 0.5f - a_lo[1]) / d), first, last);
+					int         best = first;
+					for (int k = first; k <= last; ++k) {
+						if (tops[k] > -1e8f && std::abs(k - i) < std::abs(best - i)) {
+							best = k;
+						}
+					}
+					t = tops[best];
+				}
+				s.tops[j] = t;
+			}
+			a_out = s;
+			return true;
+		}
+
+		const VehicleShape& ShapeOf(int a_handle, CVehicle* a_veh, const float a_lo[3], const float a_hi[3], float a_dist2)
+		{
+			const bool car = a_veh->m_nVehicleType == VEHICLE_TYPE_AUTOMOBILE;
+			auto [it, fresh] = shapes.try_emplace(a_veh->m_nModelIndex);
+			ShapeEntry& e = it->second;
+			if (fresh) {
+				e.shape = GuessShape(a_lo, a_hi, car);
+				e.measured = !car;  // (nothing to measure)
+			}
+			if (e.measured || shapeProbed || e.tries >= kShapeTries || frameNo < e.nextTry || a_dist2 > kShapeProbeRange * kShapeProbeRange) {
+				return e.shape;
+			}
+			// Only a car that stands still, upright and undamaged, settled in the world.
+			CVector v{};
+			a_veh->GetVelocity(&v);
+			unsigned health = 0;
+			S::GET_CAR_HEALTH(a_handle, &health);
+			if (a_veh->m_pMatrix->at.z < 0.97f || v.x * v.x + v.y * v.y + v.z * v.z > 0.25f || health < 900 || S::IS_CAR_DEAD(a_handle) || !Settled(a_handle)) {
+				return e.shape;
+			}
+			shapeProbed = true;
+			const auto t0 = Qpc();
+			shapeRays = 0;
+			VehicleShape measured;
+			unsigned     model = 0;
+			S::GET_CAR_MODEL(a_handle, &model);
+			const char* name = S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model);
+			if (!ProbeShape(a_veh, a_lo, a_hi, measured)) {
+				++e.tries;
+				e.nextTry = frameNo + 300;
+				LC_LOG("vehicle shape %s: probing car %d failed (try %d of %d); a typical car's shape stands in", name, a_handle, e.tries, kShapeTries);
+				return e.shape;
+			}
+			e.shape = measured;
+			e.measured = true;
+			const VehicleShape& m = e.shape;
+			char profile[160];
+			int  n = 0;
+			for (int i = 0; i < 8; ++i) {  // the top at 8 points from the tail to the nose
+				const float y = m.tail + (static_cast<float>(i) + 0.5f) * m.Length() / 8.0f;
+				n += std::snprintf(profile + n, sizeof(profile) - static_cast<std::size_t>(n), " %.2f", ShapeTop(m, y - 0.01f, y + 0.01f, TopOf::kHighest, 0.0f) - m.bottom);
+			}
+			LC_LOG("vehicle shape %s (model %08X): model box %.2f x %.2f x %.2f m (x %+.2f..%+.2f, y %+.2f..%+.2f); body %.2f wide (%.2f less: mirrors), "
+				   "%.2f long (tail %+.2f, nose %+.2f), greenhouse %.2f wide, top %.2f m over the wheels' bottoms, tops from the tail:%s; %d probes, %.2f ms",
+				name, model, a_hi[0] - a_lo[0], a_hi[1] - a_lo[1], a_hi[2] - a_lo[2], a_lo[0], a_hi[0], a_lo[1], a_hi[1], 2.0f * m.halfWidth,
+				a_hi[0] - a_lo[0] - 2.0f * m.halfWidth, m.Length(), m.tail, m.nose, 2.0f * m.cabinHalfWidth, m.top - m.bottom, profile, shapeRays,
+				static_cast<double>(Qpc() - t0) / QpcPerUs() / 1000.0);
+			return e.shape;
+		}
+
 		// Vehicles near the player, nearest first, as pieces along their length (proto::kActorVehicle)
 		// in whatever room the peds left. Not the one the player uses (sits in or is getting into).
 		void AddVehicles(const Frame& a_frame, float a_px, float a_py, float a_pz)
 		{
 			sentVehicles.clear();
 			vehicleCandidates.clear();
+			shapeProbed = false;
 			auto* pool = CPools::ms_pVehiclePool;
 			if (!pool) {
 				return;
@@ -369,18 +623,28 @@ namespace lc::Combat
 				// (|cos| + |sin| of its heading against the world axes: how much its boxes must shrink.)
 				const float axisLen = std::hypot(mat.up.x, mat.up.y);
 				const float e = axisLen > 1e-3f ? (std::fabs(mat.up.x) + std::fabs(mat.up.y)) / axisLen : 1.0f;
-				const auto  layout = VehicleSegments(hi[1] - lo[1], hi[0] - lo[0], e);
+				const VehicleShape& shape = ShapeOf(handle, veh, lo, hi, d2);
+				const auto          layout = VehiclePieces(shape, e);
+				auto it = shapes.find(veh->m_nModelIndex);
+				if (it != shapes.end() && it->second.measured && !it->second.logged && Cfg().diagnostics && veh->m_nVehicleType == VEHICLE_TYPE_AUTOMOBILE) {
+					// Once a model: its boxes (lined up with the world axes: e = 1), front to back.
+					it->second.logged = true;
+					const auto l1 = VehiclePieces(shape, 1.0f);
+					char       line[400];
+					int        n = 0;
+					for (std::uint32_t i = 0; i < l1.count && n < static_cast<int>(sizeof(line)) - 40; ++i) {
+						n += std::snprintf(line + n, sizeof(line) - static_cast<std::size_t>(n), "%s%+.2f:%.2fx%.2f", i == l1.bodyCount ? " | cabin" : " ", l1.offset[i],
+							l1.size[i], l1.height[i]);
+					}
+					unsigned model = 0;
+					S::GET_CAR_MODEL(handle, &model);
+					LC_LOG("vehicle pieces %s along an axis (offset from the middle: side x height):%s", S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model), line);
+				}
 				if (records.size() + layout.count > proto::kMaxActors) {
 					break;
 				}
-				const float    lx = (lo[0] + hi[0]) * 0.5f, ly = (lo[1] + hi[1]) * 0.5f, lz = (lo[2] + hi[2]) * 0.5f;
 				// IV-SDK's CMatrix names its rows after GTA SA's: "up" is the forward (y) axis, "at" the up (z) axis.
 				const auto&    fwd = mat.up;
-				const auto&    upv = mat.at;
-				const float    cx = mat.pos.x + mat.right.x * lx + fwd.x * ly + upv.x * lz;
-				const float    cy = mat.pos.y + mat.right.y * lx + fwd.y * ly + upv.y * lz;
-				const float    cz = mat.pos.z + mat.right.z * lx + fwd.z * ly + upv.z * lz;
-				const float    height = hi[2] - lo[2];
 				const float    flen = std::hypot(fwd.x, fwd.y);
 				const float    fx = flen > 1e-3f ? fwd.x / flen : 0.0f, fy = flen > 1e-3f ? fwd.y / flen : 1.0f;
 				const bool     dead = S::IS_CAR_DEAD(handle);
@@ -394,15 +658,16 @@ namespace lc::Combat
 					proto::ActorRecord r{};
 					r.formId = VehicleActorId(static_cast<std::uint32_t>(handle), piece);
 					r.flags = proto::kActorVehicle | (dead ? proto::kActorDead : 0u);
-					// Right of the axis, seen from above: (fy, -fx).
-					const float along = layout.offset[piece], side = layout.side[piece];
-					const McVec feet = GtaToMc(cx + fx * along + fy * side, cy + fy * along - fx * side, cz - height * 0.5f);
+					// The piece's bottom centre, in the vehicle's frame and then the world's.
+					float at[3];
+					LocalToWorld(mat, shape.centreX + layout.side[piece], shape.Middle() + layout.offset[piece], shape.bottom, at);
+					const McVec feet = GtaToMc(at[0], at[1], at[2]);
 					r.x = static_cast<float>(feet.x);
 					r.y = static_cast<float>(feet.y);
 					r.z = static_cast<float>(feet.z);
 					r.yaw = GtaHeadingToMcYaw(heading);
 					r.width = layout.size[piece];
-					r.height = height;
+					r.height = layout.height[piece];
 					r.healthFrac = dead ? 0.0f : std::clamp(static_cast<float>(health) / 1000.0f, 0.0f, 1.0f);
 					std::strncpy(r.name, name && *name ? name : "Vehicle", sizeof(r.name) - 1);
 					records.push_back(r);
@@ -1131,6 +1396,142 @@ namespace lc::Combat
 			}
 		}
 
+		// ---- Minecraft's shield (proto::kMcBlocking) --------------------------------------------------------
+		// A hit Minecraft's raised shield blocks must not sound or look like one on Niko either. GTA IV
+		// 1.0.8.0 starts a ped's pain voice in 0x83AB60 (audSpeechAudioEntity, the ped's at +0x580; one
+		// pain description on the stack, ret 4), right after the damage that caused it is recorded on
+		// the ped (its last damage entity). Its first instruction is a jump to a stub of ours, which
+		// asks MutePainHook: while the shield is up, a hit from within its front arc (the same test
+		// Minecraft makes: ShieldCovers) plays no pain; one from behind, or from nobody known (Minecraft
+		// can't block that either), plays it as usual. Reaction animations are off while the shield is
+		// up (ALLOW_REACTION_ANIMS; the puppeted Niko doesn't show them anyway). The damage itself still
+		// happens (and goes to Minecraft, which blocks it): proofs would hide the hit from us as well.
+		struct Shield
+		{
+			bool        up = false;
+			int         ped = 0;
+			const CPed* pedPtr = nullptr;
+			float       lookYaw = 0.0f;
+			float       upFor = 0.0f, logTimer = 0.0f;
+			std::uint32_t muted = 0, sounded = 0, unknown = 0, painFrames = 0;
+		} shield;
+		int painHook = -1;  // -1 not tried, 0 not hooked, 1 hooked
+
+		bool __cdecl MutePainHook(const void* a_speech)
+		{
+			const CPed* p = shield.pedPtr;
+			if (!shield.up || !p || a_speech != reinterpret_cast<const char*>(p) + 0x580) {
+				return false;
+			}
+			const CEntity* from = p->m_pLastDamageEntity;
+			if (!from || from == p || !from->m_pMatrix || !p->m_pMatrix) {
+				++shield.unknown;
+				return false;
+			}
+			const int  yaw = HurtSourceYaw(HurtDirectionFlags(from->m_pMatrix->pos.x - p->m_pMatrix->pos.x, from->m_pMatrix->pos.y - p->m_pMatrix->pos.y));
+			const bool covered = yaw >= 0 && ShieldCovers(shield.lookYaw, static_cast<float>(yaw));
+			++(covered ? shield.muted : shield.sounded);
+			if (Cfg().diagnostics) {
+				LC_LOG("shield: a hit from MC yaw %d, the player looks at %.0f: pain %s", yaw, shield.lookYaw, covered ? "muted (Minecraft blocks it)" : "plays (behind the shield)");
+			}
+			return covered;
+		}
+
+		void HookPain()
+		{
+			if (painHook >= 0) {
+				return;
+			}
+			painHook = 0;
+			if (plugin::gameVer != plugin::VERSION_1080) {
+				LC_LOG("shield: not GTA IV 1.0.8.0: blocked hits keep Niko's pain voice");
+				return;
+			}
+			auto* at = reinterpret_cast<std::uint8_t*>(AddressSetter::gBaseAddress) + (0x83AB60 - 0x400000);
+			// push ebp; mov ebp, [esp+8]; cmp byte [ebp+6], 0
+			static constexpr std::uint8_t kExpect[] = { 0x55, 0x8B, 0x6C, 0x24, 0x08, 0x80, 0x7D, 0x06, 0x00 };
+			if (std::memcmp(at, kExpect, sizeof(kExpect)) != 0) {
+				LC_LOG("shield: the pain voice's code isn't as expected: blocked hits keep Niko's pain voice");
+				return;
+			}
+			auto* stub = static_cast<std::uint8_t*>(::VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+			if (!stub) {
+				LC_LOG("shield: can't allocate the pain stub (error %lu)", ::GetLastError());
+				return;
+			}
+			const auto abs32 = [](const void* a_p) { return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(a_p)); };
+			// push ecx; push ecx; call MutePainHook; add esp, 4; pop ecx; test al, al; jz real; ret 4;
+			// real: push ebp; mov ebp, [esp+8]; jmp back (after the 5 bytes the jump replaced)
+			std::uint8_t code[] = { 0x51, 0x51, 0xE8, 0, 0, 0, 0, 0x83, 0xC4, 0x04, 0x59, 0x84, 0xC0, 0x74, 0x03, 0xC2, 0x04, 0x00, 0x55, 0x8B, 0x6C, 0x24, 0x08,
+				0xE9, 0, 0, 0, 0 };
+			const std::uint32_t toHook = abs32(reinterpret_cast<const void*>(&MutePainHook)) - (abs32(stub) + 7u);
+			const std::uint32_t back = abs32(at + 5) - (abs32(stub) + 28u);
+			std::memcpy(code + 3, &toHook, 4);
+			std::memcpy(code + 24, &back, 4);
+			std::memcpy(stub, code, sizeof(code));
+			::FlushInstructionCache(::GetCurrentProcess(), stub, sizeof(code));
+			std::uint8_t jump[5] = { 0xE9 };
+			const std::uint32_t toStub = abs32(stub) - (abs32(at) + 5u);
+			std::memcpy(jump + 1, &toStub, 4);
+			DWORD old = 0;
+			if (!::VirtualProtect(at, sizeof(jump), PAGE_EXECUTE_READWRITE, &old)) {
+				LC_LOG("shield: can't hook the pain voice (VirtualProtect error %lu)", ::GetLastError());
+				return;
+			}
+			std::memcpy(at, jump, sizeof(jump));
+			::VirtualProtect(at, sizeof(jump), old, &old);
+			::FlushInstructionCache(::GetCurrentProcess(), at, sizeof(jump));
+			painHook = 1;
+			LC_LOG("shield: hits Minecraft's raised shield blocks leave Niko quiet (pain voice hooked)");
+		}
+
+		void SetShield(bool a_up, int a_ped)
+		{
+			if (a_up == shield.up) {
+				return;
+			}
+			if (shield.ped && S::DOES_CHAR_EXIST(shield.ped)) {
+				S::ALLOW_REACTION_ANIMS(shield.ped, !a_up);
+			}
+			if (a_up) {
+				HookPain();
+				if (a_ped && S::DOES_CHAR_EXIST(a_ped)) {
+					S::ALLOW_REACTION_ANIMS(a_ped, false);
+				}
+				shield = Shield{};
+				shield.up = true;
+				shield.ped = a_ped;
+			} else {
+				if (Cfg().diagnostics || shield.muted + shield.sounded + shield.unknown > 0) {
+					LC_LOG("shield down after %.1f s: %u hit%s from in front kept quiet, %u from behind and %u from nobody known sounded; pain voice playing %u frames",
+						shield.upFor, shield.muted, shield.muted == 1 ? "" : "s", shield.sounded, shield.unknown, shield.painFrames);
+				}
+				shield.up = false;
+				shield.pedPtr = nullptr;
+				shield.ped = 0;
+			}
+		}
+
+		// Every frame: the shield is up while Minecraft says so and its player is Niko (puppeted, his
+		// health ours).
+		void UpdateShield(const Frame& a_frame)
+		{
+			const bool up = owned.engaged && a_frame.puppeting && a_frame.mc && (a_frame.mc->flags & proto::kMcBlocking) != 0 && !a_frame.dead;
+			SetShield(up, up ? a_frame.ped : 0);
+			if (!shield.up) {
+				return;
+			}
+			shield.pedPtr = FindPlayerPed();
+			shield.lookYaw = std::fmod(std::fmod(a_frame.mc->yaw, 360.0f) + 360.0f, 360.0f);
+			shield.upFor += a_frame.dt;
+			shield.painFrames += S::IS_PAIN_PLAYING(a_frame.ped) ? 1u : 0u;
+			if (Cfg().diagnostics && (shield.logTimer += a_frame.dt) >= 5.0f) {
+				shield.logTimer = 0.0f;
+				LC_LOG("shield up %.0f s (looking at MC yaw %.0f): %u hits kept quiet, %u sounded, %u from nobody known; pain voice playing %u frames", shield.upFor,
+					shield.lookYaw, shield.muted, shield.sounded, shield.unknown, shield.painFrames);
+			}
+		}
+
 		// ---- GTA's HUD health arc --------------------------------------------------------------------------
 		// GTA IV 1.0.8.0's radar ring is health then armour: 0x8705B0 draws the health arc for
 		// (health - 100) / max(max health - 100, 100) (blinking red at a quarter or less) and a red flash
@@ -1638,6 +2039,34 @@ namespace lc::Combat
 					t.stage = 4;
 					return;
 				}
+				if (Cfg().debugCarCover) {
+					// DebugCarCover: facing north, its left side 0.9 m east of the player and the middle of
+					// its bonnet level with him; a ped stands just beyond its right side there, facing the
+					// player across the bonnet (Minecraft's hits over the bonnet must reach him).
+					float     lo[3]{ -1.0f, -2.5f, -0.6f }, hi[3]{ 1.0f, 2.5f, 0.9f };
+					CVehicle* v = CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(t.car)) : nullptr;
+					if (v) {
+						NpcBlocks::ModelBox(t.car, v->m_nModelIndex, lo, hi);
+					}
+					const float carX = x + 0.9f - lo[0], carY = y - (hi[1] - 0.7f);
+					PlaceCar(t.car, carX, carY, z, 0.0f);
+					S::FREEZE_CAR_POSITION(t.car, true);
+					S::CREATE_RANDOM_CHAR(carX + hi[0] + 0.45f, y, z, &t.cover);
+					if (t.cover) {
+						float ground = z - 1.0f;
+						S::GET_GROUND_Z_FOR_3D_COORD(carX + hi[0] + 0.45f, y, z + 1.0f, &ground);
+						S::SET_CHAR_COORDINATES(t.cover, carX + hi[0] + 0.45f, y, ground);  // (feet on the ground)
+						S::SET_CHAR_HEADING(t.cover, 90.0f);
+						S::FREEZE_CHAR_POSITION(t.cover, true);
+						S::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(t.cover, true);
+						S::TASK_PAUSE(t.cover, 600000);
+					}
+					LC_LOG("DebugCarCover: car %d at GTA %.2f %.2f (model box x %+.2f..%+.2f, y %+.2f..%+.2f), ped %d at %.2f %.2f, player at %.2f %.2f %.2f",
+						t.car, carX, carY, lo[0], hi[0], lo[1], hi[1], t.cover, carX + hi[0] + 0.45f, y, x, y, z);
+					t.stage = 2;
+					t.timer = -1e9f;  // (stays)
+					return;
+				}
 				if (Cfg().debugTestCar < 0 && a_frame.mc) {
 					// DebugTestCar=-N: 6 m in front of the camera instead, left side on, and it stays there.
 					const float h = McYawToGtaHeading(a_frame.mc->yaw), r = h * kDegToRad;
@@ -1872,6 +2301,7 @@ namespace lc::Combat
 		warpTimer = 0.0f;
 		testCar = TestCar{};
 		seenVehicles.clear();
+		shield = Shield{};  // (the ped is going away)
 		ClearActorTable();
 	}
 
@@ -1961,6 +2391,7 @@ namespace lc::Combat
 		if (owned.engaged) {
 			BridgePlayerDamage(a_frame);
 		}
+		UpdateShield(a_frame);
 		UpdateHudHealth(a_frame);
 		UpdateKill(a_frame);
 		CheckShoves(a_frame.dt);

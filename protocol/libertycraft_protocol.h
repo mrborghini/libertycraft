@@ -140,6 +140,11 @@ namespace libertycraft::proto
 		kMcDead = 1u << 5,
 		kMcSwimming = 1u << 6,
 		kMcFlying = 1u << 7,
+		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): the player holds
+		// a shield up and it blocks (Minecraft's own isBlocking: after the shield's raise delay). It
+		// blocks what comes from within 90 degrees of where the player looks (yaw): GTA IV keeps Niko
+		// quiet for those hits (no pain voice, no reaction), which Minecraft blocks.
+		kMcBlocking = 1u << 8,
 	};
 
 	struct McState
@@ -259,10 +264,12 @@ namespace libertycraft::proto
 		kActorInCombat = 1u << 3,
 		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): the record is one
 		// piece of a GTA IV vehicle, not a ped. A vehicle is long and turned any way, and an
-		// ActorRecord is an upright box square to the world axes, so a vehicle goes out as a row of up
-		// to kActorVehicleSegments such boxes along its axis, small enough that none sticks out of the
-		// vehicle's outline (seen from above) by more than about 0.2 m whichever way it faces:
-		// width = the box's side, height = the vehicle's height, (x, y, z) = the box's bottom centre.
+		// ActorRecord is an upright box square to the world axes, so a vehicle goes out as up to
+		// kActorVehicleSegments such boxes: a row along its axis as wide as its body, small enough that
+		// none sticks out of the body (seen from above) by more than a few centimetres whichever way it
+		// faces, each as tall as the body's lowest top along it (bonnet, boot), then a narrower row
+		// within the greenhouse as tall as the cabin: width = the box's side, height = its height,
+		// (x, y, z) = the box's bottom centre.
 		// Their formId is kActorVehicleTag | (vehicle script handle << 4) | piece (0 at the front).
 		// Minecraft makes them hittable and solid like the ped records; a kEvHitActor on any piece hits
 		// the vehicle (where it landed: kEvHitPoint). Peds sitting in a vehicle get no record of their own.

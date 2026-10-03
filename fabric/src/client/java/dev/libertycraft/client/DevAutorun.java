@@ -21,6 +21,7 @@ import net.minecraft.client.Minecraft;
  *
  * <pre>
  * # delay 20            seconds after linking before the first command (default 5)
+ * # camera third         then the camera goes to third person (behind), as F5 would
  * gamemode creative
  * fill ^-2 ^ ^5 ^2 ^4 ^9 minecraft:oak_planks hollow
  * </pre>
@@ -52,11 +53,14 @@ public final class DevAutorun {
 		}
 		List<String> commands = new ArrayList<>();
 		long delayMs = 5000;
+		boolean thirdPerson = false;
 		try {
 			for (String raw : Files.readAllLines(file)) {
 				String line = raw.strip();
 				if (line.startsWith("# delay ")) {
 					delayMs = (long) (Double.parseDouble(line.substring(8).strip()) * 1000);
+				} else if (line.equals("# camera third")) {
+					thirdPerson = true;
 				} else if (!line.isEmpty() && !line.startsWith("#")) {
 					commands.add(line.startsWith("/") ? line.substring(1) : line);
 				}
@@ -75,7 +79,10 @@ public final class DevAutorun {
 		}
 		done = true;
 		String who = player.getUUID().toString();
-		LibertyCraft.LOG.info("[LibertyCraft] autorun: {} command(s) from {}", commands.size(), file.getFileName());
+		LibertyCraft.LOG.info("[LibertyCraft] autorun: {} command(s) from {}{}", commands.size(), file.getFileName(), thirdPerson ? ", camera third person" : "");
+		if (thirdPerson) {
+			minecraft.options.setCameraType(net.minecraft.client.CameraType.THIRD_PERSON_BACK);
+		}
 		server.execute(() -> {
 			var source = server.createCommandSourceStack().withSuppressedOutput();
 			for (String command : commands) {

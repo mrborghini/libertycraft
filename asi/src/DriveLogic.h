@@ -62,6 +62,9 @@ namespace lc::drive
 		bool        modeChanged = false;
 		Why         why = Why::kNone;      // with hostDrives: Niko mode, a vehicle (getting in, in, just out), a cutscene, knocked over
 		bool        recovered = false;     // a recovery ended this frame (Niko stands, or kRecoverCap)
+		bool        padLocked = false;     // GTA animates Niko getting back up (on foot): his pad is zeroed and the
+		                                   // player's keys and mouse stay out of GTA (only vehicles and Niko mode
+		                                   // give GTA real player input)
 		bool        recoverCapped = false; // ...because kRecoverCap ran out
 	};
 
@@ -206,6 +209,7 @@ namespace lc::drive
 			                                          : nullptr;
 			out.blocker = reason;
 			out.hostDrives = a_in.inGame && !a_in.dead && reason != nullptr;
+			out.padLocked = out.hostDrives && recovering_ && mode_ == Mode::kMinecraft && !entering_ && !a_in.inCar && !a_in.gettingIn;
 			out.why = !out.hostDrives                                    ? Why::kNone
 			          : mode_ == Mode::kNiko                             ? Why::kNikoMode
 			          : (entering_ || a_in.gettingIn || a_in.inCar)    ? Why::kVehicle

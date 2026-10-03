@@ -70,7 +70,7 @@ with `--demo-section` writes an atlas + a few cubes into the render ring.
 | `HostDrive.*`, `DriveLogic.h` | vehicles and Niko mode: who drives the player (Minecraft or GTA IV); after a vehicle or a knockdown GTA keeps Niko until he really stands; a car running into the puppeted player (or one of GTA's explosions) knocks them over (`RagdollOnVehicleHit`) |
 | `NikoBody.*`, `render/Body.h` | the Minecraft body on Niko's skeleton (`MinecraftBody`): while GTA animates Niko (vehicles, knockdowns, cutscenes, Niko mode) he is hidden and Minecraft's standing body (`kRenRagdoll`) is drawn with each part on his bones, sized to him (see Vehicles and Niko mode). `render/Body.h` is SDK-free and tested on Linux (`tests/body_test.cpp`) |
 | `Coords.h` | GTA <-> MC coordinates, heading <-> yaw, camera basis |
-| `Combat.*`, `combat/CombatMath.h` | actor table (peds, and vehicles as rows of small boxes that stay within 0.2 m of the car's outline whichever way it faces -> Minecraft stand-ins), Minecraft hits/explosions/death -> GTA (vehicle hits: body/engine damage and fire; where a hit landed (`kEvHitPoint`) is followed into the car's model box, so a blow or an arrow on a side window's glass breaks that window (no native breaks a windscreen; the window native is checked against the game's code once, and only used on a settled, intact vehicle whose model has that window) and an arrow through any glass hits whoever sits behind it, who dies slumped in the seat), GTA damage to the puppeted player -> `kInHurt` (with the weapon's kind, found with `HAS_CHAR_BEEN_DAMAGED_BY_WEAPON` since the ped's last damage weapon field is unset on 1.0.8.0, and the direction it came from, so Minecraft's shield blocks what comes from in front); the puppeted player's health stays at a buffer of 1000 that GTA can't take, and GTA's radar arcs show Minecraft's health and armour instead (see `GtaHud`) |
+| `Combat.*`, `combat/CombatMath.h` | actor table (peds, and vehicles as rows of small boxes -> Minecraft stand-ins: each car model's shape is measured once with line probes against the collision of a parked one (body width without the mirrors, ends, the top every 1/40 of the length, the greenhouse's width; logged as `vehicle shape`), and the boxes hug the body within 5 cm whichever way it faces, as tall as the bonnet and boot where they are, so a hit over the bonnet reaches whoever hides behind it, with a narrower row for the cabin), Minecraft hits/explosions/death -> GTA (vehicle hits: body/engine damage and fire; where a hit landed (`kEvHitPoint`) is followed into the car's model box, so a blow or an arrow on a side window's glass breaks that window (no native breaks a windscreen; the window native is checked against the game's code once, and only used on a settled, intact vehicle whose model has that window) and an arrow through any glass hits whoever sits behind it, who dies slumped in the seat), GTA damage to the puppeted player -> `kInHurt` (with the weapon's kind, found with `HAS_CHAR_BEEN_DAMAGED_BY_WEAPON` since the ped's last damage weapon field is unset on 1.0.8.0, and the direction it came from, so Minecraft's shield blocks what comes from in front; while the shield is up (`kMcBlocking`) such a hit leaves Niko quiet: GTA's pain voice (0x83AB60, hooked after a byte check) is skipped for hits from within the shield's front arc, the same test Minecraft makes, and reaction animations are off; hits from behind sound as usual); the puppeted player's health stays at a buffer of 1000 that GTA can't take, and GTA's radar arcs show Minecraft's health and armour instead (see `GtaHud`) |
 | `Doors.*` | GTA's doors swing open for the Minecraft player (Niko is frozen with collision off, so he never pushes one): a door (object pool, `collision/Objects.h`'s door shape) opens away from the player when they walk into it, through GTA's door state (`SET_STATE_OF_CLOSEST_DOOR_OF_TYPE`; object heading or a push as fallbacks), and is shut and handed back to GTA once they are clear |
 | `NpcBlocks.*`, `combat/BlockPush.h` | Minecraft's blocks are solid for GTA's peds and vehicles: `kRenSolids` bitsets (handed over by `render/World.cpp`'s ring consumer) push peds out of block columns (they follow walls round) and take the speed into blocks off cars and bikes. `BlockPush.h` is SDK-free and tested on Linux (`tests/combat_test.cpp`) |
 | `Config.*`, `Log.*`, `CrashLog.*`, `Perf.h` | ini, log file, crash handler, frame-time stats |
@@ -237,6 +237,7 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `NpcPushMethod` | `0` | not in the default ini: how a ped is moved out of blocks (`0` the entity's own set-position, `1` `SET_CHAR_COORDINATES_NO_OFFSET`) |
 | `DebugTestCar` | `0` | test hook: N s into play, park an Admiral with a driver and a front passenger 4 m east of the player (left side toward the player, frozen), log its body health and its people's health as they change, and 90 s later move it 6 m in front of the camera for a screenshot. `-N`: park it 6 m in front of the camera with all four seats taken, and from 8 s on shoot a lethal arrow through each side window in turn (the same code path as Minecraft's hits) |
 | `DebugTestCarModel` | `admiral` | test hook: DebugTestCar's model (`sabre` has two doors, `pcj` is a motorbike) |
+| `DebugCarCover` | `0` | test hook: DebugTestCar parks its car empty instead, facing north with its left side 0.9 m east of the player and the middle of its bonnet level with him, and a ped stands just beyond its right side there (for `tools/fake_minecraft.py --pick-test`: Minecraft's hits over the bonnet must reach him) |
 | `DebugDieInCarAB` | `0` | test hook: killing blows on vehicle occupants cycle through the ways of dealing them (`DAMAGE_CHAR`, `EXPLODE_CHAR_HEAD`, `SET_CHAR_HEALTH 0`), and each killed occupant's pelvis is logged in the car's frame 0.5, 1.5 and 4 s later |
 | `DebugKnockbackVariant` | `-1` | test hook: Minecraft's hits shove peds a different way each hit (0 world direction, 1 turned into the ped's frame, 2 the old flags, 3 no force), cycling from this one, and log how far along the push each went |
 | `Render` | `1` | draw Minecraft's blocks and HUD in GTA's frame (0: only drain the render ring) |
@@ -278,6 +279,7 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `DebugBody` | `0` | test hook: log the skeleton once a second (bones, limb motion, ankle heights) and, in cutscenes, the animated objects around the camera |
 | `DebugBailOut`, `DebugRunOver` | `0` | test hooks: DebugAutoVehicle's car drives off at 14 m/s and Niko bails out of it 2 s later; every 40 s of puppeting (outdoors; else moved to the road) a test car 15 m up the road drives at the player at 12 m/s |
 | `DebugCutscene` | | test hook: play this cutscene (e.g. `intro`, `rom2_a`; names from `pc/anim/cuts.img`) 20 s into puppet mode |
+| `DebugGiveWeapon` | `0` | test hook: give Niko this GTA weapon (7 pistol) 10 s into play (puppet mode puts it away, Niko mode gives it back) |
 
 ## Vehicles and Niko mode
 
@@ -316,7 +318,10 @@ pos/yaw with no physics, input or damage) when:
   most 8 s. A knockdown is applied once puppet mode has let go of him (`SWITCH_PED_TO_RAGDOLL`,
   then `APPLY_FORCE_TO_PED` in world axes, as Combat measured); while knocked over Minecraft
   still owns his health (Combat's buffer), so GTA damage meanwhile goes to Minecraft and GTA can't
-  kill him.
+  kill him. While he gets back up (on foot) the player's input isn't GTA's (`padLocked`: his pad
+  is cleared as in puppet mode, no aiming or firing his gun); only vehicles and Niko mode give GTA
+  real player input. Handing back, the body stays on him (and he hidden) until puppet mode has
+  him, so no frame shows Niko in between.
 
 **The Minecraft body** (`MinecraftBody`, `NikoBody.*`, `render/Body.h`): while GTA drives for one
 of the reasons above (per `MinecraftBodyCutscenes` / `Vehicles` / `NikoMode`), Niko is hidden
@@ -346,8 +351,15 @@ Keys go to Minecraft as SDL3 scancodes (hardware scancode -> DirectInput code ->
 `` ` `` stay GTA's (pause menu) unless a Minecraft screen is open; F1-F12 go to both. `MenuKey`
 sends `kInOpenMenu`. Mouse: raw input (`WM_INPUT`) for look / the GUI cursor, buttons and wheel
 from window messages. GTA reads DirectInput itself and the player keeps player control while
-puppeted (`PuppetPlayerControl`), so `processPadEvent` zeroes every CPad control except
-`INPUT_FRONTEND_PAUSE` and, with `PhoneKeys`, the phone's (below). Focus loss and GTA menus send
+puppeted (`PuppetPlayerControl`), so `processPadEvent` clears every CPad control except
+`INPUT_FRONTEND_PAUSE` and, with `PhoneKeys`, the phone's (below): buttons to 0, the axis controls
+(move, look, mouse, frontend and vehicle axes, sniper zoom) to their rest value 128 (measured: 0 is
+a full push, and with player control on Niko walked off while getting back up). The same while
+Niko gets back up (above). Niko is hidden in every Minecraft camera mode (F5 too: Minecraft's body
+is drawn there), every frame. GTA's weapon is put away while puppeting (its HUD showed Niko's
+pistol next to Minecraft's sword; one a script hands him too) and comes back in Niko mode. While GTA
+drives the player (`HostDriveClient.driving()`) Minecraft draws no first-person hands or held items
+into the overlay (`GameRendererHandMixin`); the HUD stays. Focus loss and GTA menus send
 `kInReleaseAll`.
 
 GTA's phone (`PhoneKeys=1`, the default) works like in plain GTA IV: Up takes it out (or answers a

@@ -393,6 +393,9 @@ public final class HostClient {
 			if (player.getAbilities().flying) {
 				flags |= Proto.MC_FLYING;
 			}
+			if (player.isBlocking()) {
+				flags |= Proto.MC_BLOCKING;
+			}
 			mc.x = feet.x;
 			mc.y = feet.y;
 			mc.z = feet.z;

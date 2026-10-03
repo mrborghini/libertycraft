@@ -32,6 +32,12 @@ NPCs vs blocks and vehicles (Stream Q2): --wall-ring R puts a square ring of sto
 around the player (as meshes and kRenSolids; it moves along when the player is teleported far), which
 GTA IV's peds and traffic should not get through; --hit-kind vehicle aims --hit-nearest-actor at the
 nearest vehicle piece, and --hit-projectile makes the hits arrows (they also reach the people inside).
+--pick-test (with the host's DebugTestCar + DebugCarCover: a ped in cover beyond a car's bonnet)
+aims from the player's eye (1.62 above the ped's feet) at the nearest ped's chest and head every 2 s and says what Minecraft's
+pick (the nearest entity box along the look) would hit: the ped, or a piece of a vehicle (and, for
+comparison, what it would hit if every vehicle piece were as tall as the vehicle's tallest piece).
+--block ON,OFF holds the shield up (kMcBlocking) and down in turn; --spin DEG turns the player on the
+spot (so GTA's attackers end up in front of the shield and behind it).
 
 Byte layout: protocol/libertycraft_protocol.h (SkyCraft v11 layout). Stdlib only.
 """
@@ -71,6 +77,7 @@ IN_ENTRIES = 4096
 
 # McFlags
 MC_IN_WORLD, MC_SCREEN_OPEN, MC_ON_GROUND = 1, 2, 4
+MC_BLOCKING = 1 << 8  # LibertyCraft: the shield is up (kMcBlocking)
 # SkyFlags
 SKY_FLAGS = {1: "InGame", 2: "MenuOpen", 4: "Loading"}
 
@@ -502,11 +509,77 @@ def wall_ring(bridge, feet, radius, height, drop=1):
           f"{fx},{fy},{fz}, sent as meshes + kRenSolids")
 
 
+def ray_box(o, d, lo, hi):
+    """Where the segment o + t d (0 <= t <= 1) enters the box [lo, hi], or None."""
+    t0, t1 = 0.0, 1.0
+    for k in range(3):
+        if abs(d[k]) < 1e-9:
+            if o[k] < lo[k] or o[k] > hi[k]:
+                return None
+            continue
+        a, b = (lo[k] - o[k]) / d[k], (hi[k] - o[k]) / d[k]
+        t0, t1 = max(t0, min(a, b)), min(t1, max(a, b))
+        if t0 > t1:
+            return None
+    return t0
+
+
+def first_pick(actors, eye, target, tall=None):
+    """The record Minecraft's pick would take along eye -> target: the nearest box it enters.
+    tall: vehicle id (formId without the piece) -> height to use for every piece instead."""
+    d = tuple(target[k] - eye[k] for k in range(3))
+    best, best_t = None, 2.0
+    for r in actors:
+        h = tall.get(r[0] & ~15, r[7]) if tall is not None and r[1] & ACTOR_VEHICLE else r[7]
+        w = r[6] * 0.5
+        t = ray_box(eye, d, (r[2] - w, r[3], r[4] - w), (r[2] + w, r[3] + h, r[4] + w))
+        if t is not None and t < best_t:
+            best, best_t = r, t
+    return best, best_t
+
+
+def pick_step(actors, args, sky, t, st):
+    """--pick-test: what the pick from the eye at the nearest ped's chest and head would hit."""
+    if not actors or t < st.get("next_pick", 0.0):
+        return
+    st["next_pick"] = t + 2.0
+    px, py, pz = st.get("pos") or (sky[4], sky[5], sky[6])  # (where this fake stands: what it writes)
+    peds = [r for r in actors if not r[1] & ACTOR_VEHICLE and not r[1] & ACTOR_DEAD]
+    if not peds:
+        print("pick: no ped near")
+        return
+    ped = min(peds, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
+    # (On the ped's ground: this fake stands where it was teleported, which may float above GTA's ground.)
+    eye = (px, ped[3] + 1.62, pz)
+    tall = {}
+    for r in actors:
+        if r[1] & ACTOR_VEHICLE:
+            tall[r[0] & ~15] = max(tall.get(r[0] & ~15, 0.0), r[7])
+    out = []
+    for label, frac in (("chest", 0.72), ("head", 0.9), ("crouched head", 0.58)):
+        target = (ped[2], ped[3] + ped[7] * frac, ped[4])
+        r, tt = first_pick(actors, eye, target)
+        old, _ = first_pick(actors, eye, target, tall)
+        def name(x):
+            if x is None:
+                return "nothing"
+            if x is ped:
+                return "the ped"
+            return f"{x[9]} piece {x[0] & 15} (top {x[3] + x[7]:.2f})" if x[1] & ACTOR_VEHICLE else f"ped {x[0]:08X}"
+        ok = r is ped
+        st["pick_ok"] = st.get("pick_ok", 0) + ok
+        st["pick_n"] = st.get("pick_n", 0) + 1
+        out.append(f"{label} (y {target[1]:.2f}): {'PASS' if ok else 'FAIL'} {name(r)}; full-height pieces: {name(old)}")
+    print(f"pick from the eye ({eye[0]:.2f} {eye[1]:.2f} {eye[2]:.2f}) at ped {ped[0]:08X} {math.dist((ped[2], ped[4]), (px, pz)):.2f} blocks away: " + "; ".join(out))
+
+
 def combat_step(bridge, args, sky, t, t0, st):
     """The combat flags, once per loop. st holds next_hit / next_blast / next_actors / died_sent."""
     px, py, pz, yaw = sky[4], sky[5], sky[6], sky[7]
-    want_actors = args.actors or args.hit_nearest_actor > 0
+    want_actors = args.actors or args.hit_nearest_actor > 0 or args.pick_test
     actors = bridge.read_actors() if want_actors else None
+    if args.pick_test:
+        pick_step(actors, args, sky, t, st)
     if args.actors and actors is not None and t >= st["next_actors"]:
         st["next_actors"] = t + 2.0
         near = sorted(actors, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
@@ -586,6 +659,7 @@ def main():
     ap.add_argument("--demo-avatar", action="store_true", help="with --demo-section: also a box body (kRenTexture + kRenAvatar) at the feet (use with --third-person)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every collision message")
     ap.add_argument("--actors", action="store_true", help="print the host's actor table every 2 s")
+    ap.add_argument("--pick-test", action="store_true", help="say what Minecraft's pick at the nearest ped would hit (DebugCarCover)")
     ap.add_argument("--hit-nearest-actor", type=float, default=0.0, metavar="DMG",
                     help="every --combat-interval s, hit the living actor nearest the player for DMG Minecraft damage")
     ap.add_argument("--explode-ahead", type=float, nargs="?", const=-1.0, default=None, metavar="EVERY",
@@ -600,6 +674,9 @@ def main():
     ap.add_argument("--hit-heights", default="0.8,0.3", metavar="F,F",
                     help="--hit-kind vehicle: where the hits land (kEvHitPoint), as fractions of the piece's height, in turn "
                          "(default %(default)s: glass, then the door)")
+    ap.add_argument("--block", default="", metavar="ON,OFF",
+                    help="hold the shield up (kMcBlocking) ON s, then down OFF s, in turn")
+    ap.add_argument("--spin", type=float, default=0.0, metavar="DEG", help="turn on the spot, DEG degrees a second")
     ap.add_argument("--vitals", default="", metavar="H,MAX,ARMOUR",
                     help="report Minecraft's health, max health and armour points in McState (GTA's HUD shows them)")
     ap.add_argument("--wall-ring", type=int, default=0, metavar="R",
@@ -723,6 +800,11 @@ def main():
                 f = min(1.0, (now_qpc() - tick_qpc) / 500_000) if tick_qpc else 1.0
                 pos = tuple(p + (c - p) * f for p, c in zip(prev, cur))
                 in_world = MC_IN_WORLD | MC_ON_GROUND | (MC_SCREEN_OPEN if args.screen else 0)
+                # --block ON,OFF: the shield up ON s, down OFF s, in turn (from the first teleport).
+                if args.block:
+                    on_s, off_s = (float(v) for v in args.block.split(","))
+                    if (t - start) % (on_s + off_s) < on_s:
+                        in_world |= MC_BLOCKING
                 # --vitals: Minecraft's health / max / armour in McState's padding (kMcVitalsValid).
                 vitals_health = vitals_armour = 0
                 if args.vitals:
@@ -730,6 +812,7 @@ def main():
                     vitals_health = min(round(vh * 100), 0xFFFF) | (min(round(vm * 100), 0xFFFF) << 16)
                     vitals_armour = (int(va) & 0xFF) | (1 << 31)
                 syaw, spitch = (sky[7], sky[8]) if sky else (0.0, 0.0)
+                syaw += args.spin * (t - start)  # --spin: turn on the spot (degrees a second)
                 eye = 1.62
                 bridge.frame += 1
                 bridge.write_mc((
@@ -740,6 +823,7 @@ def main():
             if origin and combat_t0 is None:
                 combat_t0 = t + args.combat_delay
             if combat_t0 is not None and sky and t >= combat_t0:
+                combat_state["pos"] = (pos[0], pos[1], pos[2])
                 combat_step(bridge, args, sky, t, combat_t0, combat_state)
 
             for typ, code, a, b, c in bridge.drain_input():

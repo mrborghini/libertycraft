@@ -27,6 +27,7 @@ namespace lc::Game
 		std::atomic<bool> inVehicle{ false };
 		std::atomic<bool> nikoMode{ false };
 		std::atomic<bool> cutscene{ false };      // GTA plays a cutscene (HostDrive): no Minecraft HUD
+		std::atomic<bool> padLocked{ false };     // GTA animates Niko getting back up (HostDrive): Input zeroes his pad
 	};
 
 	Shared& State();

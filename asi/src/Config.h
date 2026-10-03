@@ -148,6 +148,7 @@ namespace lc
 		// player (Combat.cpp TestCarHook); 0 off.
 		int debugTestCar = 0;
 		std::string debugTestCarModel = "admiral";  // its model (e.g. sabre: two doors, pcj: a motorbike)
+		bool debugCarCover = false;  // DebugTestCar parks it empty, front axle beside the player, a ped in cover beyond its bonnet
 		// Minecraft's attacks are crimes in GTA IV: victims fight back or flee, police seeing it (or
 		// any witness of a killing) give the player a wanted level, hurting a cop always does.
 		bool gtaCrimes = true;
@@ -207,6 +208,8 @@ namespace lc
 		bool debugRunOver = false;
 		// Test hook (not in the default ini): play this GTA IV cutscene (e.g. rom2_a) 20 s into puppet mode.
 		std::string debugCutscene;
+		// Test hook (not in the default ini): give Niko this GTA weapon (7 pistol) 10 s into play.
+		int debugGiveWeapon = 0;
 		// ---- the Minecraft body on Niko's skeleton (Body.h, render/Body.h) ----
 		// While GTA IV animates Niko itself, show the player's Minecraft body following his
 		// animation (Niko hidden): master switch, in cutscenes, getting into / driving / getting out

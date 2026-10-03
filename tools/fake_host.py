@@ -549,13 +549,15 @@ class NpcScenario:
 IN_HURT = 7
 HURT_MELEE, HURT_PROJECTILE, HURT_OTHER = 0, 1, 3
 HURT_HAS_DIRECTION, HURT_DIRECTION_SHIFT = 1 << 2, 16
+MC_BLOCKING = 1 << 8  # McState flags: the shield is up (kMcBlocking)
 
 
 class ShieldScenario(NpcScenario):
     """Stream Q2: GTA IV's hits (kInHurt) against a raised shield. The player faces +X (yaw -90) with a
     shield in the off hand, held up; hits come from in front and from behind, with a direction only
-    (kHurtHasDirection) and from a ped's stand-in. In front must be blocked, behind must hurt; and
-    Minecraft's vitals (McState padding) must show up."""
+    (kHurtHasDirection) and from a ped's stand-in. In front must be blocked, behind must hurt;
+    Minecraft's vitals (McState padding) must show up, and McState's kMcBlocking only while the
+    shield is up."""
     PED = 0x4C000999
 
     def __init__(self, spawn):
@@ -587,8 +589,12 @@ class ShieldScenario(NpcScenario):
         if self.once(t, 3.0, "vitals"):
             ok = v is not None and v["max"] == 20.0 and 0 < v["health"] <= 20.0
             self.check("Minecraft's vitals in McState", ok, f"{v} (want health and max 20)")
+        if self.once(t, 3.0, "down_flag"):
+            self.check("McState: no kMcBlocking before the shield goes up", not mc["flags"] & MC_BLOCKING, f"flags {mc['flags']:#x}")
         if self.once(t, 3.2, "raise"):
             link.push_input(2, 3, 1)  # hold the right button: the off-hand shield goes up
+        if self.once(t, 4.2, "up_flag"):
+            self.check("McState: kMcBlocking while the shield is up", bool(mc["flags"] & MC_BLOCKING), f"flags {mc['flags']:#x}")
         # (The marks below remember the health just before each hit.)
         for name, at, kind, yaw, attacker, ped_x, want_blocked in (
             ("front", 4.5, HURT_PROJECTILE, -90.0, 0, None, True),
@@ -610,7 +616,9 @@ class ShieldScenario(NpcScenario):
                            f"health {before} -> {after}")
         if self.once(t, 11.5, "lower"):
             link.push_input(2, 3, 0)
-        if t >= 12.0:
+        if self.once(t, 12.3, "lowered_flag"):
+            self.check("McState: no kMcBlocking once the shield is down", not mc["flags"] & MC_BLOCKING, f"flags {mc['flags']:#x}")
+        if t >= 12.5:
             print(f"shield summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
             return True
         return False

@@ -77,6 +77,7 @@ namespace lc::Game
 		int         puppetPlayer = 0;
 		float       reassertTimer = 0.0f;
 		int         pedHidden = -1;  // -1 unknown, 0 visible, 1 hidden
+		unsigned    holsteredWeapon = 0;  // GTA's weapon put away for puppet mode (0: none)
 		int         scriptCam = 0;
 		const char* lastBlocker = nullptr;
 
@@ -359,6 +360,15 @@ namespace lc::Game
 				S::DISPLAY_HUD(false);
 				S::DISPLAY_RADAR(false);
 			}
+			// GTA's weapon goes away (its HUD showed Niko's pistol next to Minecraft's sword), also one a
+			// script hands him meanwhile; the last one comes back in Niko mode (not while GTA only
+			// animates him for Minecraft mode: vehicles, getting back up).
+			unsigned weapon = 0;
+			if (S::GET_CURRENT_CHAR_WEAPON(a_ped, &weapon) && weapon != WEAPON_UNARMED) {
+				holsteredWeapon = weapon;
+				S::SET_CURRENT_CHAR_WEAPON(a_ped, WEAPON_UNARMED, true);
+				LC_LOG("GTA weapon %u holstered while Minecraft drives", weapon);
+			}
 		}
 
 		void EnterPuppet(int a_player, int a_ped, const GtaVec& a_feet)
@@ -399,6 +409,7 @@ namespace lc::Game
 				DestroyScriptCam();
 			} else {
 				scriptCam = 0;  // the game is reloading: its cameras are gone anyway
+				holsteredWeapon = 0;
 			}
 			Input::SetCapture(false);
 			Input::ReleaseAll();
@@ -940,6 +951,11 @@ namespace lc::Game
 			LeavePuppet("the player ped changed");
 		}
 		HostDrive::AfterPuppetDecision();
+		if (holsteredWeapon && !puppeting && shared.nikoMode && exists && !dead) {
+			S::SET_CURRENT_CHAR_WEAPON(ped, holsteredWeapon, true);
+			LC_LOG("Niko mode: GTA weapon %u back in Niko's hand", holsteredWeapon);
+			holsteredWeapon = 0;
+		}
 
 		if (puppeting) {
 			const Pose pose = Interpolate();
@@ -963,11 +979,13 @@ namespace lc::Game
 			lastSetFeet = target;
 			haveLastSet = true;
 			BuildCamPose(pose, dt);
-			// First person: hide Niko (the camera sits inside his head). Third person: show him.
-			const int hide = mc.cameraMode == 0 ? 1 : 0;
-			if (hide != pedHidden) {
-				S::SET_CHAR_VISIBLE(ped, hide == 0);
-				pedHidden = hide;
+			// Niko stays hidden in every Minecraft camera mode: first person the camera sits in his head,
+			// third person Minecraft's own body is drawn there (his limbs showed through it). Every frame:
+			// GTA (scripts, the phone) can show him again.
+			S::SET_CHAR_VISIBLE(ped, false);
+			if (pedHidden != 1) {
+				pedHidden = 1;
+				LC_LOG("Niko hidden while puppeting (camera mode %d)", mc.cameraMode);
 			}
 			if ((reassertTimer -= dt) <= 0.0f) {
 				reassertTimer = kReassertSeconds;

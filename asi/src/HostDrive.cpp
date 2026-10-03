@@ -181,6 +181,7 @@ namespace lc::HostDrive
 
 		// ---- knocked over (RagdollOnVehicleHit): a car ran into the player, a blast ------------------------
 		constexpr float kUprightSpeed = 0.5f;  // m/s: slower than this on his feet counts as standing
+		constexpr float kHandBackSeconds = 0.5f;  // the body stays on Niko this long at most while Minecraft takes over
 		constexpr float kHitRange = 9.0f;      // vehicles this close (centre to the player) are checked
 		constexpr float kHitSpeed = 3.0f;      // m/s: slower cars push, they don't knock over
 		constexpr float kHitMargin = 0.35f;    // the player's radius around the car's box
@@ -193,6 +194,7 @@ namespace lc::HostDrive
 		};
 		Knock knock;
 		int   knockdowns = 0;  // for DriveLogic, this frame
+		char  uprightWhy[96] = "";  // the standing check's parts (logged when a recovery runs out of time)
 		float recoverClock = 0.0f;
 		// DebugBailOut / DebugRunOver
 		float debugBailT = 0.0f;
@@ -743,7 +745,10 @@ namespace lc::HostDrive
 			if (!a_f.puppeting) {
 				float speed = 0.0f;
 				S::GET_CHAR_SPEED(a_f.ped, &speed);
-				in.upright = !in.ragdoll && !S::IS_CHAR_IN_AIR(a_f.ped) && speed < kUprightSpeed && PedStanding();
+				const bool air = S::IS_CHAR_IN_AIR(a_f.ped), standing = PedStanding();
+				in.upright = !in.ragdoll && !air && speed < kUprightSpeed && standing;
+				std::snprintf(uprightWhy, sizeof(uprightWhy), "ragdoll/getting up %d, in the air %d, %.2f m/s, standing flag %d", in.ragdoll ? 1 : 0, air ? 1 : 0,
+					speed, standing ? 1 : 0);
 			}
 		}
 		// Knocked over: a car running into the puppeted player (here), a blast (Combat, last frame).
@@ -843,6 +848,15 @@ namespace lc::HostDrive
 		if (inGame) {
 			DebugCutsceneTick(a_f);
 		}
+		// DebugGiveWeapon: a GTA weapon for Niko, once (puppet mode holsters it, Game.cpp).
+		static float giveT = 0.0f;
+		if (Cfg().debugGiveWeapon > 0 && giveT >= 0.0f && active && (giveT += a_f.dt) >= 10.0f) {
+			giveT = -1.0f;
+			S::GIVE_WEAPON_TO_CHAR(a_f.ped, static_cast<unsigned>(Cfg().debugGiveWeapon), 60, false);
+			unsigned now = 0;
+			S::GET_CURRENT_CHAR_WEAPON(a_f.ped, &now);
+			LC_LOG("DebugGiveWeapon: weapon %d given to Niko (current weapon now %u)", Cfg().debugGiveWeapon, now);
+		}
 		if (exitNow) {
 			exitPressT = kExitPressSeconds;
 		}
@@ -918,7 +932,8 @@ namespace lc::HostDrive
 		}
 		recoverClock = logic.recovering() ? recoverClock + a_f.dt : 0.0f;
 		if (out.recovered && logic.mode() == drive::Mode::kMinecraft) {
-			LC_LOG("%s: Minecraft takes over", out.recoverCapped ? "Niko didn't get back up in time" : "Niko stands again");
+			LC_LOG("%s: Minecraft takes over%s%s", out.recoverCapped ? "Niko didn't get back up in time" : "Niko stands again", out.recoverCapped ? " (last: " : "",
+				out.recoverCapped ? (std::string(uprightWhy) + ")").c_str() : "");
 		}
 		// A knockdown's ragdoll, once puppet mode has let go of Niko (frozen, he wouldn't fall).
 		if (knock.pending) {
@@ -993,7 +1008,20 @@ namespace lc::HostDrive
 
 		// While GTA animates Niko the Minecraft body may follow his skeleton instead (NikoBody.h);
 		// else, in a vehicle, Minecraft's player sits on its mount in the seat: Niko would be in the way.
-		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, out.why, out.hostDrives, a_f.mcInWorld);
+		// Handing back to Minecraft (the teleport handshake, then puppet mode, a frame or a few later):
+		// the body stays on Niko and he stays hidden until puppet mode has him (it hides him itself), so
+		// no frame shows him in between.
+		static drive::Why lastWhy = drive::Why::kNone;
+		static float      handBackT = 0.0f;
+		if (out.hostDrives) {
+			lastWhy = out.why;
+			handBackT = 0.0f;
+		} else if (out.resync && logic.mode() == drive::Mode::kMinecraft && a_f.mcInWorld) {
+			handBackT = kHandBackSeconds;
+		}
+		handBackT = a_f.puppeting ? 0.0f : std::max(0.0f, handBackT - a_f.dt);
+		const bool handingBack = handBackT > 0.0f && !out.hostDrives && lastWhy != drive::Why::kNone;
+		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, handingBack ? lastWhy : out.why, out.hostDrives || handingBack, a_f.mcInWorld);
 		const bool hide = out.inVehicle && Cfg().hideNikoInVehicle && logic.mode() == drive::Mode::kMinecraft && a_f.mcInWorld;
 		if (bodyPed) {
 			SetHidden(bodyPed, true, "the Minecraft body follows his animation");
@@ -1006,6 +1034,12 @@ namespace lc::HostDrive
 		st.inVehicle = out.inVehicle;
 		st.nikoMode = logic.mode() == drive::Mode::kNiko;
 		st.cutscene = out.hostDrives && out.why == drive::Why::kCutscene;
+		st.padLocked = out.padLocked && !a_f.paused;
+		static bool lastPadLocked = false;
+		if (out.padLocked != lastPadLocked) {
+			lastPadLocked = out.padLocked;
+			LC_LOG("%s", out.padLocked ? "Niko gets back up: the player's pad is zeroed until Minecraft takes over" : "the player's pad is GTA's or Minecraft's again");
+		}
 		return r;
 	}
 

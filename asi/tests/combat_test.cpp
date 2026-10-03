@@ -163,12 +163,13 @@ static void CheckLayout(float a_length, float a_width, float a_angleDeg)
 		for (int k = 0; k < 4; ++k) {  // the box's corners, in the vehicle's frame
 			const float px = cx + (k & 1 ? half : -half), py = cy + (k & 2 ? half : -half);
 			const float along = px * fx + py * fy, across = -px * fy + py * fx;
-			inside = inside && std::fabs(along) <= a_length * 0.5f + kVehicleBoxSlack + 1e-3f && std::fabs(across) <= a_width * 0.5f + kVehicleBoxSlack + 1e-3f;
+			inside = inside && std::fabs(along) <= a_length * 0.5f + l.slack + 1e-3f && std::fabs(across) <= a_width * 0.5f + l.slack + 1e-3f;
 		}
 	}
 	CHECK(inside);
+	CHECK(l.slack <= kVehicleBoxSlack + 1e-4f || a_length > 8.0f);  // (only a long one runs out of boxes)
 	bool covered = true;
-	const float inset = 0.3f;
+	const float inset = a_length > 8.0f ? 0.35f : 0.3f;  // (a long one's end boxes are spread thin)
 	for (float u = -a_length * 0.5f + inset; u <= a_length * 0.5f - inset + 1e-4f; u += 0.05f) {
 		for (float v = -a_width * 0.5f + inset; v <= a_width * 0.5f - inset + 1e-4f; v += 0.05f) {
 			const float px = fx * u - fy * v, py = fy * u + fx * v;
@@ -186,6 +187,184 @@ static void CheckLayout(float a_length, float a_width, float a_angleDeg)
 	}
 }
 
+// A saloon's shape for VehiclePieces: 4.7 m long, 1.8 m wide (greenhouse 1.4 m), bonnet 0.95 m,
+// roof 1.45 m, boot 1.0 m.
+static VehicleShape Saloon()
+{
+	VehicleShape s;
+	s.bottom = 0.0f;
+	s.top = 1.45f;
+	s.tail = -2.35f;
+	s.nose = 2.35f;
+	s.halfWidth = 0.9f;
+	s.cabinHalfWidth = 0.7f;
+	s.slices = kShapeSlices;
+	for (int i = 0; i < s.slices; ++i) {
+		const float y = s.tail + (static_cast<float>(i) + 0.5f) * s.SliceLength();
+		float       t = 0.95f;  // bonnet
+		if (y < -1.4f) {
+			t = 1.0f;  // boot
+		} else if (y < -0.9f) {
+			t = 1.0f + (y + 1.4f) / 0.5f * 0.45f;  // rear window
+		} else if (y < 0.4f) {
+			t = 1.45f;  // roof
+		} else if (y < 1.1f) {
+			t = 1.45f - (y - 0.4f) / 0.7f * 0.5f;  // windscreen
+		}
+		s.tops[i] = t;
+	}
+	return s;
+}
+
+// The first of a_count boxes (world x/y centre, half side, from 0 up to a_tops) the segment
+// a_o -> a_t enters (Minecraft's pick: the nearest box along the ray), or -1.
+static int FirstBoxHit(const float a_o[3], const float a_t[3], const float* a_cx, const float* a_cy, const float* a_half, const float* a_tops, int a_count)
+{
+	int   best = -1;
+	float bestT = 2.0f;
+	for (int i = 0; i < a_count; ++i) {
+		const float lo[3] = { a_cx[i] - a_half[i], a_cy[i] - a_half[i], 0.0f }, hi[3] = { a_cx[i] + a_half[i], a_cy[i] + a_half[i], a_tops[i] };
+		float       t0 = 0.0f, t1 = 1.0f;
+		bool        hit = true;
+		for (int k = 0; k < 3 && hit; ++k) {
+			const float d = a_t[k] - a_o[k];
+			if (std::fabs(d) < 1e-9f) {
+				hit = a_o[k] >= lo[k] && a_o[k] <= hi[k];
+				continue;
+			}
+			float ta = (lo[k] - a_o[k]) / d, tb = (hi[k] - a_o[k]) / d;
+			if (ta > tb) {
+				std::swap(ta, tb);
+			}
+			t0 = std::max(t0, ta);
+			t1 = std::min(t1, tb);
+			hit = t0 <= t1;
+		}
+		if (hit && t0 < bestT) {
+			bestT = t0;
+			best = i;
+		}
+	}
+	return best;
+}
+
+static void CheckPieces(const VehicleShape& a_s, float a_angleDeg)
+{
+	const float a = a_angleDeg * 3.14159265f / 180.0f;
+	const float fx = std::cos(a), fy = std::sin(a);  // the vehicle's axis, world x/y
+	const float e = std::fabs(fx) + std::fabs(fy);
+	const auto  l = VehiclePieces(a_s, e);
+	CHECK(l.count <= proto::kActorVehicleSegments && l.bodyCount < l.count);  // a body row and a cabin row
+	float       cx[proto::kActorVehicleSegments], cy[proto::kActorVehicleSegments], half[proto::kActorVehicleSegments];
+	const float mid = a_s.Middle();
+	for (std::uint32_t i = 0; i < l.count; ++i) {
+		cx[i] = fx * (mid + l.offset[i]) + fy * (a_s.centreX + l.side[i]);
+		cy[i] = fy * (mid + l.offset[i]) - fx * (a_s.centreX + l.side[i]);
+		half[i] = l.size[i] * 0.5f;
+	}
+	// No box reaches above the bonnet or the boot (the body row: nowhere over the body; the cabin
+	// row's mean may stand a little proud of the windscreen's slope), and none sticks out of the body
+	// by more than the slack, seen from above (the cabin row: of the greenhouse).
+	bool under = true, inside = true;
+	for (std::uint32_t i = 0; i < l.count; ++i) {
+		for (float u = -half[i]; u <= half[i] + 1e-4f; u += half[i] / 8.0f) {
+			for (float v = -half[i]; v <= half[i] + 1e-4f; v += half[i] / 8.0f) {
+				const float px = cx[i] + u, py = cy[i] + v;
+				const float along = px * fx + py * fy, across = -px * fy + py * fx;
+				const float hw = i < l.bodyCount ? a_s.halfWidth + l.slack : a_s.cabinHalfWidth + 0.13f;
+				inside = inside && along <= a_s.nose + l.slack + 1e-3f && along >= a_s.tail - l.slack - 1e-3f && std::fabs(across) <= hw + 1e-3f;
+				if (along > 1.1f || along < -1.4f || i < l.bodyCount) {
+					const float top = ShapeTop(a_s, along - 0.06f, along + 0.06f, TopOf::kHighest, 0.0f);
+					under = under && (top <= 0.0f || l.height[i] <= top + 0.06f);
+				}
+			}
+		}
+	}
+	CHECK(under);
+	CHECK(inside);
+	// The roof's middle and the bonnet are covered (hits on them land): some box there reaches 1.3 m, 0.9 m.
+	auto coveredTo = [&](float a_along, float a_across, float a_z) {
+		const float px = fx * a_along + fy * a_across, py = fy * a_along - fx * a_across;
+		for (std::uint32_t i = 0; i < l.count; ++i) {
+			if (std::fabs(px - cx[i]) <= half[i] && std::fabs(py - cy[i]) <= half[i] && l.height[i] >= a_z) {
+				return true;
+			}
+		}
+		return false;
+	};
+	CHECK(coveredTo(-0.25f, 0.0f, 1.3f));
+	CHECK(coveredTo(1.6f, 0.0f, 0.9f) && coveredTo(1.6f, 0.5f, 0.9f));
+	// A cop in cover beside the front wheel, the player 1.5 m off the other side: aimed over the
+	// bonnet at the cop's chest (1.25 m) or a crouching cop's head (1.05 m), Minecraft's pick doesn't
+	// stop at the car. Aimed at the door below the window, it does.
+	auto world = [&](float a_along, float a_across, float a_z, float* a_out) {
+		a_out[0] = fx * a_along + fy * a_across;
+		a_out[1] = fy * a_along - fx * a_across;
+		a_out[2] = a_z;
+	};
+	float eye[3], chest[3], head[3], door[3];
+	world(1.5f, -2.4f, 1.62f, eye);
+	world(1.5f, 1.3f, 1.25f, chest);
+	world(1.5f, 1.3f, 1.05f, head);
+	world(-0.2f, 0.0f, 0.7f, door);
+	const int n = static_cast<int>(l.count);
+	CHECK(FirstBoxHit(eye, chest, cx, cy, half, l.height, n) < 0);
+	CHECK(FirstBoxHit(eye, head, cx, cy, half, l.height, n) < 0);
+	CHECK(FirstBoxHit(eye, door, cx, cy, half, l.height, n) >= 0);
+	if (!under || !inside) {
+		std::fprintf(stderr, "  pieces at %.0f deg: %u boxes (%u body), under %d, inside %d\n", a_angleDeg, l.count, l.bodyCount, under, inside);
+	}
+}
+
+static void TestVehicleShapes()
+{
+	const VehicleShape s = Saloon();
+	CHECK(Near(ShapeTop(s, 1.5f, 2.0f, TopOf::kLowest, -1.0f), 0.95f) && Near(ShapeTop(s, -0.5f, 0.2f, TopOf::kHighest, -1.0f), 1.45f));
+	CHECK(ShapeTop(s, 3.0f, 4.0f, TopOf::kLowest, -1.0f) == -1.0f);  // past the nose
+	// Along an axis: five body boxes about as tall as the bonnet and the boot, then the cabin row at
+	// the roof's height.
+	const auto l = VehiclePieces(s, 1.0f);
+	CHECK(l.bodyCount == 5 && l.count > 5);
+	CHECK(Near(l.height[0], 0.95f) && Near(l.height[l.bodyCount - 1], 1.0f));
+	for (std::uint32_t i = 0; i < l.bodyCount; ++i) {
+		CHECK(l.height[i] <= 1.1f && l.height[i] >= 0.95f - 1e-4f);
+	}
+	float tallest = 0.0f;
+	for (std::uint32_t i = l.bodyCount; i < l.count; ++i) {
+		tallest = std::max(tallest, l.height[i]);
+		CHECK(l.size[i] <= 1.4f + 1e-3f);
+	}
+	CHECK(tallest > 1.3f);
+	for (float angle = 0.0f; angle <= 90.0f; angle += 7.5f) {
+		CheckPieces(s, angle);
+	}
+	// A long coupe (as measured in game: a Buccaneer), whose middle body box lies wholly under the
+	// cabin: the cabin row still covers the roof.
+	VehicleShape c = s;
+	c.tail = -2.9f;
+	c.nose = 3.0f;
+	c.top = 1.25f;
+	static constexpr float kCoupe[8] = { 0.70f, 0.81f, 1.22f, 1.25f, 1.24f, 0.89f, 0.89f, 0.82f };
+	for (int i = 0; i < c.slices; ++i) {
+		c.tops[i] = kCoupe[i * 8 / c.slices];
+	}
+	const auto lc = VehiclePieces(c, 1.0f);
+	float      roof = 0.0f;
+	for (std::uint32_t i = lc.bodyCount; i < lc.count; ++i) {
+		roof = std::max(roof, lc.height[i]);
+	}
+	CHECK(lc.count > lc.bodyCount && roof > 1.2f);
+	CHECK(lc.height[0] <= 0.82f + 1e-4f && lc.height[1] <= 0.89f + 1e-4f);  // the bonnet stays low
+	// Guessed from a model box: a car gets the saloon profile, mirrors off; anything else stays a box.
+	const float        lo[3] = { -1.0f, -2.5f, -0.6f }, hi[3] = { 1.0f, 2.5f, 0.9f };
+	const VehicleShape g = GuessShape(lo, hi, true);
+	CHECK(Near(g.halfWidth, 0.92f) && g.cabinHalfWidth > 0.6f && g.tops[0] < g.tops[kShapeSlices / 2] && g.tops[kShapeSlices - 1] < g.tops[kShapeSlices / 2]);
+	CHECK(Near(g.tops[kShapeSlices / 2], 0.9f) && Near(g.tops[kShapeSlices - 1], -0.6f + 1.5f * 0.66f, 1e-3f));
+	const VehicleShape b = GuessShape(lo, hi, false);
+	const auto         lb = VehiclePieces(b, 1.0f);
+	CHECK(b.cabinHalfWidth == 0.0f && lb.count == lb.bodyCount && Near(lb.height[0], 1.5f));
+}
+
 static void TestVehicles()
 {
 	std::uint32_t h = 0, piece = 0;
@@ -197,16 +376,16 @@ static void TestVehicles()
 	CHECK(VehicleActorId(0, 0) != 0);
 	CHECK(proto::kActorVehicleSegments == 16);
 
-	// A saloon (4.8 x 1.9 m) along an axis: 4 boxes 2.3 m wide (0.2 m slack each side), the end ones
+	// A saloon (4.8 x 1.9 m) along an axis: 4 boxes 2.0 m wide (5 cm slack each side), the end ones
 	// centred 1.45 m from the middle, front first.
 	auto l = VehicleSegments(4.8f, 1.9f, 1.0f);
-	CHECK(l.count == 4 && Near(l.offset[0], 1.45f) && Near(l.offset[3], -1.45f) && Near(l.boxWidth, 2.3f));
-	// The same car at 45 degrees: smaller boxes (1.63 m), more of them.
+	CHECK(l.count == 4 && Near(l.offset[0], 1.45f) && Near(l.offset[3], -1.45f) && Near(l.boxWidth, 2.0f));
+	// The same car at 45 degrees: smaller boxes (1.41 m), more of them, and the corners.
 	l = VehicleSegments(4.8f, 1.9f, std::sqrt(2.0f));
-	CHECK(l.count == 5 + 4 && Near(l.boxWidth, 2.3f / std::sqrt(2.0f), 1e-3f) && Near(l.side[5], -0.5f) && Near(l.offset[5], 1.95f));
+	CHECK(l.count == 7 + 4 && Near(l.boxWidth, 2.0f / std::sqrt(2.0f), 1e-3f) && Near(l.side[7], -0.5f) && Near(l.offset[7], 1.95f));
 	// Something square: one box.
 	l = VehicleSegments(2.0f, 2.0f, 1.0f);
-	CHECK(l.count == 1 && Near(l.offset[0], 0.0f) && Near(l.boxWidth, 2.4f));
+	CHECK(l.count == 1 && Near(l.offset[0], 0.0f) && Near(l.boxWidth, 2.1f));
 	// Degenerate dimensions still give something sane; a long one is capped at 16 boxes.
 	l = VehicleSegments(0.0f, 0.0f, 1.0f);
 	CHECK(l.count == 1 && l.boxWidth >= 0.5f);
@@ -399,6 +578,11 @@ static void TestVitals()
 	CHECK(yawOf(HurtDirectionFlags(5.0f, 0.0f)) == 270);   // east: +x, yaw -90 = 270
 	CHECK(yawOf(HurtDirectionFlags(-5.0f, 0.0f)) == 90);   // west
 	CHECK(HurtDirectionFlags(0.0f, 0.0f) == 0);
+	CHECK(HurtSourceYaw(HurtDirectionFlags(5.0f, 0.0f)) == 270 && HurtSourceYaw(0) == -1);
+	// The shield covers the half in front: looking north (MC yaw 180), an attacker north-east (225) is
+	// covered, one due east (270) or south (0) isn't; across the 0/360 seam too.
+	CHECK(ShieldCovers(180.0f, 225.0f) && !ShieldCovers(180.0f, 270.0f) && !ShieldCovers(180.0f, 0.0f));
+	CHECK(ShieldCovers(-10.0f, 350.0f) && ShieldCovers(350.0f, 20.0f) && !ShieldCovers(-90.0f, 90.0f));
 	// The pacer keeps the direction of the biggest hit.
 	HurtPacer p;
 	p.Add(proto::kHurtProjectile, 10.0f, 7, HurtDirectionFlags(0.0f, 5.0f));
@@ -457,6 +641,7 @@ int main()
 	TestKnockback();
 	TestKnockbackChain();
 	TestVehicles();
+	TestVehicleShapes();
 	TestCarStrikes();
 	TestCrimes();
 	TestVitals();

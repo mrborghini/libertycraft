@@ -360,6 +360,7 @@ namespace
 		in.ragdoll = true;
 		auto r = Frames(logic, in, 3.0f);  // tumbling, far past kExitSettle
 		CHECK(r.last.hostDrives && r.last.why == Why::kVehicle && r.resyncs == 0);
+		CHECK(r.last.padLocked);  // GTA animates him: the player's input stays out of GTA
 		CHECK(std::strstr(r.last.blocker, "until Niko stands"));
 		in.ragdoll = false;  // getting up: not ragdolled any more, not upright yet either
 		r = Frames(logic, in, 1.0f);
@@ -368,7 +369,7 @@ namespace
 		r = Frames(logic, in, Logic::kUprightSettle - 0.1f);
 		CHECK(r.last.hostDrives && r.resyncs == 0);
 		r = Frames(logic, in, 0.2f);
-		CHECK(!r.last.hostDrives && r.resyncs == 1 && !logic.recovering());
+		CHECK(!r.last.hostDrives && r.resyncs == 1 && !logic.recovering() && !r.last.padLocked);
 		// An upright moment in the middle of a tumble doesn't count: it has to last.
 		Logic l2(true);
 		in = OnFoot(false);
@@ -391,6 +392,7 @@ namespace
 		in.knockdowns = 1;
 		auto out = logic.Step(in);
 		CHECK(out.hostDrives && out.why == Why::kRagdoll && std::strstr(out.blocker, "knocked over"));
+		CHECK(out.padLocked);
 		in.knockdowns = 0;
 		in.puppeting = false;
 		in.ragdoll = true;
@@ -420,7 +422,17 @@ namespace
 		in = OnFoot(false);
 		in.knockdowns = 1;
 		out = l4.Step(in);
-		CHECK(out.why == Why::kNikoMode && !l4.recovering());
+		CHECK(out.why == Why::kNikoMode && !l4.recovering() && !out.padLocked);
+		// In a vehicle (and getting in) GTA gets the player's real input.
+		Logic l5(true);
+		in = OnFoot(false);
+		in.inCar = true;
+		out = l5.Step(in);
+		CHECK(out.hostDrives && !out.padLocked);
+		in.inCar = false;
+		in.gettingIn = true;
+		out = l5.Step(in);
+		CHECK(out.hostDrives && !out.padLocked);
 	}
 }
 

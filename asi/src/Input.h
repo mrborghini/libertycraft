@@ -30,7 +30,8 @@ namespace lc::Input
 	// GTA's phone is out (taken out by the player, or a call): from the game's own flag, updated by
 	// Tick. Safe from any thread.
 	bool PhoneOut();
-	// processPadEvent: while puppeting, zero every control except the pause menu's.
+	// processPadEvent: while puppeting (or Niko gets back up, Game::Shared::padLocked), zero every
+	// control except the pause menu's and the phone's.
 	void Pad(CPad* a_pad);
 	// Mouse-look counts accumulated since the last call (raw mouse units).
 	void ConsumeLook(float& a_dx, float& a_dy);

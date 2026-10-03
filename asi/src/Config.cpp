@@ -253,6 +253,7 @@ namespace lc
 		if (auto v = get("debugknockbackvariant")) debugKnockbackVariant = std::atoi(v->c_str());
 		if (auto v = get("debugtestcar")) debugTestCar = std::atoi(v->c_str());
 		if (auto v = get("debugtestcarmodel")) debugTestCarModel = *v;
+		if (auto v = get("debugcarcover")) debugCarCover = ToBool(*v, debugCarCover);
 		if (auto v = get("gtacrimes")) gtaCrimes = ToBool(*v, gtaCrimes);
 		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
 		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
@@ -278,6 +279,7 @@ namespace lc
 		if (auto v = get("debugbailout")) debugBailOut = ToBool(*v, debugBailOut);
 		if (auto v = get("debugrunover")) debugRunOver = ToBool(*v, debugRunOver);
 		if (auto v = get("debugcutscene")) debugCutscene = *v;
+		if (auto v = get("debuggiveweapon")) debugGiveWeapon = std::atoi(v->c_str());
 		if (auto v = get("minecraftbody")) minecraftBody = ToBool(*v, minecraftBody);
 		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
 		if (auto v = get("minecraftbodyvehicles")) minecraftBodyVehicles = ToBool(*v, minecraftBodyVehicles);

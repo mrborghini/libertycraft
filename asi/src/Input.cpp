@@ -83,6 +83,25 @@ namespace lc::Input
 			return a_dik == 0x1C || a_dik == 0x9C || a_dik == 0x0E || digit;  // Enter, keypad Enter, Backspace, 0 to 9
 		}
 
+		// The pad's axis controls: they rest at 128 (measured in game: the pad's values with nothing
+		// pressed), the buttons at 0.
+		bool IsAxisControl(int a_control)
+		{
+			switch (a_control) {
+			case INPUT_MOVE_LEFT: case INPUT_MOVE_RIGHT: case INPUT_MOVE_UP: case INPUT_MOVE_DOWN:
+			case INPUT_LOOK_LEFT: case INPUT_LOOK_RIGHT: case INPUT_LOOK_UP: case INPUT_LOOK_DOWN:
+			case INPUT_SNIPER_ZOOM_IN: case INPUT_SNIPER_ZOOM_OUT: case INPUT_SNIPER_ZOOM_IN_ALTERNATE: case INPUT_SNIPER_ZOOM_OUT_ALTERNATE:
+			case INPUT_VEH_MOVE_LEFT: case INPUT_VEH_MOVE_RIGHT: case INPUT_VEH_MOVE_UP: case INPUT_VEH_MOVE_DOWN:
+			case INPUT_VEH_GUN_LEFT: case INPUT_VEH_GUN_RIGHT: case INPUT_VEH_GUN_UP: case INPUT_VEH_GUN_DOWN:
+			case INPUT_FRONTEND_AXIS_X: case INPUT_FRONTEND_AXIS_Y: case INPUT_FRONTEND_RIGHT_AXIS_X: case INPUT_FRONTEND_RIGHT_AXIS_Y:
+			case INPUT_MOUSE_UD: case INPUT_MOUSE_LR: case INPUT_MOVE_KEY_STUNTJUMP: case INPUT_FRONTEND_AXIS_UD: case INPUT_FRONTEND_AXIS_LR:
+			case INPUT_FE_MOUSE_UD: case INPUT_FE_MOUSE_LR: case INPUT_VEH_MOVE_LEFT_2: case INPUT_VEH_MOVE_RIGHT_2:
+				return true;
+			default:
+				return false;
+			}
+		}
+
 		// The pad controls GTA's phone reads, kept while puppet mode zeroes the pad. Measured in game
 		// (DebugPhone): Up feeds PHONE_TAKE_OUT, FRONTEND_UP and KB_UP; the other arrows FRONTEND_ and
 		// KB_ DOWN/LEFT/RIGHT; Enter FRONTEND_ACCEPT and KB_PHONE_ACCEPT; Backspace FRONTEND_CANCEL and
@@ -881,7 +900,10 @@ namespace lc::Input
 			return;  // only the local player's pad
 		}
 		HostDrive::Pad(a_pad);  // GTA's enter/exit controls while a vehicle action presses them
-		if (!st.puppeting.load(std::memory_order_relaxed) || st.gtaMenuOpen.load(std::memory_order_relaxed)) {
+		// Puppeting, or GTA animating Niko back onto his feet (after a vehicle or a knockdown: no
+		// aiming or firing his gun meanwhile, HostDrive's padLocked): the player's input isn't GTA's.
+		const bool locked = st.puppeting.load(std::memory_order_relaxed) || st.padLocked.load(std::memory_order_relaxed);
+		if (!locked || st.gtaMenuOpen.load(std::memory_order_relaxed)) {
 			return;
 		}
 		// GTA reads keyboard and mouse through DirectInput into CPad, so swallowing window messages
@@ -904,8 +926,10 @@ namespace lc::Input
 			if (phone && IsPhoneControl(i, out)) {
 				continue;
 			}
-			a_pad->m_aValues[i].m_nCurrentValue = 0;
-			a_pad->m_aValues[i].m_nLastValue = 0;
+			// Axes rest at 128 (0 is a full push: a ped with player control on walked off at 1.8 m/s).
+			const std::uint8_t rest = IsAxisControl(i) ? 128 : 0;
+			a_pad->m_aValues[i].m_nCurrentValue = rest;
+			a_pad->m_aValues[i].m_nLastValue = rest;
 		}
 		counters.padZeroed.fetch_add(1, std::memory_order_relaxed);
 	}

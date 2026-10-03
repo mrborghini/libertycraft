@@ -220,6 +220,8 @@ public final class Proto {
 	public static final int MC_DEAD = 1 << 5;
 	public static final int MC_SWIMMING = 1 << 6;
 	public static final int MC_FLYING = 1 << 7;
+	/** LibertyCraft: the player's shield is up and blocking (kMcBlocking). */
+	public static final int MC_BLOCKING = 1 << 8;
 
 	// Overlay
 	public static final long OC_STATE = 0x00;
