@@ -7,7 +7,8 @@ break; GTA IV owns the camera and the picture, and draws the blocks inside Liber
 This is a port of the idea (and most of the Minecraft-side code) of
 [SkyCraft](https://github.com/chasmlol/SkyCraft) by chasm, which does the same for Skyrim.
 
-> **Status: early development.** Nothing is playable yet. See [Milestones](#milestones).
+> **Status: early development.** Minecraft already drives Niko in game (movement, look, input);
+> blocks, HUD and proper collision are being built. See [Milestones](#milestones).
 
 ## How it works
 
@@ -73,12 +74,12 @@ directly with `PROTON_LOG=1`, without touching Steam's launch options.
 
 ## Milestones
 
-- [ ] **M0** — repo, scripted downgrade, hello-world plugin loads in-game
-- [ ] **M1** — Fabric mod runs on Linux against the Python stand-in host
-- [ ] **M2** — Niko moves with Minecraft physics; mouse look; keyboard forwarded
-- [ ] **M3** — blocks and the Minecraft HUD rendered inside Liberty City
-- [ ] **M4** — real collision with buildings, stairs, water
-- [ ] **M5** — explosions, peds as mobs' targets, lights, polish
+- [x] **M0** — repo, scripted downgrade (`tools/install.sh`), plugin loads in-game under Proton
+- [x] **M1** — Fabric mod runs on Linux; Minecraft links to GTA IV through `/dev/shm`
+- [x] **M2** — Niko moves with Minecraft physics; mouse look; keyboard forwarded (tested in game)
+- [ ] **M3** — blocks and the Minecraft HUD rendered inside Liberty City *(in progress)*
+- [ ] **M4** — real collision with buildings, stairs, interiors, water *(in progress; v1 treats roofs as ground, so expect invisible walls)*
+- [ ] **M5** — combat with peds, Minecraft explosions as GTA explosions, GTA damage hurts the Minecraft player *(in progress)*
 
 ## Licenses
 
