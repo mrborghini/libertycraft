@@ -46,6 +46,15 @@ public final class HostDrive {
 	public static final int FLAG_DRIVES = 1;
 	public static final int FLAG_IN_VEHICLE = 2;
 	private static final String CONFIG_KEY = "vehicleMount";
+	private static final String SHOW_MOUNT_KEY = "showVehicleMount";
+	// The mount still exists in Minecraft (the player sits on it), it's just not drawn in GTA IV,
+	// so the rider looks like they sit in the car's seat. Read by the client's scene exporter.
+	private static volatile boolean showVehicleMount = false;
+
+	/** Whether GTA IV should draw the mount the player rides while GTA IV drives a vehicle. */
+	public static boolean showVehicleMount() {
+		return showVehicleMount;
+	}
 	// Reports come every client tick; this long without one means GTA IV (or the client) is gone.
 	private static final int STALE_TICKS = 40;
 
@@ -308,17 +317,26 @@ public final class HostDrive {
 				}
 			}
 			String value = props.getProperty(CONFIG_KEY);
-			if (value == null) {
+			String show = props.getProperty(SHOW_MOUNT_KEY);
+			if (value == null || show == null) {
 				List<String> lines = Files.exists(file) ? new ArrayList<>(Files.readAllLines(file)) : new ArrayList<>(List.of("# LibertyCraft"));
-				lines.add("# What you sit on while GTA IV drives a vehicle: boat, horse, minecart or none.");
-				lines.add(CONFIG_KEY + "=boat");
+				if (value == null) {
+					lines.add("# What you sit on while GTA IV drives a vehicle: boat, horse, minecart or none.");
+					lines.add(CONFIG_KEY + "=boat");
+				}
+				if (show == null) {
+					lines.add("# Draw that mount in GTA IV (false: you appear to sit in the car's seat).");
+					lines.add(SHOW_MOUNT_KEY + "=false");
+				}
 				Files.createDirectories(file.getParent());
 				Files.write(file, lines);
 			}
 			mountType = MountType.parse(value, MountType.BOAT);
+			showVehicleMount = Boolean.parseBoolean(show == null ? "false" : show.trim());
 		} catch (IOException e) {
 			LibertyCraft.LOG.warn("[LibertyCraft] couldn't read {}", file, e);
 		}
-		LibertyCraft.LOG.info("[LibertyCraft] vehicle mount: {} ({} in {})", mountType.name().toLowerCase(Locale.ROOT), CONFIG_KEY, file.getFileName());
+		LibertyCraft.LOG.info("[LibertyCraft] vehicle mount: {} ({} in {}), drawn in GTA IV: {}", mountType.name().toLowerCase(Locale.ROOT), CONFIG_KEY,
+			file.getFileName(), showVehicleMount);
 	}
 }

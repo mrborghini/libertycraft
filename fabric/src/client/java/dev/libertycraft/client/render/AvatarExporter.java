@@ -12,6 +12,8 @@ import dev.libertycraft.client.mixin.TextureManagerAccessor;
 import dev.libertycraft.combat.HostActorEntity;
 import dev.libertycraft.link.Proto;
 import dev.libertycraft.link.Link;
+import dev.libertycraft.client.HostDriveClient;
+import dev.libertycraft.world.HostDrive;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -295,8 +297,10 @@ final class AvatarExporter implements SubmitNodeCollector {
 		CameraRenderState cameraState = minecraft.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
 		PoseStack pose = new PoseStack();
 		int entities = 0;
+		// The mount the player rides while GTA IV drives a car is hidden unless showVehicleMount=true.
+		Entity hiddenMount = HostDriveClient.riding(player) && !HostDrive.showVehicleMount() ? player.getVehicle() : null;
 		for (Entity e : level.entitiesForRendering()) {
-			if (e == player || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof HostActorEntity
+			if (e == player || e == hiddenMount || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof HostActorEntity
 				|| e.distanceToSqr(cam) > SCENE_RANGE * SCENE_RANGE || entities >= SCENE_MAX_ENTITIES) {
 				continue;
 			}
