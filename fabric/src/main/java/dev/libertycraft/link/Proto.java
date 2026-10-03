@@ -49,6 +49,9 @@ public final class Proto {
 	public static final int HURT_OTHER = 3;
 	public static final int HURT_BLOCKED_IN_HOST = 1;
 	public static final int HURT_POWER_ATTACK = 2;
+	/** LibertyCraft: bits 16 to 24 hold the MC yaw (degrees) from the player toward what hurt it (kHurtHasDirection). */
+	public static final int HURT_HAS_DIRECTION = 1 << 2;
+	public static final int HURT_DIRECTION_SHIFT = 16;
 
 	// Actor table (relative to OFF_ACTOR_TABLE)
 	public static final int MAX_ACTORS = 256;
@@ -203,6 +206,11 @@ public final class Proto {
 	public static final long MS_TICK_MS = 0xB8;
 	public static final long MS_CAMERA_MODE = 0xC0;
 	public static final long MS_CAMERA_DISTANCE = 0xC4;
+	/** LibertyCraft, in McState's padding: health * 100 | max health * 100 << 16 (see kMcVitalsValid). */
+	public static final long MS_VITALS_HEALTH = 0x4C;
+	/** LibertyCraft, in McState's padding: armour points | absorption << 8 | MC_VITALS_VALID. */
+	public static final long MS_VITALS_ARMOUR = 0xBC;
+	public static final int MC_VITALS_VALID = 1 << 31;
 
 	public static final int MC_IN_WORLD = 1;
 	public static final int MC_SCREEN_OPEN = 1 << 1;

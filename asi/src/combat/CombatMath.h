@@ -493,6 +493,55 @@ namespace lc::combat
 		return std::clamp(1.0f - (a_distance - a_radius) / (fadeEnd - a_radius), 0.0f, 1.0f);
 	}
 
+	// ---- where a hurt came from (proto::kHurtHasDirection) -----------------------------------------
+	// The HurtFlags for a hit that came from GTA direction (a_dx, a_dy) (from the player toward the
+	// source): the MC yaw of that direction in bits 16 to 24. 0 if there is no direction.
+	inline std::uint32_t HurtDirectionFlags(float a_dx, float a_dy)
+	{
+		if (!(a_dx * a_dx + a_dy * a_dy > 1e-6f)) {
+			return 0;
+		}
+		// MC (x, z) = GTA (x, -y); MC yaw faces (-sin yaw, cos yaw).
+		const float yaw = std::atan2(-a_dx, -a_dy) * 180.0f / 3.14159265358979f;
+		const int   deg = (static_cast<int>(std::lround(yaw)) % 360 + 360) % 360;
+		return proto::kHurtHasDirection | (static_cast<std::uint32_t>(deg) << proto::kHurtDirectionShift);
+	}
+
+	// ---- Minecraft's vitals on GTA's HUD (proto::kMcVitalsValid) --------------------------------------
+	struct McVitals
+	{
+		bool  valid = false;
+		float health = 0.0f, maxHealth = 0.0f, absorption = 0.0f;
+		int   armour = 0;
+	};
+
+	inline McVitals DecodeVitals(std::uint32_t a_healthWord, std::uint32_t a_armourWord)
+	{
+		McVitals v;
+		v.valid = (a_armourWord & proto::kMcVitalsValid) != 0 && (a_healthWord >> 16) != 0;
+		if (v.valid) {
+			v.health = static_cast<float>(a_healthWord & 0xFFFFu) / 100.0f;
+			v.maxHealth = static_cast<float>(a_healthWord >> 16) / 100.0f;
+			v.armour = static_cast<int>(a_armourWord & 0xFFu);
+			v.absorption = static_cast<float>((a_armourWord >> 8) & 0xFFu);
+		}
+		return v;
+	}
+
+	// The health GTA IV's HUD is shown for the puppeted player (whose real health stays at the buffer):
+	// with the max health it divides by at 200, the arcs read (health - 100) / 100, so Minecraft's
+	// health fraction a_fraction is 100 + 100 x a_fraction (100: dead, empty).
+	inline float HudHealth(float a_fraction)
+	{
+		return 100.0f + 100.0f * std::clamp(a_fraction, 0.0f, 1.0f);
+	}
+
+	// GTA armour (0 to a_maxArmour) for a_points of Minecraft armour (0 to 20, a full diamond set).
+	inline int MirroredArmour(int a_points, int a_maxArmour)
+	{
+		return std::clamp(static_cast<int>(std::lround(static_cast<double>(std::clamp(a_points, 0, 20)) * a_maxArmour / 20.0)), 0, std::max(a_maxArmour, 0));
+	}
+
 	// ---- pacing GTA damage for Minecraft --------------------------------------------------------
 	// Minecraft ignores damage for 10 ticks (0.5 s) after a hurt unless it's bigger than that hurt,
 	// so GTA's rapid hits (a burst of fire, a fire's per-frame damage) would mostly be lost. The
@@ -509,11 +558,12 @@ namespace lc::combat
 			float           damage = 0.0f;  // GTA health points
 			proto::HurtKind kind = proto::kHurtOther;
 			std::uint32_t   attacker = 0;
+			std::uint32_t   flags = 0;  // proto::HurtFlags of the biggest hit (its direction)
 			std::uint32_t   hits = 0;
 			float           biggest = 0.0f;
 		};
 
-		void Add(proto::HurtKind a_kind, float a_damage, std::uint32_t a_attacker)
+		void Add(proto::HurtKind a_kind, float a_damage, std::uint32_t a_attacker, std::uint32_t a_flags = 0)
 		{
 			if (!(a_damage > 0.0f)) {
 				return;
@@ -524,6 +574,7 @@ namespace lc::combat
 				pending_.biggest = a_damage;
 				pending_.kind = a_kind;
 				pending_.attacker = a_attacker ? a_attacker : pending_.attacker;
+				pending_.flags = a_flags;
 			} else if (!pending_.attacker) {
 				pending_.attacker = a_attacker;
 			}

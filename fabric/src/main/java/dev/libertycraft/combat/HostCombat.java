@@ -261,23 +261,66 @@ public final class HostCombat {
 		if (attacker != null && attacker.distanceToSqr(player) > 24.0 * 24.0) {
 			attacker = null; // a guest's own NPC with the same form id as one of the host's
 		}
-		DamageSources sources = level.damageSources();
-		DamageSource source = switch (kind) {
-			case Proto.HURT_MELEE -> attacker != null ? sources.mobAttack(attacker) : sources.generic();
-			case Proto.HURT_PROJECTILE -> attacker != null ? sources.mobProjectile(attacker, attacker) : sources.generic();
-			case Proto.HURT_MAGIC -> attacker != null ? sources.indirectMagic(attacker, attacker) : sources.magic();
-			default -> sources.generic();
-		};
+		DamageSource source = hurtSource(level, player, kind, attacker, flags);
 		float damage = hostDamage / HOST_TO_MC_DAMAGE;
 		float healthBefore = player.getHealth();
+		boolean blocking = player.isBlocking();
 		// (SkyCraft fed Skyrim's Block / Armor skills from here; GTA IV has no skill XP.)
 		boolean hurt = player.hurtServer(level, source, damage);
-		LibertyCraft.LOG.info("[LibertyCraft] GTA IV hit the player for {} ({} Minecraft): health {} -> {}{}", hostDamage, damage, healthBefore, player.getHealth(),
-			hurt ? "" : " (blocked/immune)");
+		LibertyCraft.LOG.info("[LibertyCraft] GTA IV hit the player for {} ({} Minecraft, {}{}): health {} -> {}{}", hostDamage, damage, source.typeHolder().getRegisteredName(),
+			source.getSourcePosition() != null ? String.format(" from %.0f deg off the look", lookAngle(player, source.getSourcePosition())) : "", healthBefore,
+			player.getHealth(), hurt ? "" : blocking ? " (blocked by the shield)" : " (immune)");
 		if (hurt && attacker != null && (flags & Proto.HURT_POWER_ATTACK) != 0 && !player.isBlocking()) {
 			// Power attacks shove harder, like a sprint hit does in Minecraft.
 			player.knockback(0.5, attacker.getX() - player.getX(), attacker.getZ() - player.getZ(), source, damage);
 		}
+	}
+
+	/** LibertyCraft's damage type for GTA IV's hits that have no stand-in to blame (data/libertycraft/damage_type/gta.json). */
+	public static final ResourceKey<net.minecraft.world.damagesource.DamageType> GTA_DAMAGE =
+		ResourceKey.create(Registries.DAMAGE_TYPE, Identifier.fromNamespaceAndPath(LibertyCraft.MOD_ID, "gta"));
+
+	/**
+	 * The damage source for a GTA IV hit, so that armour and shields work the Minecraft way. With the
+	 * attacker's stand-in: a mob's blow (close by, or a melee weapon) or a mob's projectile (a gun),
+	 * placed where the attacker stands. Without one: LibertyCraft's own damage type (armour applies;
+	 * vanilla's generic damage bypasses armour and shields), placed in the direction the host says the
+	 * hit came from (Proto.HURT_HAS_DIRECTION), so a raised shield blocks it from in front and not from
+	 * behind; with no direction, nothing can block it.
+	 */
+	static DamageSource hurtSource(ServerLevel level, ServerPlayer player, int kind, @Nullable HostActorEntity attacker, int flags) {
+		DamageSources sources = level.damageSources();
+		if (attacker != null) {
+			return switch (kind) {
+				case Proto.HURT_MELEE -> sources.mobAttack(attacker);
+				case Proto.HURT_PROJECTILE -> sources.mobProjectile(attacker, attacker);
+				case Proto.HURT_MAGIC -> sources.indirectMagic(attacker, attacker);
+				// Explosions, cars, a weapon GTA IV wouldn't name: a blow when the attacker is at arm's length.
+				default -> attacker.distanceToSqr(player) <= 3.5 * 3.5 ? sources.mobAttack(attacker) : sources.mobProjectile(attacker, attacker);
+			};
+		}
+		if (kind == Proto.HURT_MAGIC) {
+			return sources.magic();
+		}
+		var type = level.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).get(GTA_DAMAGE);
+		if (type.isEmpty()) {
+			return sources.generic(); // (the mod's data pack isn't loaded: vanilla's)
+		}
+		net.minecraft.world.phys.Vec3 from = hurtDirection(flags);
+		return from != null ? new DamageSource(type.get(), player.position().add(from.scale(3.0))) : new DamageSource(type.get());
+	}
+
+	static net.minecraft.world.phys.@Nullable Vec3 hurtDirection(int flags) {
+		double[] d = ProxyPush.hurtDirection(flags);
+		return d == null ? null : new net.minecraft.world.phys.Vec3(d[0], 0.0, d[1]);
+	}
+
+	/** Degrees between where the player looks and the direction to {@code at} (horizontal). */
+	static double lookAngle(ServerPlayer player, net.minecraft.world.phys.Vec3 at) {
+		net.minecraft.world.phys.Vec3 look = net.minecraft.world.phys.Vec3.directionFromRotation(0.0F, player.getYHeadRot());
+		net.minecraft.world.phys.Vec3 to = at.subtract(player.position());
+		to = new net.minecraft.world.phys.Vec3(to.x, 0.0, to.z);
+		return to.lengthSqr() < 1.0E-8 ? 0.0 : Math.toDegrees(Math.acos(Math.clamp(look.dot(to.normalize()), -1.0, 1.0)));
 	}
 
 	/** Form id of the GTA IV actor behind a damage source, or 0. */

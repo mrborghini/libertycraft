@@ -323,6 +323,16 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		public float tickMs = 50.0F;
 		public int cameraMode;
 		public float cameraDistance;
+		/** The player's vitals, packed as Proto.MS_VITALS_* describe (0: none). */
+		public int vitalsHealth, vitalsArmour;
+
+		/** Packs the player's health, max health, armour points and absorption into the vitals words. */
+		public void setVitals(float health, float maxHealth, int armour, float absorption) {
+			int h = Math.clamp(Math.round(health * 100.0F), 0, 0xFFFF);
+			int m = Math.clamp(Math.round(maxHealth * 100.0F), 0, 0xFFFF);
+			this.vitalsHealth = h | (m << 16);
+			this.vitalsArmour = Math.clamp(armour, 0, 0xFF) | (Math.clamp(Math.round(absorption), 0, 0xFF) << 8) | MC_VITALS_VALID;
+		}
 	}
 
 	public static void writeMcState(McState st) {
@@ -367,6 +377,8 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		s.set(JAVA_FLOAT, b + MS_TICK_MS, st.tickMs);
 		s.set(JAVA_INT, b + MS_CAMERA_MODE, st.cameraMode);
 		s.set(JAVA_FLOAT, b + MS_CAMERA_DISTANCE, st.cameraDistance);
+		s.set(JAVA_INT, b + MS_VITALS_HEALTH, st.vitalsHealth);
+		s.set(JAVA_INT, b + MS_VITALS_ARMOUR, st.vitalsArmour);
 		INT.setRelease(s, b + MS_SEQ, seq + 2);
 	}
 

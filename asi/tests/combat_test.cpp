@@ -377,6 +377,36 @@ static void TestCrimes()
 	CHECK(fight > 800 && fight < 1200);  // about one civilian in three
 }
 
+static void TestVitals()
+{
+	// Java packs health * 100 | max * 100 << 16 and armour | absorption << 8 | valid.
+	const std::uint32_t hw = 1450u | (2000u << 16), aw = 12u | (4u << 8) | proto::kMcVitalsValid;
+	auto v = DecodeVitals(hw, aw);
+	CHECK(v.valid && Near(v.health, 14.5f) && Near(v.maxHealth, 20.0f) && v.armour == 12 && Near(v.absorption, 4.0f));
+	CHECK(!DecodeVitals(0, 0).valid);
+	CHECK(!DecodeVitals(hw, 12u).valid);  // a writer that doesn't know the convention
+	// The HUD arc (health - 100) / (200 - 100) shows Minecraft's fraction.
+	auto arc = [](float a_health) { return (a_health - 100.0f) / 100.0f; };
+	CHECK(Near(arc(HudHealth(1.0f)), 1.0f) && Near(arc(HudHealth(0.5f)), 0.5f) && Near(arc(HudHealth(0.725f)), 0.725f, 1e-4f));
+	CHECK(Near(HudHealth(0.0f), 100.0f));   // dead: empty
+	CHECK(Near(HudHealth(-1.0f), 100.0f));
+	CHECK(Near(HudHealth(2.0f), 200.0f));   // never above full
+	CHECK(MirroredArmour(0, 100) == 0 && MirroredArmour(20, 100) == 100 && MirroredArmour(7, 100) == 35 && MirroredArmour(30, 100) == 100);
+	// Hurt directions: an attacker due north of the player (GTA +y) is MC yaw 180 (facing -z).
+	auto yawOf = [](std::uint32_t a_flags) { return static_cast<int>((a_flags >> proto::kHurtDirectionShift) & 0x1FFu); };
+	CHECK((HurtDirectionFlags(0.0f, 5.0f) & proto::kHurtHasDirection) && yawOf(HurtDirectionFlags(0.0f, 5.0f)) == 180);
+	CHECK(yawOf(HurtDirectionFlags(0.0f, -5.0f)) == 0);    // south: +z, yaw 0
+	CHECK(yawOf(HurtDirectionFlags(5.0f, 0.0f)) == 270);   // east: +x, yaw -90 = 270
+	CHECK(yawOf(HurtDirectionFlags(-5.0f, 0.0f)) == 90);   // west
+	CHECK(HurtDirectionFlags(0.0f, 0.0f) == 0);
+	// The pacer keeps the direction of the biggest hit.
+	HurtPacer p;
+	p.Add(proto::kHurtProjectile, 10.0f, 7, HurtDirectionFlags(0.0f, 5.0f));
+	p.Add(proto::kHurtMelee, 30.0f, 9, HurtDirectionFlags(5.0f, 0.0f));
+	HurtPacer::Batch b;
+	CHECK(p.Tick(0.0f, b) && b.attacker == 9 && yawOf(b.flags) == 270);
+}
+
 static void TestPacer()
 {
 	HurtPacer p;
@@ -429,6 +459,7 @@ int main()
 	TestVehicles();
 	TestCarStrikes();
 	TestCrimes();
+	TestVitals();
 	TestBlockPush();
 	TestPacer();
 	if (failures) {

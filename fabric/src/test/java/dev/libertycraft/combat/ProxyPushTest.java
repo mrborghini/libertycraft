@@ -79,6 +79,22 @@ class ProxyPushTest {
 	}
 
 	@Test
+	void hurtDirections() {
+		// combat_test.cpp: an attacker due north of the player (GTA +y) is MC yaw 180, i.e. toward -z.
+		double[] north = ProxyPush.hurtDirection(Proto.HURT_HAS_DIRECTION | (180 << Proto.HURT_DIRECTION_SHIFT));
+		assertEquals(0.0, north[0], 1.0E-9);
+		assertEquals(-1.0, north[1], 1.0E-9);
+		double[] east = ProxyPush.hurtDirection(Proto.HURT_HAS_DIRECTION | (270 << Proto.HURT_DIRECTION_SHIFT));
+		assertEquals(1.0, east[0], 1.0E-9);
+		assertEquals(0.0, east[1], 1.0E-9);
+		assertNull(ProxyPush.hurtDirection(180 << Proto.HURT_DIRECTION_SHIFT)); // no flag, no direction
+		assertEquals(1 << 2, Proto.HURT_HAS_DIRECTION);
+		assertEquals(16, Proto.HURT_DIRECTION_SHIFT);
+		assertEquals(0x4C, Proto.MS_VITALS_HEALTH);
+		assertEquals(0xBC, Proto.MS_VITALS_ARMOUR);
+	}
+
+	@Test
 	void vehicleIdsMatchTheProtocol() {
 		// libertycraft_protocol.h: kActorVehicle = 1 << 4, formId = 'V' tag | handle << 4 | piece.
 		assertEquals(1 << 4, Proto.ACTOR_VEHICLE);

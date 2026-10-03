@@ -156,7 +156,7 @@ namespace libertycraft::proto
 		float         fovDeg;         // effective vertical FOV (includes sprint / fluid modifiers)
 		float         bobPhase;       // MC walk-bob phase (interpolated walk distance); 0 if bobbing is off
 		float         bobAmount;      // MC walk-bob amplitude
-		std::uint32_t pad4C;
+		std::uint32_t pad4C;          // LibertyCraft: the player's health (kMcVitalsValid)
 		double        eyeX, eyeY, eyeZ;  // MC camera position (interpolated, includes sneak eye lerp)
 
 		// Raw 20 Hz physics ticks, so Skyrim can interpolate on its own frame clock exactly like
@@ -168,7 +168,7 @@ namespace libertycraft::proto
 		float        walkDistO, walkDist;    // walk-bob phase inputs
 		float        bobO, bob;              // walk-bob amplitude inputs
 		float        tickMs;                 // milliseconds per tick (50 unless /tick rate changed)
-		std::uint32_t tickPad;
+		std::uint32_t tickPad;               // LibertyCraft: the player's armour (kMcVitalsValid)
 
 		// Minecraft's camera (F5): 0 first person, 1 third person behind, 2 third person in front
 		// (looking back at the player). cameraDistance is how far Minecraft's camera sits from
@@ -177,6 +177,12 @@ namespace libertycraft::proto
 		float         cameraDistance;
 	};
 	static_assert(sizeof(McState) == 0xC8);
+
+	// LibertyCraft addition (padding only; the layout and kVersion stay SkyCraft's): the Minecraft
+	// player's vitals, for GTA IV's own HUD. pad4C = health * 100 (bits 0-15) | max health * 100
+	// (bits 16-31), each rounded and clamped to 65535; tickPad = armour points (bits 0-7) | absorption,
+	// rounded (bits 8-15) | kMcVitalsValid. A writer that doesn't know this leaves both 0: not valid.
+	inline constexpr std::uint32_t kMcVitalsValid = 1u << 31;
 	static_assert(sizeof(McState) <= 0x100);
 
 	// ---- overlay triple buffer @0x300 --------------------------------------------------------
@@ -234,7 +240,12 @@ namespace libertycraft::proto
 	{
 		kHurtBlockedInSkyrim = 1u << 0,
 		kHurtPowerAttack = 1u << 1,
+		// LibertyCraft addition: bits 16 to 24 hold the MC yaw (whole degrees, 0 to 359) of the direction
+		// from the player toward what hurt it (an attacker, a car, a blast), so Minecraft can place the
+		// damage source there: a shield blocks what comes from in front.
+		kHurtHasDirection = 1u << 2,
 	};
+	inline constexpr std::uint32_t kHurtDirectionShift = 16;
 
 	// ---- actor table @0x12000 (Skyrim -> MC, seqlock) ----------------------------------------
 	// Nearby Skyrim actors, mirrored in Minecraft as invisible hittable proxy entities.

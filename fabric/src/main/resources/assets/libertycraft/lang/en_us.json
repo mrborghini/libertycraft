@@ -1,3 +1,5 @@
 {
-  "entity.libertycraft.host_actor": "GTA IV NPC"
+  "entity.libertycraft.host_actor": "GTA IV NPC",
+  "death.attack.libertycraft.gta": "%1$s was killed in Liberty City",
+  "death.attack.libertycraft.gta.player": "%1$s was killed in Liberty City while fighting %2$s"
 }

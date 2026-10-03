@@ -73,6 +73,8 @@ namespace lc::Combat
 			unsigned base = 0, baseArmour = 0;          // refilled to these every frame
 			unsigned lastHealth = 0, lastArmour = 0;    // what the refill actually left (losses count from here)
 			bool     capReset = false;                  // the game put CPlayerInfo's max health back (logged once)
+			float    hudHealth = 200.0f;                // the health GTA's HUD is shown (Minecraft's, CombatMath.h HudHealth)
+			bool     mirroring = false;                 // GTA's HUD shows Minecraft's health and armour (logged once)
 		} owned;
 		HurtPacer pacer;
 		float     blastProof = 0.0f;  // > 0: the player is explosion-proof (our own blast) this many seconds
@@ -1129,6 +1131,173 @@ namespace lc::Combat
 			}
 		}
 
+		// ---- GTA's HUD health arc --------------------------------------------------------------------------
+		// GTA IV 1.0.8.0's radar ring is health then armour: 0x8705B0 draws the health arc for
+		// (health - 100) / max(max health - 100, 100) (blinking red at a quarter or less) and a red flash
+		// for what was just lost, which 0x86B000 works out by comparing the health with the last one;
+		// the armour arc (0x86C740) starts where the health arc ends, so it reads the health and the max
+		// health too. The puppeted player's real health stays at the buffer, so these five places are
+		// pointed at values of ours: the three health reads (`mov ecx, ped; call [vtable+0xFC]`) call a
+		// stub that gives hudHealth for hudPed (anyone else: the real call), and the two max health reads
+		// (`movss xmmN, [ped+0xA94]`) read hudMaxHealth. With the max at 200 and the health at
+		// 100 + 100 x Minecraft's fraction, GTA's own HUD code shows Minecraft's health as it would its
+		// own (the flash, the blink, the armour arc's place). Every site's bytes are checked first;
+		// anything unexpected and nothing is patched (the arcs stay GTA's).
+		// (Read by GTA's HUD code on its own thread: volatile, each a single aligned 32-bit store.)
+		volatile float       hudMaxHealth = 200.0f;
+		volatile float       hudHealth = 200.0f;
+		const CPed* volatile hudPed = nullptr;  // the ped whose health the HUD is shown as hudHealth (none: GTA's)
+		int                  hudPatch = -1;  // -1 not tried, 0 not patched, 1 patched
+
+		struct HudSite
+		{
+			std::uint32_t va;           // GTA IV 1.0.8.0 address
+			std::uint8_t  expect[16];   // the bytes there
+			std::size_t   size;
+			int           kind;         // 0: movss xmmN, [reg+0xA94] -> [hudMaxHealth]; 1: mov ecx, reg; call stub
+			std::uint8_t  regByte;      // kind 0: the ModRM for [disp32] with that xmm; kind 1: the `mov ecx, reg` ModRM
+			std::size_t   keepFrom;     // kind 1: these bytes of the site are kept, after `mov ecx, reg` and before the call
+			std::size_t   keepSize;
+		};
+
+		void PatchHudHealth()
+		{
+			if (hudPatch >= 0) {
+				return;
+			}
+			hudPatch = 0;
+			if (plugin::gameVer != plugin::VERSION_1080) {
+				LC_LOG("HUD: not GTA IV 1.0.8.0: the health arc stays GTA's");
+				return;
+			}
+			static constexpr HudSite kSites[] = {
+				// 0x8705B0 (the arc): mov edx, [ebp]; mov eax, [edx+0xFC]; mov ecx, ebp; call eax
+				{ 0x87068E, { 0x8B, 0x55, 0x00, 0x8B, 0x82, 0xFC, 0x00, 0x00, 0x00, 0x8B, 0xCD, 0xFF, 0xD0 }, 13, 1, 0xCD, 0, 0 },
+				// 0x8705B0: movss xmm1, [ebp+0xA94]; subss xmm1, xmm2
+				{ 0x8706C0, { 0xF3, 0x0F, 0x10, 0x8D, 0x94, 0x0A, 0x00, 0x00, 0xF3, 0x0F, 0x5C, 0xCA }, 12, 0, 0x0D, 0, 0 },
+				// 0x86B000 (what was lost): mov eax, [esi]; mov edx, [eax+0xFC]; mov ecx, esi; call edx
+				{ 0x86B019, { 0x8B, 0x06, 0x8B, 0x90, 0xFC, 0x00, 0x00, 0x00, 0x8B, 0xCE, 0xFF, 0xD2 }, 12, 1, 0xCE, 0, 0 },
+				// 0x86C740 (the armour arc's start): mov edx, [eax+0xFC]; mov ecx, edi; movss [esp+0x14], xmm0; call edx
+				{ 0x86C869, { 0x8B, 0x90, 0xFC, 0x00, 0x00, 0x00, 0x8B, 0xCF, 0xF3, 0x0F, 0x11, 0x44, 0x24, 0x14, 0xFF, 0xD2 }, 16, 1, 0xCF, 8, 6 },
+				// 0x86C740: movss xmm2, [edi+0xA94]; subss xmm2, xmm1
+				{ 0x86C8A5, { 0xF3, 0x0F, 0x10, 0x97, 0x94, 0x0A, 0x00, 0x00, 0xF3, 0x0F, 0x5C, 0xD1 }, 12, 0, 0x15, 0, 0 },
+			};
+			const auto at = [](std::uint32_t a_va) { return reinterpret_cast<std::uint8_t*>(AddressSetter::gBaseAddress) + (a_va - 0x400000); };
+			for (const HudSite& site : kSites) {
+				if (std::memcmp(at(site.va), site.expect, site.size) != 0) {
+					LC_LOG("HUD: the code at %08X isn't as expected: the health arc stays GTA's", site.va);
+					return;
+				}
+			}
+			// cmp ecx, [hudPed]; jne real; fld dword [hudHealth]; ret; real: mov eax, [ecx]; jmp [eax+0xFC]
+			auto* stub = static_cast<std::uint8_t*>(::VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+			if (!stub) {
+				LC_LOG("HUD: can't allocate the health stub (error %lu): the health arc stays GTA's", ::GetLastError());
+				return;
+			}
+			const auto abs32 = [](const volatile void* a_p) { return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(a_p)); };
+			std::uint8_t code[] = { 0x3B, 0x0D, 0, 0, 0, 0, 0x75, 0x07, 0xD9, 0x05, 0, 0, 0, 0, 0xC3, 0x8B, 0x01, 0xFF, 0xA0, 0xFC, 0x00, 0x00, 0x00 };
+			const std::uint32_t pedAddr = abs32(&hudPed), healthAddr = abs32(&hudHealth), maxAddr = abs32(&hudMaxHealth);
+			std::memcpy(code + 2, &pedAddr, 4);
+			std::memcpy(code + 10, &healthAddr, 4);
+			std::memcpy(stub, code, sizeof(code));
+			::FlushInstructionCache(::GetCurrentProcess(), stub, sizeof(code));
+			for (const HudSite& site : kSites) {
+				std::uint8_t* p = at(site.va);
+				std::uint8_t  patch[16];
+				std::memset(patch, 0x90, sizeof(patch));
+				if (site.kind == 0) {
+					// movss xmmN, [hudMaxHealth]; the subss after it stays
+					patch[0] = 0xF3, patch[1] = 0x0F, patch[2] = 0x10, patch[3] = site.regByte;
+					std::memcpy(patch + 4, &maxAddr, 4);
+					std::memcpy(patch + 8, site.expect + 8, site.size - 8);
+				} else {
+					// mov ecx, reg; [what the site keeps]; call stub; nops
+					patch[0] = 0x8B, patch[1] = site.regByte;
+					std::memcpy(patch + 2, site.expect + site.keepFrom, site.keepSize);
+					const std::size_t   callAt = 2 + site.keepSize;
+					const std::uint32_t rel = abs32(stub) - (abs32(p) + static_cast<std::uint32_t>(callAt) + 5u);
+					patch[callAt] = 0xE8;
+					std::memcpy(patch + callAt + 1, &rel, 4);
+				}
+				DWORD old = 0;
+				if (!::VirtualProtect(p, site.size, PAGE_EXECUTE_READWRITE, &old)) {
+					LC_LOG("HUD: can't patch %08X (VirtualProtect error %lu)", site.va, ::GetLastError());
+					continue;
+				}
+				std::memcpy(p, patch, site.size);
+				::VirtualProtect(p, site.size, old, &old);
+				::FlushInstructionCache(::GetCurrentProcess(), p, site.size);
+			}
+			hudPatch = 1;
+			LC_LOG("HUD: the health and armour arcs read the player's health from LibertyCraft (Minecraft's in Minecraft mode)");
+		}
+
+		// Every frame: what the HUD is shown.
+		void UpdateHudHealth(const Frame& a_frame)
+		{
+			PatchHudHealth();
+			CPed* p = a_frame.exists ? FindPlayerPed() : nullptr;
+			if (owned.engaged && owned.mirroring && p) {
+				hudHealth = owned.hudHealth;
+				hudMaxHealth = 200.0f;
+				hudPed = p;
+			} else {
+				hudPed = nullptr;
+				if (p) {
+					hudMaxHealth = p->m_fMaxHealth;
+				}
+			}
+		}
+
+		// GTA's HUD shows the puppeted player Minecraft's health and armour. The real health stays at the
+		// buffer (a GTA hit never kills: it goes to Minecraft); the HUD is shown Minecraft's health
+		// instead (CombatMath.h HudHealth; PatchHudHealth, UpdateHudHealth). The armour is Minecraft's
+		// armour, scaled, for real (GTA's damage takes it first, and the refill puts it back: it counts as
+		// damage like health). Without Minecraft's vitals (an older mod, the test stand-in) the HUD shows
+		// the buffer: full arcs.
+		void MirrorVitals(const Frame& a_frame, unsigned& a_targetArmour)
+		{
+			const McVitals v = a_frame.mc ? DecodeVitals(a_frame.mc->pad4C, a_frame.mc->tickPad) : McVitals{};
+			a_targetArmour = owned.baseArmour;
+			if (!v.valid) {
+				owned.mirroring = false;
+				return;
+			}
+			owned.hudHealth = HudHealth(v.maxHealth > 0.0f ? v.health / v.maxHealth : 1.0f);
+			unsigned maxArmour = 0;
+			S::GET_PLAYER_MAX_ARMOUR(owned.player, &maxArmour);
+			a_targetArmour = static_cast<unsigned>(MirroredArmour(v.armour, static_cast<int>(maxArmour ? maxArmour : 100u)));
+			if (!owned.mirroring) {
+				owned.mirroring = true;
+				LC_LOG("GTA's HUD shows Minecraft's vitals: health %.1f of %.1f -> %.1f of 200 (real health held at %u), armour %d -> %u of %u", v.health,
+					v.maxHealth, owned.hudHealth, owned.base, v.armour, a_targetArmour, maxArmour);
+			}
+			if (Cfg().diagnostics) {
+				LC_LOG_EVERY(2000, "HUD: Minecraft health %.1f of %.1f, armour %d -> the HUD's health %.1f of 200 (real %u, %s), armour %u", v.health,
+					v.maxHealth, v.armour, owned.hudHealth, owned.base, hudPatch == 1 ? "patched" : "NOT patched", a_targetArmour);
+			}
+		}
+
+		// The GTA weapon that last hurt a_ped. CPhysical's last-damage-weapon field holds garbage on
+		// 1.0.8.0 (0xCDCDCDCD in game), so when it isn't a weapon the game is asked, weapon by weapon.
+		int LastDamageWeapon(int a_ped, const CPed* a_p)
+		{
+			const int field = a_p ? a_p->m_nLastDamageWeapon : -1;
+			if (field >= 0 && field <= kWeaponAnyMelee) {
+				return field;
+			}
+			static constexpr int kProbe[] = { kWeaponExplosion, kWeaponRammedByCar, kWeaponRunOverByCar, kWeaponFall, kWeaponDrowning, kWeaponAnyMelee,
+				kWeaponPistol, 9, 10, 11, 12, 13, 14, 15, 16, kWeaponSniperM40A1, kWeaponRocketLauncher, kWeaponFlameThrower, kWeaponMinigun,
+				kWeaponUziDriveby, kWeaponGrenade, kWeaponMolotov, kWeaponRocket, kWeaponUnarmed, kWeaponBat, kWeaponPoolCue, kWeaponKnife };
+			for (const int w : kProbe) {
+				if (S::HAS_CHAR_BEEN_DAMAGED_BY_WEAPON(a_ped, static_cast<unsigned>(w))) {
+					return w;
+				}
+			}
+			return -1;
+		}
+
 		void Engage(int a_player, int a_ped)
 		{
 			owned = Owned{};
@@ -1185,8 +1354,9 @@ namespace lc::Combat
 				S::SET_CHAR_HEALTH(ped, owned.savedHealth);
 				unsigned armour = 0;
 				S::GET_CHAR_ARMOUR(ped, &armour);
-				if (armour < owned.savedArmour) {
-					S::ADD_ARMOUR_TO_CHAR(ped, owned.savedArmour - armour);
+				if (armour != owned.savedArmour) {
+					// (ADD_ARMOUR_TO_CHAR adds a signed amount and clamps: it also takes armour away.)
+					S::ADD_ARMOUR_TO_CHAR(ped, static_cast<unsigned>(static_cast<int>(owned.savedArmour) - static_cast<int>(armour)));
 				}
 			}
 			if (safetyInvincible && exists) {
@@ -1208,21 +1378,28 @@ namespace lc::Combat
 			const float deficit = Deficit(static_cast<float>(owned.lastHealth), static_cast<float>(health), static_cast<float>(owned.lastArmour), static_cast<float>(armour));
 			if (deficit > 0.0f) {
 				CPed*         p = FindPlayerPed();
-				const int     weapon = p ? p->m_nLastDamageWeapon : -1;
+				const int     weapon = LastDamageWeapon(a_frame.ped, p);
 				const auto    attacker = p ? HandleOfPedPointer(p->m_pLastDamageEntity) : 0u;
 				const auto    cls = ClassifyWeapon(weapon);
+				// Which way it came from (any entity: a ped, a car, whoever threw the grenade), for
+				// Minecraft's shield (proto::kHurtHasDirection).
+				std::uint32_t  hurtFlags = 0;
+				const CEntity* from = p ? p->m_pLastDamageEntity : nullptr;
+				if (from && from != p && from->m_pMatrix && p->m_pMatrix) {
+					hurtFlags = HurtDirectionFlags(from->m_pMatrix->pos.x - p->m_pMatrix->pos.x, from->m_pMatrix->pos.y - p->m_pMatrix->pos.y);
+				}
 				++counters.hurtFrames;
 				if (blastProof > 0.0f && (weapon == kWeaponExplosion || cls == HurtClass::kOther)) {
 					++counters.hurtDroppedBlast;  // our own (Minecraft's) explosion: Minecraft hurt its player itself
 				} else if (cls == HurtClass::kIgnore) {
 					++counters.hurtDroppedIgnored;
 				} else {
-					pacer.Add(HurtKindOf(cls), deficit, attacker ? ActorIdFromHandle(attacker) : 0u);
+					pacer.Add(HurtKindOf(cls), deficit, attacker ? ActorIdFromHandle(attacker) : 0u, hurtFlags);
 					NoteAttacker(attacker);
 				}
 				if (Cfg().diagnostics) {
-					LC_LOG("player lost %.0f (health %u/%u armour %u/%u), weapon %d, attacker %s%08X", deficit, health, owned.base, armour, owned.baseArmour,
-						weapon, attacker ? "ped " : "", attacker);
+					LC_LOG("player lost %.0f (health %u/%u armour %u/%u), weapon %d, attacker %s%08X%s", deficit, health, owned.base, armour, owned.lastArmour,
+						weapon, attacker ? "ped " : "", attacker, (hurtFlags & proto::kHurtHasDirection) ? ", from a direction" : "");
 				}
 				// One of GTA's explosions (not our own): it knocks the player over (HostDrive, RagdollOnVehicleHit),
 				// away from what blew up when that is known.
@@ -1240,13 +1417,16 @@ namespace lc::Combat
 				S::CLEAR_CHAR_LAST_DAMAGE_ENTITY(a_frame.ped);
 				S::CLEAR_CHAR_LAST_WEAPON_DAMAGE(a_frame.ped);
 			}
+			unsigned targetArmour = owned.baseArmour;
+			MirrorVitals(a_frame, targetArmour);
 			if (health != owned.base) {
 				RaiseHealthCap();
 				S::SET_CHAR_HEALTH(a_frame.ped, owned.base);
 				S::GET_CHAR_HEALTH(a_frame.ped, &health);
 			}
-			if (armour < owned.baseArmour) {
-				S::ADD_ARMOUR_TO_CHAR(a_frame.ped, owned.baseArmour - armour);
+			if (armour != targetArmour) {
+				// (A signed amount: it also takes armour away when Minecraft's armour comes off.)
+				S::ADD_ARMOUR_TO_CHAR(a_frame.ped, static_cast<unsigned>(static_cast<int>(targetArmour) - static_cast<int>(armour)));
 				S::GET_CHAR_ARMOUR(a_frame.ped, &armour);
 			}
 			owned.lastHealth = health;
@@ -1260,12 +1440,12 @@ namespace lc::Combat
 			HurtPacer::Batch batch;
 			if (pacer.Tick(a_frame.dt, batch)) {
 				const float mcDamage = McDamageFromGta(batch.damage, Cfg().playerDamageScale);
-				Game::ReportHurt(static_cast<std::uint16_t>(batch.kind), HostDamageForMc(mcDamage), batch.attacker, 0);
+				Game::ReportHurt(static_cast<std::uint16_t>(batch.kind), HostDamageForMc(mcDamage), batch.attacker, batch.flags);
 				++counters.hurtsSent;
 				counters.hurtGtaDamage += batch.damage;
-				LC_LOG("GTA IV hurt the player: %.0f GTA damage (%u hit%s, %s, attacker %08X) -> %.2f Minecraft damage", batch.damage, batch.hits,
+				LC_LOG("GTA IV hurt the player: %.0f GTA damage (%u hit%s, %s, attacker %08X, from yaw %d) -> %.2f Minecraft damage", batch.damage, batch.hits,
 					batch.hits == 1 ? "" : "s", batch.kind == proto::kHurtMelee ? "melee" : batch.kind == proto::kHurtProjectile ? "projectile" : "other",
-					batch.attacker, mcDamage);
+					batch.attacker, (batch.flags & proto::kHurtHasDirection) ? static_cast<int>((batch.flags >> proto::kHurtDirectionShift) & 0x1FFu) : -1, mcDamage);
 			}
 		}
 
@@ -1781,6 +1961,7 @@ namespace lc::Combat
 		if (owned.engaged) {
 			BridgePlayerDamage(a_frame);
 		}
+		UpdateHudHealth(a_frame);
 		UpdateKill(a_frame);
 		CheckShoves(a_frame.dt);
 		CheckSeats(a_frame.dt);

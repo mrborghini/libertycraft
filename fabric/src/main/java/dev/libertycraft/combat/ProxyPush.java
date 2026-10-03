@@ -1,5 +1,6 @@
 package dev.libertycraft.combat;
 
+import dev.libertycraft.link.Proto;
 import java.util.List;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
@@ -117,6 +118,18 @@ public final class ProxyPush {
 				e.needsSync = true;
 			}
 		}
+	}
+
+	/**
+	 * The horizontal unit direction {x, z} from the player toward what hurt it, from a kInHurt's flags
+	 * (Proto.HURT_HAS_DIRECTION: the MC yaw in bits 16 to 24), or null if they carry none.
+	 */
+	public static double @Nullable [] hurtDirection(int flags) {
+		if ((flags & Proto.HURT_HAS_DIRECTION) == 0) {
+			return null;
+		}
+		double yaw = Math.toRadians((flags >>> Proto.HURT_DIRECTION_SHIFT) & 0x1FF);
+		return new double[] { -Math.sin(yaw), Math.cos(yaw) };
 	}
 
 	/** Shortens a horizontal move to at most {@code max}. */

@@ -600,6 +600,8 @@ def main():
     ap.add_argument("--hit-heights", default="0.8,0.3", metavar="F,F",
                     help="--hit-kind vehicle: where the hits land (kEvHitPoint), as fractions of the piece's height, in turn "
                          "(default %(default)s: glass, then the door)")
+    ap.add_argument("--vitals", default="", metavar="H,MAX,ARMOUR",
+                    help="report Minecraft's health, max health and armour points in McState (GTA's HUD shows them)")
     ap.add_argument("--wall-ring", type=int, default=0, metavar="R",
                     help="a square ring of stone blocks R blocks out from the first teleport point (meshes + kRenSolids): "
                          "GTA IV's peds and vehicles should not get through it")
@@ -721,13 +723,19 @@ def main():
                 f = min(1.0, (now_qpc() - tick_qpc) / 500_000) if tick_qpc else 1.0
                 pos = tuple(p + (c - p) * f for p, c in zip(prev, cur))
                 in_world = MC_IN_WORLD | MC_ON_GROUND | (MC_SCREEN_OPEN if args.screen else 0)
+                # --vitals: Minecraft's health / max / armour in McState's padding (kMcVitalsValid).
+                vitals_health = vitals_armour = 0
+                if args.vitals:
+                    vh, vm, va = (float(x) for x in args.vitals.split(","))
+                    vitals_health = min(round(vh * 100), 0xFFFF) | (min(round(vm * 100), 0xFFFF) << 16)
+                    vitals_armour = (int(va) & 0xFF) | (1 << 31)
                 syaw, spitch = (sky[7], sky[8]) if sky else (0.0, 0.0)
                 eye = 1.62
                 bridge.frame += 1
                 bridge.write_mc((
-                    in_world, pos[0], pos[1], pos[2], syaw, spitch, eye, 0.5, ack, 2, bridge.frame, 70.0, walk, 0.0, 0,
+                    in_world, pos[0], pos[1], pos[2], syaw, spitch, eye, 0.5, ack, 2, bridge.frame, 70.0, walk, 0.0, vitals_health,
                     pos[0], pos[1] + eye, pos[2], tick_qpc, prev[0], prev[1], prev[2], cur[0], cur[1], cur[2],
-                    eye, eye, walk_o, walk, 0.0, 0.0, 50.0, 0, 1 if args.third_person else 0, 4.0 if args.third_person else 0.0))
+                    eye, eye, walk_o, walk, 0.0, 0.0, 50.0, vitals_armour, 1 if args.third_person else 0, 4.0 if args.third_person else 0.0))
 
             if origin and combat_t0 is None:
                 combat_t0 = t + args.combat_delay

@@ -413,6 +413,10 @@ public final class HostClient {
 			boolean bob = minecraft.options.bobView().get() && entityState.isPlayer;
 			mc.bobPhase = bob ? entityState.backwardsInterpolatedWalkDistance : 0.0F;
 			mc.bobAmount = bob ? entityState.bob : 0.0F;
+			// GTA IV's HUD shows these instead of its own health and armour while Minecraft drives.
+			mc.setVitals(player.getHealth(), player.getMaxHealth(), player.getArmorValue(), player.getAbsorptionAmount());
+		} else {
+			mc.vitalsHealth = mc.vitalsArmour = 0;
 		}
 		if (minecraft.gui.screen() != null) {
 			flags |= Proto.MC_SCREEN_OPEN;

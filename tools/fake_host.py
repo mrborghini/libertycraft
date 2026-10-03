@@ -4,13 +4,16 @@ Creates the shared bridge file, streams a flat floor + a staircase of collision,
 (punch an NPC, build, shoot, drop and pick up an item), prints Minecraft's reported player state,
 and saves the overlay frame to a PNG.
 
-    python3 tools/fake_host.py [--link PATH] [--drive | --npc] [seconds] [out.png] [atlas.png]
+    python3 tools/fake_host.py [--link PATH] [--drive | --npc | --shield] [seconds] [out.png] [atlas.png]
 
 --npc scripts Stream Q2's checks instead: a car (three vehicle pieces, kActorVehicle) and a ped stand
 next to the player; it punches the car and shoots it with the bow (one kEvHitActor per hit, on a vehicle
 id, the arrow flagged as a projectile), walks into the ped (its stand-in must stop the player), drives the
 car through the player (it must shove the player along), then lights the floor with flint and steel
 (the fire must land on the floor: kRenLights shows it). Prints a PASS/FAIL line per check.
+
+--shield scripts GTA IV's hits (kInHurt) against a raised shield: from in front (blocked) and from behind
+(hurts), with a direction only and from a ped's stand-in, and checks Minecraft's vitals in McState.
 
 --drive scripts "GTA IV drives the player" instead (kSkyHostDrives / kSkyInVehicle): Niko mode on
 foot (Minecraft follows a walking target), a vehicle (Minecraft rides its mount - boat, horse, ... per
@@ -180,8 +183,11 @@ class Link:
 
     def read_mc(self):
         raw = self.m[OFF_MC:OFF_MC + 0x68]
-        seq, flags, x, y, z, yaw, pitch, eye, sens, ack, gui, frame, fov, bph, bam, _, ex, ey, ez = struct.unpack("<IIdddffffIIQfffIddd", raw)
-        return dict(flags=flags, pos=(x, y, z), yaw=yaw, pitch=pitch, eye=eye, ack=ack, frame=frame)
+        seq, flags, x, y, z, yaw, pitch, eye, sens, ack, gui, frame, fov, bph, bam, vh, ex, ey, ez = struct.unpack("<IIdddffffIIQfffIddd", raw)
+        (va,) = struct.unpack_from("<I", self.m, OFF_MC + 0xBC)
+        # Minecraft's vitals (kMcVitalsValid): health * 100 | max * 100 << 16; armour | absorption << 8 | valid.
+        vitals = dict(health=(vh & 0xFFFF) / 100, max=(vh >> 16) / 100, armour=va & 0xFF, absorption=(va >> 8) & 0xFF) if va >> 31 else None
+        return dict(flags=flags, pos=(x, y, z), yaw=yaw, pitch=pitch, eye=eye, ack=ack, frame=frame, vitals=vitals)
 
     def push_input(self, typ, code, a=0, b=0, c=0):
         a, b, c = (v - (1 << 32) if v >= 1 << 31 else v for v in (a, b, c))
@@ -540,6 +546,76 @@ class NpcScenario:
         return False
 
 
+IN_HURT = 7
+HURT_MELEE, HURT_PROJECTILE, HURT_OTHER = 0, 1, 3
+HURT_HAS_DIRECTION, HURT_DIRECTION_SHIFT = 1 << 2, 16
+
+
+class ShieldScenario(NpcScenario):
+    """Stream Q2: GTA IV's hits (kInHurt) against a raised shield. The player faces +X (yaw -90) with a
+    shield in the off hand, held up; hits come from in front and from behind, with a direction only
+    (kHurtHasDirection) and from a ped's stand-in. In front must be blocked, behind must hurt; and
+    Minecraft's vitals (McState padding) must show up."""
+    PED = 0x4C000999
+
+    def __init__(self, spawn):
+        super().__init__(spawn)
+        self.pitch = 0.0
+        self.ped_x = None  # the attacking ped's x (None: no ped)
+
+    def write_actors(self, link):
+        recs = []
+        if self.ped_x is not None:
+            recs.append(struct.pack("<IIfffffffHH24s", self.PED, 1, self.ped_x, FLOOR_Y, self.spawn[2], 90.0, 0.6, 1.8, 1.0, 0, 0, b"Gangster"))
+        struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2 + 1)
+        struct.pack_into("<I", link.m, OFF_ACTORS + 4, len(recs))
+        if recs:
+            link.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64 * len(recs)] = b"".join(recs)
+        link.actor_seq += 1
+        struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2)
+
+    def hurt(self, link, t, at, name, kind, yaw=None, attacker=0):
+        if self.once(t, at, name):
+            flags = (HURT_HAS_DIRECTION | ((int(yaw) % 360) << HURT_DIRECTION_SHIFT)) if yaw is not None else 0
+            self.marks[name + "_h"] = None
+            link.push_input(IN_HURT, kind, 2000, attacker, flags)  # 20 host damage = 4 Minecraft damage
+
+    def step(self, link, t, mc, dt):
+        v = mc.get("vitals")
+        health = v["health"] if v else None
+        self.command(link, t, 0.3, "/item replace entity @s weapon.offhand with minecraft:shield")
+        if self.once(t, 3.0, "vitals"):
+            ok = v is not None and v["max"] == 20.0 and 0 < v["health"] <= 20.0
+            self.check("Minecraft's vitals in McState", ok, f"{v} (want health and max 20)")
+        if self.once(t, 3.2, "raise"):
+            link.push_input(2, 3, 1)  # hold the right button: the off-hand shield goes up
+        # (The marks below remember the health just before each hit.)
+        for name, at, kind, yaw, attacker, ped_x, want_blocked in (
+            ("front", 4.5, HURT_PROJECTILE, -90.0, 0, None, True),
+            ("behind", 6.0, HURT_PROJECTILE, 90.0, 0, None, False),
+            ("ped_front", 7.5, HURT_MELEE, None, self.PED, self.spawn[0] + 1.5, True),
+            ("ped_behind", 9.0, HURT_MELEE, None, self.PED, self.spawn[0] - 1.5, False),
+            ("no_direction", 10.5, HURT_OTHER, None, 0, None, False),
+        ):
+            if at - 0.6 <= t < at:
+                self.ped_x = ped_x
+            if self.once(t, at - 0.1, name + "_before"):
+                self.marks[name + "_hp"] = health
+            self.hurt(link, t, at, name, kind, yaw, attacker)
+            if self.once(t, at + 0.8, name + "_after"):
+                before, after = self.marks.get(name + "_hp"), health
+                blocked = before is not None and after is not None and after >= before - 0.01
+                hurt_ = before is not None and after is not None and after <= before - 1.0
+                self.check(f"hit {name.replace('_', ' ')}: {'blocked' if want_blocked else 'hurts'}", blocked if want_blocked else hurt_,
+                           f"health {before} -> {after}")
+        if self.once(t, 11.5, "lower"):
+            link.push_input(2, 3, 0)
+        if t >= 12.0:
+            print(f"shield summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
+            return True
+        return False
+
+
 def main():
     args = sys.argv[1:]
     path = BRIDGE
@@ -554,6 +630,10 @@ def main():
     npc = None
     if "--npc" in args:
         args.remove("--npc")
+        npc = True
+    shield = "--shield" in args
+    if shield:
+        args.remove("--shield")
         npc = True
     seconds = float(args[0]) if len(args) > 0 else 90
     out = args[1] if len(args) > 1 else "overlay.png"
@@ -575,7 +655,7 @@ def main():
     if drive:
         drive = DriveScenario(spawn, tseq)
     if npc:
-        npc = NpcScenario(spawn)
+        npc = ShieldScenario(spawn) if shield else NpcScenario(spawn)
     mc = link.read_mc()
     last_t = None
     while time.time() - start < seconds:
