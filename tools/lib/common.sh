@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/lib/common.sh - helpers shared by the LibertyCraft scripts. Source it, do not run it.
+# tools/lib/common.sh: helpers shared by the LibertyCraft scripts. Source it, do not run it.
 #
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 #

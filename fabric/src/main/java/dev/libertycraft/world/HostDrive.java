@@ -35,8 +35,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * GTA IV drives the player (Niko mode, a vehicle, a cutscene; SkyState kSkyHostDrives): the server
  * side. The player's client reports where GTA IV has them every tick (LcNet.Drive); meanwhile they
- * take no damage, and in a vehicle (kSkyInVehicle) they ride a mount - an oak boat unless
- * {@code vehicleMount} in config/libertycraft.properties says horse, minecart or none - that sits
+ * take no damage, and in a vehicle (kSkyInVehicle) they ride a mount (an oak boat unless
+ * {@code vehicleMount} in config/libertycraft.properties says horse, minecart or none) that sits
  * exactly where their seat is. The mount is invulnerable, weightless, passes through everything,
  * and goes when GTA IV lets go (or the reports stop). Server thread only.
  */

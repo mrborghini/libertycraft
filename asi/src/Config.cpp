@@ -18,13 +18,13 @@ namespace lc
 	namespace
 	{
 		constexpr const char* kDefaultIni =
-			"; LibertyCraft.ini -- see asi/README.md\n"
+			"; LibertyCraft.ini: see asi/README.md\n"
 			"[LibertyCraft]\n"
 			"; Minecraft drives Niko and the camera (0: only watch and log)\n"
 			"Puppet=1\n"
 			"; final | scripted\n"
 			"CameraMode=final\n"
-			"; vertical | horizontal43 -- how Minecraft's vertical FOV maps onto the game camera\n"
+			"; vertical | horizontal43: how Minecraft's vertical FOV maps onto the game camera\n"
 			"FovMode=vertical\n"
 			"; key that opens Minecraft's pause/options menu (a letter, digit or F1-F12)\n"
 			"MenuKey=O\n"
@@ -52,6 +52,8 @@ namespace lc
 			"RenderExposure=1.0\n"
 			"; Minecraft's HUD: auto (puppeting or a Minecraft screen open) | always | off\n"
 			"Overlay=auto\n"
+			"; keep GTA IV's own HUD and radar next to Minecraft's in Minecraft mode (GTA still hides them in cutscenes and menus)\n"
+			"GtaHud=1\n"
 			"; blocks lit by GTA IV's sun, ambient and fog (gta) or Minecraft's own light levels (minecraft)\n"
 			"RenderLighting=gta\n"
 			"; colour saturation of the GTA-lit blocks when GTA's tone mapping can't be read (else GTA's own)\n"
@@ -240,6 +242,7 @@ namespace lc
 		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
 		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
 		if (auto v = get("puppetplayercontrol")) puppetPlayerControl = ToBool(*v, puppetPlayerControl);
+		if (auto v = get("gtahud")) gtaHud = ToBool(*v, gtaHud);
 		if (auto v = get("puppetcollision")) puppetCollision = ToBool(*v, puppetCollision);
 		if (auto v = get("vehiclekey")) vehicleKey = *v;
 		if (auto v = get("togglekey")) toggleKey = *v;
@@ -288,7 +291,7 @@ namespace lc
 		if (debugTestCar != 0) {
 			LC_LOG("config: DebugTestCar=%d (%s)", debugTestCar, debugTestCarModel.c_str());
 		}
-		LC_LOG("config: GtaCrimes=%d PuppetPlayerControl=%d PuppetCollision=%d%s", gtaCrimes, puppetPlayerControl, puppetCollision,
+		LC_LOG("config: GtaHud=%d GtaCrimes=%d PuppetPlayerControl=%d PuppetCollision=%d%s", gtaHud, gtaCrimes, puppetPlayerControl, puppetCollision,
 			debugWanted > 0 ? " DebugWanted on" : "");
 		LC_LOG("config: VehicleKey=%s (dik 0x%02X) ToggleKey=%s (dik 0x%02X) HideNikoInVehicle=%d ToggleStartsInMinecraft=%d VehicleSeatDrop=%.2f VehicleEnterFallback=%s%s%s",
 			vehicleKey.c_str(), VehicleKeyDik(), toggleKey.c_str(), ToggleKeyDik(), hideNikoInVehicle, toggleStartsInMinecraft, vehicleSeatDrop,

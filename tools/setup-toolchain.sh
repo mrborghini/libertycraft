@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/setup-toolchain.sh - check the build tools and fetch the Windows SDK/CRT headers + libs.
+# tools/setup-toolchain.sh: check the build tools and fetch the Windows SDK/CRT headers + libs.
 #
 # LibertyCraft.asi is a 32-bit Windows DLL, cross-compiled on Linux with clang-cl + lld-link.
 # The MSVC CRT and Windows SDK it links against are "splatted" by xwin into <repo>/.tools/xwin

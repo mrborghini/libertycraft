@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/lib/gamefiles.sh - tracked, reversible changes to the GTA IV game directory.
+# tools/lib/gamefiles.sh: tracked, reversible changes to the GTA IV game directory.
 #
 # Every file we put into (or take out of) the game directory goes through install_file /
 # remove_file, which keep a manifest at <gamedir>/_libertycraft_backup/manifest.txt:

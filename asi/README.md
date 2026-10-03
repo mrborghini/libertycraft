@@ -188,6 +188,7 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `LogPerf` | `1` | one frame-time line a minute (10 s with Diagnostics) |
 | `FreezePed` | `1` | `FREEZE_CHAR_POSITION` while puppeting (0: zero the velocity every frame) |
 | `PuppetPlayerControl` | `1` | the player keeps GTA's player control while puppeted (its pad is zeroed, so GTA doesn't move him): without it GTA's peds and police take him for a cutscene player and stop fighting and chasing him |
+| `GtaHud` | `1` | keep GTA IV's HUD and radar next to Minecraft's HUD in Minecraft mode; GTA still hides them itself in cutscenes and menus (0: Minecraft's HUD only) |
 | `PuppetCollision` | `0` | not in the default ini: the puppeted ped keeps its collision (not needed for GTA's peds and police to fight him: with player control on, their shots and blows reach him either way) |
 | `RootToFeet` | `1.0` | metres from the ped root to its feet until measured |
 | `MeasureRootToFeet` | `1` | measure it in game |

@@ -507,7 +507,11 @@ namespace lc::Render
 				a_f.flags |= render::kFrameDrawWorld;
 			}
 			using OM = Config::OverlayMode;
-			if (alive && haveMc && !menu && !nikoMode && a_cfg.overlay != OM::kOff && (puppeting || screenOpen || a_cfg.overlay == OM::kAlways)) {
+			// Minecraft's HUD shows wherever GTA would show its own: while Minecraft drives, and while GTA
+			// drives the player in a car or while he gets back up; not in cutscenes, menus or Niko mode.
+			const bool hostShowsHud = st.hostDrives && !st.cutscene;
+			if (alive && haveMc && !menu && !nikoMode && !st.cutscene && a_cfg.overlay != OM::kOff &&
+				(puppeting || screenOpen || hostShowsHud || a_cfg.overlay == OM::kAlways)) {
 				a_f.flags |= render::kFrameDrawOverlay;
 			}
 			if (puppeting) {

@@ -33,6 +33,9 @@ namespace lc
 		// chasing him (Combat.h, GtaCrimes). Not in the default ini: the puppeted ped keeps its
 		// collision too (not needed for that: their shots and blows reach him either way).
 		bool puppetPlayerControl = true;
+		// Keep GTA IV's own HUD and radar while Minecraft drives the player (both HUDs at once);
+		// GTA still hides them itself where it normally does (cutscenes, menus, mission scripts).
+		bool gtaHud = true;
 		bool puppetCollision = false;
 		// Metres from the ped's reported position (its root) down to its feet, used until the
 		// plugin has measured it with GET_CHAR_HEIGHT_ABOVE_GROUND (0 = always use this value).

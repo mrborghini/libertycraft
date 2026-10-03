@@ -18,7 +18,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")  # /MT: no MSVCRT dependency, no
 
 # ---- IV-SDK: a patched copy of the header-only SDK -------------------------------------------
 # The submodule is GPL-3.0 and kept pristine. Two of its constructs don't compile with clang:
-#   * `*reinterpret_cast<T*>(nullptr)` (NewAddressSet.h) -- MSVC lets you reinterpret_cast a nullptr_t
+#   * `*reinterpret_cast<T*>(nullptr)` (NewAddressSet.h): MSVC lets you reinterpret_cast a nullptr_t
 # so at configure time the headers are copied into the build tree with those lines rewritten, and
 # that copy is what dllmain.cpp includes. Re-run CMake after updating the submodule.
 set(IVSDK_SRC "${CMAKE_CURRENT_SOURCE_DIR}/extern/iv-sdk/include")

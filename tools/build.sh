@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/build.sh - build LibertyCraft.asi (GTA IV plugin) and the Fabric mod into dist/.
+# tools/build.sh: build LibertyCraft.asi (GTA IV plugin) and the Fabric mod into dist/.
 #
 #   dist/plugins/LibertyCraft.asi (+ .ini/.pdb)   <- asi/   (clang-cl + xwin, see setup-toolchain.sh)
 #   dist/mods/libertycraft-<version>.jar          <- fabric/ (Gradle, Java 25)

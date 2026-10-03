@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# tools/install.sh - get GTA IV and Minecraft ready for LibertyCraft.
+# tools/install.sh: get GTA IV and Minecraft ready for LibertyCraft.
 #
 #  1. Downgrades the Steam Complete Edition (1.2.0.x) to 1.0.8.0, the version IV-SDK,
 #     ZolikaPatch and LibertyCraft.asi are written against. Same files and defaults as
 #     Gillian's GTA IV Downgrade Utility.
 #  2. Installs the ASI loader (Ultimate ASI Loader as xlive.dll), ZolikaPatch, FusionFix
-#     and - if built - LibertyCraft.asi. (Not XLivelessAddon: see step 4.)
+#     and, if built, LibertyCraft.asi. (Not XLivelessAddon: see step 4.)
 #  3. Creates/updates the "LibertyCraft" Prism Launcher instance (Minecraft 26.3 + Fabric).
 #
 # Everything it changes in the game folder is backed up and listed in
@@ -101,7 +101,7 @@ LWJGL_VERSION=3.4.3
 JVM_ARGS="--enable-native-access=ALL-UNNAMED -Dlibertycraft.startHidden=true"
 
 # ZolikaPatch options that FusionFix already provides (or that fight with it): the list the
-# downgrade utility switches off when FusionFix is selected, plus BikeFeetFix - FusionFix 5.x
+# downgrade utility switches off when FusionFix is selected, plus BikeFeetFix: FusionFix 5.x
 # ships the same patch (fixes.ixx) and patching it twice crashes 1.0.8.0 ~4 s after start
 # (verified by bisecting all 55 enabled options under Proton 11).
 ZOLIKA_OFF_FF=(BikeFeetFix BikePhoneAnimsFix BorderlessWindowed BuildingAlphaFix BuildingDynamicShadows
@@ -140,7 +140,7 @@ GAME_VER=$(pe_version "$GAME/GTAIV.exe")
 case $GAME_VER in
   1.2.*)   ok "GTAIV.exe $GAME_VER (Complete Edition)" ;;
   "$TARGET_VERSION") ok "GTAIV.exe $GAME_VER (already downgraded)" ;;
-  *)       warn "GTAIV.exe reports version $GAME_VER - unexpected, continuing anyway" ;;
+  *)       warn "GTAIV.exe reports version $GAME_VER: unexpected, continuing anyway" ;;
 esac
 [[ -w $GAME ]] || die "No write permission for $GAME"
 if gta_running; then

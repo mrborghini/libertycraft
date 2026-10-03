@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/dev/run-gta-with-log.sh - start GTA IV through Proton *directly* (not via the Steam
+# tools/dev/run-gta-with-log.sh: start GTA IV through Proton *directly* (not via the Steam
 # client) with PROTON_LOG=1, so a crash leaves a log without touching Steam's launch options.
 # Steam must be running (the game talks to it through steam_api.dll).
 #

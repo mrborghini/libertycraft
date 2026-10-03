@@ -353,8 +353,12 @@ namespace lc::Game
 			S::SET_CHAR_COLLISION(a_ped, Cfg().puppetCollision);
 			// Combat keeps the ped vulnerable (on a refilled health buffer) to forward GTA's damage.
 			S::SET_CHAR_INVINCIBLE(a_ped, !Combat::OwnsPlayerHealth());
-			S::DISPLAY_HUD(false);
-			S::DISPLAY_RADAR(false);
+			// GtaHud: leave GTA's HUD and radar alone, so both HUDs show and GTA hides its own where
+			// it normally does (cutscenes, menus, missions). Off: Minecraft's HUD only.
+			if (!Cfg().gtaHud) {
+				S::DISPLAY_HUD(false);
+				S::DISPLAY_RADAR(false);
+			}
 		}
 
 		void EnterPuppet(int a_player, int a_ped, const GtaVec& a_feet)

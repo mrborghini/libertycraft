@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/launch.sh - start Minecraft (hidden, via Prism) and then GTA IV (via Steam).
+# tools/launch.sh: start Minecraft (hidden, via Prism) and then GTA IV (via Steam).
 #
 # Minecraft goes first and GTA IV only starts once Minecraft has created and hidden its window:
 # a window appearing while GTA IV loads takes the focus, and GTA IV stops loading without it.

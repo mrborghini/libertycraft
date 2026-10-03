@@ -1005,6 +1005,7 @@ namespace lc::HostDrive
 		st.hostDrives = out.hostDrives;
 		st.inVehicle = out.inVehicle;
 		st.nikoMode = logic.mode() == drive::Mode::kNiko;
+		st.cutscene = out.hostDrives && out.why == drive::Why::kCutscene;
 		return r;
 	}
 
