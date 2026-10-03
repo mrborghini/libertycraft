@@ -6,11 +6,20 @@ in a world and on the ground: it acknowledges every teleport (SkyState.teleportS
 the host's position, optionally walks a slow circle around it, takes yaw/pitch from SkyState,
 stamps 20 Hz ticks like the real mod (tickQpc in 100 ns units of CLOCK_MONOTONIC_RAW) and beats
 its heartbeat. It prints every input event the host pushes and a summary of the collision it
-drains, and with --demo-section puts a block atlas and a few cubes at the player's feet into the
-render ring.
+drains, and with --demo-section puts a block atlas, a pillar and a tower of blocks next to the player,
+a selection outline with cracks, a dropped item and an entity (plus a body with --demo-avatar) into
+the render ring.
 
     python3 tools/fake_minecraft.py [--seconds N] [--circle R] [--no-ack] [--screen]
-                                    [--third-person] [--demo-section] [--link PATH] [-v]
+                                    [--third-person] [--demo-section [--demo-avatar]] [--link PATH] [-v]
+                                    [--actors] [--hit-nearest-actor DMG] [--explode-ahead [EVERY]]
+                                    [--die-after S] [--combat-delay S] [--combat-interval S]
+
+Combat (Stream X): --actors prints the host's ActorTable every 2 s; --hit-nearest-actor sends
+kEvHitActor (DMG Minecraft damage, sword, base knockback) to the living actor nearest the player
+every --combat-interval s; --explode-ahead sends a TNT kEvExplosion 6 blocks in front of the player
+(once, or every EVERY s); --die-after sends kEvPlayerDied. They start --combat-delay s after the
+first teleport acknowledgement.
 
 Byte layout: protocol/libertycraft_protocol.h (SkyCraft v11 layout). Stdlib only.
 """
@@ -32,6 +41,11 @@ OFF_MC = 0x200
 OFF_OVL = 0x300
 OFF_IN = 0x1000
 OFF_EVENTS = 0x17000
+OFF_ACTORS = 0x12000
+EV_ENTRIES = 512
+EV_HIT_ACTOR, EV_PLAYER_DIED, EV_EXPLOSION = 1, 2, 3
+ACTOR_FMT = "<II7fHH24s"  # formId, flags, x, y, z, yaw, width, height, healthFrac, level, pad, name
+ACTOR_DEAD = 2
 OFF_COL = 0x20000
 COL_BYTES = 32 << 20
 OFF_PIX = OFF_COL + COL_BYTES
@@ -52,6 +66,7 @@ SKY_FMT = "<IIIIdddffIIIf"
 MC_FMT = "<II3d4f2IQ3fI3dq3d3d7fIIf"
 assert struct.calcsize(SKY_FMT) == 0x40
 assert struct.calcsize(MC_FMT) == 0xC8
+assert struct.calcsize(ACTOR_FMT) == 64
 
 INPUT_TYPES = {1: "Key", 2: "MouseButton", 3: "Scroll", 4: "Cursor", 5: "Text", 6: "ReleaseAll", 7: "Hurt", 8: "OpenMenu"}
 COL_TYPES = {0: "Pad", 1: "Clear", 2: "Region", 3: "Tris"}
@@ -120,11 +135,37 @@ class Bridge:
 
     def write_mc(self, fields):
         """fields: every McState member after seq, in order."""
+        # Pack first: the host spins only briefly on an odd seq, so keep the write window tiny.
+        body = struct.pack(MC_FMT, 0, *fields)[4:]
         self.mc_seq += 1
         struct.pack_into("<I", self.m, OFF_MC, self.mc_seq * 2 - 1)
-        body = struct.pack(MC_FMT, 0, *fields)[4:]
         self.m[OFF_MC + 4:OFF_MC + 0xC8] = body
         struct.pack_into("<I", self.m, OFF_MC, self.mc_seq * 2)
+
+    def read_actors(self):
+        """The host's ActorTable (seqlock): a list of (formId, flags, x, y, z, yaw, w, h, healthFrac, name), or None."""
+        for _ in range(64):
+            s1 = self.u32(OFF_ACTORS)
+            if s1 & 1:
+                continue
+            count = min(self.u32(OFF_ACTORS + 4), 256)
+            raw = bytes(self.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64 * count])
+            if self.u32(OFF_ACTORS) == s1:
+                out = []
+                for i in range(count):
+                    f = struct.unpack_from(ACTOR_FMT, raw, i * 64)
+                    out.append(f[:9] + (f[11].split(b"\0")[0].decode(errors="replace"),))
+                return out
+        return None
+
+    def push_event(self, typ, form, a=0.0, b=0.0, c=0.0, d=0.0, flags=0, weapon=0):
+        """McEvent into the event ring (Minecraft produces, the host consumes)."""
+        head, tail = self.u64(OFF_EVENTS), self.u64(OFF_EVENTS + 0x40)
+        if head - tail >= EV_ENTRIES:
+            return False
+        struct.pack_into("<II4fII", self.m, OFF_EVENTS + 0x80 + (head % EV_ENTRIES) * 32, typ, form, a, b, c, d, flags, weapon)
+        self.put_u64(OFF_EVENTS, head + 1)
+        return True
 
     def drain_input(self):
         head, tail = self.u64(OFF_IN), self.u64(OFF_IN + 0x40)
@@ -219,44 +260,233 @@ def describe_input(typ, code, a, b, c):
     return name
 
 
-def cube_vertices(lx, ly, lz):
-    """36 RenVertex for a unit cube at section-local block (lx, ly, lz), counter-clockwise from outside."""
-    faces = [  # (direction ordinal, 4 corners)
-        (0, [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)]),  # down
-        (1, [(0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)]),  # up
-        (2, [(0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)]),  # north (-z)
-        (3, [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]),  # south (+z)
-        (4, [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)]),  # west (-x)
-        (5, [(1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)]),  # east (+x)
-    ]
-    uvs = [(0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+# Demo atlas: 4 x 2 tiles of 16 px (column, row).
+TILE_GRASS_TOP, TILE_GRASS_SIDE, TILE_DIRT, TILE_STONE, TILE_GLASS, TILE_BLUE, TILE_MARKER, TILE_CRACK = range(8)
+OFF_WORLD_ENTITIES = 0x1C000
+WE_FMT = "<II3f2ff3f12fI"  # kind, id, x, y, z, yaw, pitch, scale, ext[3], uv[3][4], tint
+assert struct.calcsize(WE_FMT) == 96
+
+
+def tile_uv(tile):
+    """Atlas rect {u0, v0, u1, v1} of a demo tile."""
+    c, r = tile % 4, tile // 4
+    return (c / 4, r / 2, (c + 1) / 4, (r + 1) / 2)
+
+
+def demo_atlas():
+    """64x32 RGBA8, top row first: grass top/side, dirt, stone, glass (cutout), blue (translucent), marker, cracks."""
+    w, h = 64, 32
+    px = bytearray(w * h * 4)
+    rnd = 12345
+
+    def noise():
+        nonlocal rnd
+        rnd = (rnd * 1103515245 + 12345) & 0x7FFFFFFF
+        return (rnd >> 16) % 32
+
+    for y in range(h):
+        for x in range(w):
+            tile, tx, ty = (x // 16) + 4 * (y // 16), x % 16, y % 16
+            n = noise()
+            dirt = (134 - n, 96 - n // 2, 67 - n // 2, 255)
+            if tile == TILE_GRASS_TOP:
+                c = (95 - n, 159 - n, 53 - n // 2, 255)
+            elif tile == TILE_GRASS_SIDE:
+                c = (95 - n, 159 - n, 53 - n // 2, 255) if ty < 4 - (tx * 7 % 3) else dirt
+            elif tile == TILE_DIRT:
+                c = dirt
+            elif tile == TILE_STONE:
+                c = (125 - n, 125 - n, 125 - n, 255)
+            elif tile == TILE_GLASS:
+                edge = tx in (0, 15) or ty in (0, 15)
+                c = (220, 240, 255, 255) if edge else (0, 0, 0, 0)
+            elif tile == TILE_BLUE:
+                c = (40, 90, 230, 140)
+            elif tile == TILE_MARKER:
+                c = (230, 60, 200, 255) if ((tx // 4) + (ty // 4)) % 2 == 0 else (30, 30, 30, 255)
+            else:
+                c = (20, 20, 20, 200) if n < 9 else (0, 0, 0, 0)
+            px[(y * w + x) * 4:(y * w + x) * 4 + 4] = bytes(c)
+    return w, h, bytes(px)
+
+
+# Each face: Direction ordinal and its corners BL, BR, TR, TL seen from outside (counter-clockwise).
+CUBE_FACES = [
+    (0, [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)]),  # down
+    (1, [(0, 1, 1), (1, 1, 1), (1, 1, 0), (0, 1, 0)]),  # up
+    (2, [(1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 1, 0)]),  # north (-z)
+    (3, [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]),  # south (+z)
+    (4, [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)]),  # west (-x)
+    (5, [(1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1)]),  # east (+x)
+]
+FACE_UV = [(0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]
+
+
+def cube_vertices(lx, ly, lz, tiles=(TILE_MARKER,) * 3, size=1.0, translucent=False, light=15 | (15 << 8), normals=True):
+    """36 RenVertex for a cube at (lx, ly, lz) (section- or origin-relative), tiles = (side, top, bottom);
+    quads as triangles (0 1 2) (0 2 3), counter-clockwise from outside, like the real mod."""
     out = b""
-    for ordinal, corners in faces:
+    for ordinal, corners in CUBE_FACES:
+        tile = tiles[1] if ordinal == 1 else tiles[2] if ordinal == 0 else tiles[0]
+        u0, v0, u1, v1 = tile_uv(tile)
+        flags = (2 if translucent else 1) | (((ordinal + 1) << 4) if normals else 0)
         for k in (0, 1, 2, 0, 2, 3):
             x, y, z = corners[k]
-            u, v = uvs[k]
-            out += struct.pack("<5fIII", lx + x, ly + y, lz + z, u, v, 0xFFFFFFFF, 15 | (15 << 8), (ordinal + 1) << 4)
+            fu, fv = FACE_UV[k]
+            out += struct.pack("<5fIII", lx + x * size, ly + y * size, lz + z * size, u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv,
+                               0xFFFFFFFF, light, flags)
     return out
 
 
-def demo_section(bridge, feet):
-    w = h = 32
-    pixels = bytearray()
-    for y in range(h):
-        for x in range(w):
-            on = ((x // 8) + (y // 8)) % 2 == 0
-            pixels += bytes((230, 60, 200, 255) if on else (30, 30, 30, 255))
-    bridge.write_render(1, struct.pack("<II", w, h) + bytes(pixels))
+def facing_axes(yaw):
+    """Minecraft yaw -> the nearest block axes (forward, right) as integer (x, z) pairs."""
+    fx, fz = -math.sin(math.radians(yaw)), math.cos(math.radians(yaw))
+    f = (1 if fx > 0 else -1, 0) if abs(fx) >= abs(fz) else (0, 1 if fz > 0 else -1)
+    return f, (-f[1], f[0])
+
+
+def demo_blocks(fx, fy, fz, yaw=0.0):
+    """(x, y, z, (side, top, bottom), translucent) in front of the player (yaw): a 3x3 grass-topped stone
+    pillar 4 blocks ahead (5 high, glass and a blue translucent block on top), and a 3x3 marker tower 25 ahead
+    and 6 to the right, 30 high."""
+    (ax, az), (rx, rz) = facing_axes(yaw)
+    at = lambda ahead, right: (fx + ax * ahead + rx * right, fz + az * ahead + rz * right)
+    blocks = []
+    for a in range(4, 7):
+        for r in range(-1, 2):
+            x, z = at(a, r)
+            for dy in range(5):
+                top = dy == 4
+                tiles = (TILE_GRASS_SIDE, TILE_GRASS_TOP, TILE_DIRT) if top else (TILE_STONE,) * 3
+                blocks.append((x, fy + dy, z, tiles, False))
+    x, z = at(5, 0)
+    blocks.append((x, fy + 5, z, (TILE_GLASS,) * 3, False))
+    blocks.append((x, fy + 6, z, (TILE_BLUE,) * 3, True))
+    for a in range(25, 28):
+        for r in range(5, 8):
+            x, z = at(a, r)
+            for dy in range(30):
+                tile = TILE_MARKER if dy % 5 == 4 else TILE_STONE
+                blocks.append((x, fy + dy, z, (tile,) * 3, False))
+    return blocks
+
+
+def demo_entities(bridge, fx, fy, fz, yaw=0.0):
+    """WorldEntities: the selection outline and cracks on the pillar's front top block, a dropped item 2 ahead."""
+    (ax, az), _ = facing_axes(yaw)
+    sel = (fx + ax * 4, fy + 4, fz + az * 4)
+    crack = struct.pack(WE_FMT, 5, 1, *sel, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, *tile_uv(TILE_CRACK), *(0.0,) * 8, 0)
+    item = struct.pack(WE_FMT, 2, 2, fx + ax * 2 + 0.5, fy + 0.5, fz + az * 2 + 0.5, 30.0, 0.0, 0.5, 0.0, 0.0, 0.0, *tile_uv(TILE_MARKER),
+                       *(0.0,) * 8, 0)
+    head = struct.pack("<III3f3f", 0, 2, 1, sel[0], sel[1], sel[2], sel[0] + 1, sel[1] + 1, sel[2] + 1).ljust(0x40, b"\0")
+    seq = struct.unpack_from("<I", bridge.m, OFF_WORLD_ENTITIES)[0]
+    seq += seq & 1
+    struct.pack_into("<I", bridge.m, OFF_WORLD_ENTITIES, seq + 1)
+    bridge.m[OFF_WORLD_ENTITIES + 4:OFF_WORLD_ENTITIES + 0x40] = head[4:]
+    bridge.m[OFF_WORLD_ENTITIES + 0x40:OFF_WORLD_ENTITIES + 0x40 + 192] = crack + item
+    struct.pack_into("<I", bridge.m, OFF_WORLD_ENTITIES, seq + 2)
+
+
+def demo_meshes(bridge, feet, avatar, yaw=0.0):
+    """kRenScene: a small marker cube over the pillar (atlas texture); with avatar, kRenAvatar: a
+    0.6 x 1.8 x 0.6 box at the feet in an entity texture (id 7, red/white)."""
     fx, fy, fz = (math.floor(c) for c in feet)
-    blocks = [(fx + 2, fy, fz), (fx + 2, fy + 1, fz), (fx, fy, fz + 2), (fx - 2, fy, fz - 1)]
+    (ax, az), _ = facing_axes(yaw)
+    verts = cube_vertices(-0.25, 0.0, -0.25, size=0.5, normals=False)
+    payload = struct.pack("<dddII", fx + ax * 5 + 0.5, fy + 8.0, fz + az * 5 + 0.5, 1, len(verts) // 32) + struct.pack("<IIII", 0, 0, len(verts) // 32, 0) + verts
+    bridge.write_render(6, payload)
+    if avatar:
+        w = h = 16
+        tex = b"".join(bytes((220, 40, 40, 255) if ((x // 4) + (y // 4)) % 2 else (240, 240, 240, 255)) for y in range(h) for x in range(w))
+        if not getattr(bridge, "demo_tex_sent", False):
+            bridge.write_render(4, struct.pack("<IIII", 7, w, h, 0) + tex)
+            bridge.demo_tex_sent = True
+        body = b""
+        for ordinal, corners in CUBE_FACES:
+            for k in (0, 1, 2, 0, 2, 3):
+                x, y, z = corners[k]
+                fu, fv = FACE_UV[k]
+                body += struct.pack("<5fIII", (x - 0.5) * 0.6, y * 1.8, (z - 0.5) * 0.6, fu, fv, 0xFFFFFFFF, 15 | (15 << 8), 1 | ((ordinal + 1) << 4))
+        bridge.write_render(5, struct.pack("<II", 1, len(body) // 32) + struct.pack("<IIII", 7, 0, len(body) // 32, 0) + body)
+
+
+def demo_section(bridge, feet, yaw=0.0):
+    w, h, pixels = demo_atlas()
+    bridge.write_render(1, struct.pack("<II", w, h) + pixels)
+    fx, fy, fz = (math.floor(c) for c in feet)
+    blocks = demo_blocks(fx, fy, fz, yaw)
     sections = {}
-    for bx, by, bz in blocks:
+    for bx, by, bz, tiles, translucent in blocks:
         s = (bx >> 4, by >> 4, bz >> 4)
-        sections.setdefault(s, b"")
-        sections[s] += cube_vertices(bx - s[0] * 16, by - s[1] * 16, bz - s[2] * 16)
-    for (sx, sy, sz), verts in sections.items():
+        sections.setdefault(s, [b"", b""])
+        sections[s][1 if translucent else 0] += cube_vertices(bx - s[0] * 16, by - s[1] * 16, bz - s[2] * 16, tiles, translucent=translucent)
+    for (sx, sy, sz), (solid, blended) in sections.items():
+        verts = solid + blended
         bridge.write_render(2, struct.pack("<iiiI", sx, sy, sz, len(verts) // 32) + verts)
-    print(f"demo: wrote a 32x32 atlas and {len(blocks)} cubes in {len(sections)} section(s) around MC block {fx},{fy},{fz}")
+    demo_entities(bridge, fx, fy, fz, yaw)
+    print(f"demo: wrote a {w}x{h} atlas and {len(blocks)} blocks in {len(sections)} section(s) around MC block {fx},{fy},{fz} "
+          f"(yaw {yaw:.0f}: pillar 4 ahead, tower 25 ahead 6 right), a selection outline + cracks and a dropped item")
+
+
+def demo_load(bridge, feet, count):
+    """A load test: count terrain-like sections (a 16x16 grass floor 2 blocks under the feet with a stone
+    step every 4 blocks: ~330 quads each) on a square grid around the player, the same mesh in each."""
+    fx, fy, fz = (math.floor(c) for c in feet)
+    y = fy - 2
+    sy, ly = y >> 4, y - (y >> 4) * 16
+    mesh = b""
+    for x in range(16):
+        for z in range(16):
+            grass = (TILE_GRASS_SIDE, TILE_GRASS_TOP, TILE_DIRT)
+            if x % 4 == 0 and z % 4 == 0:
+                mesh += cube_vertices(x, ly + 1, z, (TILE_STONE,) * 3) if ly < 15 else b""
+            # only the top face of the floor (like a real surface section, hidden faces culled)
+            top = cube_vertices(x, ly, z, grass)[36 * 32 // 6 * 1:36 * 32 // 6 * 2]
+            mesh += top
+    side = math.ceil(math.sqrt(count))
+    sx0, sz0 = (fx >> 4) - side // 2, (fz >> 4) - side // 2
+    n = 0
+    for i in range(side):
+        for k in range(side):
+            if n >= count:
+                break
+            bridge.write_render(2, struct.pack("<iiiI", sx0 + i, sy, sz0 + k, len(mesh) // 32) + mesh)
+            n += 1
+    print(f"demo: load test wrote {n} sections ({len(mesh) // 32 // 6} quads, {len(mesh) >> 10} KiB each) around section "
+          f"{fx >> 4},{sy},{fz >> 4}")
+
+
+def combat_step(bridge, args, sky, t, t0, st):
+    """The combat flags, once per loop. st holds next_hit / next_blast / next_actors / died_sent."""
+    px, py, pz, yaw = sky[4], sky[5], sky[6], sky[7]
+    want_actors = args.actors or args.hit_nearest_actor > 0
+    actors = bridge.read_actors() if want_actors else None
+    if args.actors and actors is not None and t >= st["next_actors"]:
+        st["next_actors"] = t + 2.0
+        near = sorted(actors, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
+        desc = ", ".join(f"{r[9]} {r[0]:08X} {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f}m hp{r[8]:.2f}{' DEAD' if r[1] & ACTOR_DEAD else ''}"
+                         for r in near[:4])
+        print(f"actors: {len(actors)} ({sum(1 for r in actors if r[1] & ACTOR_DEAD)} dead); nearest: {desc}")
+    if args.hit_nearest_actor > 0 and actors and t >= st["next_hit"]:
+        st["next_hit"] = t + args.combat_interval
+        alive = [r for r in actors if not r[1] & ACTOR_DEAD]
+        if alive:
+            r = min(alive, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
+            dx, dz = r[2] - px, r[4] - pz
+            n = math.hypot(dx, dz) or 1.0
+            bridge.push_event(EV_HIT_ACTOR, r[0], args.hit_nearest_actor, dx / n, dz / n, 0.4, 0, 1)
+            print(f"combat: hit {r[9]} {r[0]:08X} at {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f} blocks (health {r[8]:.2f}) "
+                  f"for {args.hit_nearest_actor}")
+    if args.explode_ahead is not None and t >= st["next_blast"] and st["next_blast"] >= 0:
+        st["next_blast"] = t + args.explode_ahead if args.explode_ahead > 0 else -1.0
+        r = math.radians(yaw)
+        cx, cz = px - math.sin(r) * 6.0, pz + math.cos(r) * 6.0
+        bridge.push_event(EV_EXPLOSION, 0, cx, py + 0.5, cz, 4.0)
+        print(f"combat: explosion (radius 4) at MC {cx:.1f} {py + 0.5:.1f} {cz:.1f}, 6 blocks ahead (yaw {yaw:.0f})")
+    if args.die_after > 0 and not st["died_sent"] and t >= t0 + args.die_after:
+        st["died_sent"] = True
+        bridge.push_event(EV_PLAYER_DIED, 0)
+        print("combat: the Minecraft player died (kEvPlayerDied)")
 
 
 def main():
@@ -267,8 +497,23 @@ def main():
     ap.add_argument("--no-ack", action="store_true", help="never acknowledge teleports (the host must not start puppeting)")
     ap.add_argument("--screen", action="store_true", help="report a Minecraft screen open (cursor + text input)")
     ap.add_argument("--third-person", action="store_true", help="report F5 third-person camera, 4 blocks back")
-    ap.add_argument("--demo-section", action="store_true", help="write a block atlas and a few cubes at the feet into the render ring")
+    ap.add_argument("--demo-section", action="store_true",
+                    help="write a block atlas, a pillar and a tower of blocks by the feet, a selection outline/cracks/item and a "
+                         "scene entity (kRenScene, 1 Hz) into the render ring")
+    ap.add_argument("--demo-on-teleport", action="store_true",
+                    help="with --demo-section: move the demo (kRenClearAll + resend) when a teleport lands more than 8 blocks away")
+    ap.add_argument("--demo-load", type=int, default=0, metavar="N",
+                    help="with --demo-section: also N terrain sections (~330 quads each) around the player, a render load test")
+    ap.add_argument("--demo-avatar", action="store_true", help="with --demo-section: also a box body (kRenTexture + kRenAvatar) at the feet (use with --third-person)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every collision message")
+    ap.add_argument("--actors", action="store_true", help="print the host's actor table every 2 s")
+    ap.add_argument("--hit-nearest-actor", type=float, default=0.0, metavar="DMG",
+                    help="every --combat-interval s, hit the living actor nearest the player for DMG Minecraft damage")
+    ap.add_argument("--explode-ahead", type=float, nargs="?", const=-1.0, default=None, metavar="EVERY",
+                    help="a TNT explosion 6 blocks in front of the player (once, or every EVERY s)")
+    ap.add_argument("--die-after", type=float, default=0.0, metavar="S", help="send kEvPlayerDied S s after combat starts")
+    ap.add_argument("--combat-delay", type=float, default=10.0, metavar="S", help="combat flags start S s after the first teleport ack")
+    ap.add_argument("--combat-interval", type=float, default=2.0, metavar="S", help="seconds between --hit-nearest-actor hits")
     args = ap.parse_args()
 
     bridge = Bridge(args.link)
@@ -292,8 +537,12 @@ def main():
     last_print = 0.0
     last_sky = None
     demo_done = False
+    demo_feet, demo_yaw = None, 0.0
+    next_demo_mesh = 0.0
     last_host_pid = host_pid
     stats = dict(clears=0, regions=0, blocks=0, tri_msgs=0, tris=0, pads=0, bytes=0, last="", last_tri="")
+    combat_t0 = None  # when combat flags start (first teleport ack + --combat-delay)
+    combat_state = dict(next_hit=0.0, next_blast=0.0, next_actors=0.0, died_sent=False)
     try:
         while args.seconds <= 0 or time.monotonic() - start < args.seconds:
             t = time.monotonic()
@@ -312,9 +561,18 @@ def main():
                     pos = cur = prev = origin
                     ack = tp
                     print(f"teleport #{tp} acknowledged: MC {x:.2f} {y:.2f} {z:.2f} (world {world}, epoch {epoch})")
+                    if args.demo_on_teleport and demo_done and math.dist((x, y, z), demo_feet) > 8.0:
+                        bridge.write_render(3, b"")  # kRenClearAll
+                        demo_done = False  # rebuilt below, around the new position
                 if args.demo_section and not demo_done and (flags & 1):
-                    demo_section(bridge, (x, y, z))
+                    if args.demo_load > 0:
+                        demo_load(bridge, (x, y, z), args.demo_load)
+                    demo_section(bridge, (x, y, z), yaw)
                     demo_done = True
+                    demo_feet, demo_yaw = (x, y, z), yaw
+                if demo_done and t >= next_demo_mesh:
+                    next_demo_mesh = t + 1.0
+                    demo_meshes(bridge, demo_feet, args.demo_avatar, demo_yaw)
             else:
                 flags = 0
 
@@ -341,6 +599,11 @@ def main():
                     in_world, pos[0], pos[1], pos[2], syaw, spitch, eye, 0.5, ack, 2, bridge.frame, 70.0, walk, 0.0, 0,
                     pos[0], pos[1] + eye, pos[2], tick_qpc, prev[0], prev[1], prev[2], cur[0], cur[1], cur[2],
                     eye, eye, walk_o, walk, 0.0, 0.0, 50.0, 0, 1 if args.third_person else 0, 4.0 if args.third_person else 0.0))
+
+            if origin and combat_t0 is None:
+                combat_t0 = t + args.combat_delay
+            if combat_t0 is not None and sky and t >= combat_t0:
+                combat_step(bridge, args, sky, t, combat_t0, combat_state)
 
             for typ, code, a, b, c in bridge.drain_input():
                 print(f"  input: {describe_input(typ, code, a, b, c)}")

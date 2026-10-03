@@ -29,6 +29,6 @@ namespace lc::Game
 	void Tick();               // processScriptsEvent
 	void Camera();             // processCameraEvent
 	void OnIngameStartup();    // ingameStartupEvent: a save / new game / episode is about to load
-	// Pushes kInHurt (combat isn't implemented yet: nothing calls this so far).
+	// Pushes kInHurt (Combat calls it). a_damage is "host damage": Minecraft takes a_damage / 5.
 	void ReportHurt(std::uint16_t a_kind, float a_damage, std::uint32_t a_attacker, std::uint32_t a_flags);
 }

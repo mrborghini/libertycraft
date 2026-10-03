@@ -7,8 +7,8 @@ break; GTA IV owns the camera and the picture, and draws the blocks inside Liber
 This is a port of the idea (and most of the Minecraft-side code) of
 [SkyCraft](https://github.com/chasmlol/SkyCraft) by chasm, which does the same for Skyrim.
 
-> **Status: early development.** Minecraft already drives Niko in game (movement, look, input);
-> blocks, HUD and proper collision are being built. See [Milestones](#milestones).
+> **Status: early development, but playable.** Minecraft drives Niko, its blocks and HUD render in
+> Liberty City, collision follows GTA IV's map, and combat works both ways. See [Milestones](#milestones).
 
 ## How it works
 
@@ -76,10 +76,14 @@ directly with `PROTON_LOG=1`, without touching Steam's launch options.
 
 - [x] **M0** — repo, scripted downgrade (`tools/install.sh`), plugin loads in-game under Proton
 - [x] **M1** — Fabric mod runs on Linux; Minecraft links to GTA IV through `/dev/shm`
-- [x] **M2** — Niko moves with Minecraft physics; mouse look; keyboard forwarded (tested in game)
-- [ ] **M3** — blocks and the Minecraft HUD rendered inside Liberty City *(in progress)*
-- [ ] **M4** — real collision with buildings, stairs, interiors, water *(in progress; v1 treats roofs as ground, so expect invisible walls)*
-- [ ] **M5** — combat with peds, Minecraft explosions as GTA explosions, GTA damage hurts the Minecraft player *(in progress)*
+- [x] **M2** — Niko moves with Minecraft physics; mouse look; keyboard forwarded
+- [x] **M3** — Minecraft blocks rendered in Liberty City (lit like Minecraft, hidden behind GTA's buildings) and the Minecraft HUD composited over the game
+- [x] **M4** — collision from GTA IV's real map geometry: streets, stairs, interiors, overpasses, walls; water for swimming
+- [x] **M5** — combat: Minecraft hits damage/ragdoll/kill peds, TNT and creepers make GTA explosions, GTA damage hurts the Minecraft player, death runs GTA's "wasted" flow
+- [ ] **M6** — cars (F to steal one, the Minecraft player rides a boat in it) and a key to switch between Niko and Minecraft *(in progress)*
+
+Known gaps: doors and street furniture (lamp posts, bins, fences) are not solid yet; Minecraft blocks get no
+GTA shadows or fog; peds take double damage from Minecraft explosions.
 
 ## Licenses
 

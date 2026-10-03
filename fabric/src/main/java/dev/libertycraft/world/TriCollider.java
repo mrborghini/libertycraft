@@ -273,4 +273,14 @@ public final class TriCollider {
 		double f = floor(tris, x, y, z, false, maxAbove);
 		return f == Double.NEGATIVE_INFINITY ? Double.NaN : f;
 	}
+
+	/**
+	 * Highest walkable (upward-facing, not too steep) surface at most {@code maxAbove} above
+	 * {@code y}, or NaN. Unlike {@link #groundAt}, ceilings, awnings and walls never count, so a
+	 * player can't be lifted onto the underside of something above their head.
+	 */
+	public static double walkableGroundAt(List<HostTri> tris, double x, double y, double z, double maxAbove) {
+		double f = floor(tris, x, y, z, true, maxAbove);
+		return f == Double.NEGATIVE_INFINITY ? Double.NaN : f;
+	}
 }

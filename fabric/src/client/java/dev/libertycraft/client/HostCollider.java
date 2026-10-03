@@ -41,4 +41,10 @@ public final class HostCollider {
 		HostCollision.trianglesNear(new AABB(x - 1, y - 4, z - 1, x + 1, y + maxAbove + 1, z + 1), tris);
 		return TriCollider.groundAt(tris, x, y, z, maxAbove);
 	}
+
+	public static double walkableGroundAt(double x, double y, double z, double maxAbove) {
+		List<HostTri> tris = new ArrayList<>();
+		HostCollision.trianglesNear(new AABB(x - 1, y - 4, z - 1, x + 1, y + maxAbove + 1, z + 1), tris);
+		return TriCollider.walkableGroundAt(tris, x, y, z, maxAbove);
+	}
 }

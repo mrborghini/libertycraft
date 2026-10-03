@@ -16,3 +16,21 @@ endif()
 target_link_libraries(link_test PRIVATE Threads::Threads)
 enable_testing()
 add_test(NAME link_test COMMAND link_test)
+
+# combat/CombatMath.h (Stream X): actor ids, damage scaling, weapon classes, hurt pacing.
+add_executable(combat_test combat_test.cpp)
+target_include_directories(combat_test PRIVATE ../src ../../protocol)
+target_compile_options(combat_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME combat_test COMMAND combat_test)
+
+# Collision v2 geometry (collision/Geometry.h) against a synthetic one-sided ray caster.
+add_executable(collision_test collision_test.cpp)
+target_include_directories(collision_test PRIVATE ../src ../../protocol)
+target_compile_options(collision_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME collision_test COMMAND collision_test)
+
+# render/RenderMath.h (Stream R): camera matrices, frustum, lighting, mips, section meshes, entities.
+add_executable(render_test render_test.cpp)
+target_include_directories(render_test PRIVATE ../src ../../protocol)
+target_compile_options(render_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME render_test COMMAND render_test)

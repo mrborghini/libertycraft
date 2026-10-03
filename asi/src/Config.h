@@ -42,6 +42,40 @@ namespace lc
 		// runtime by default ("auto"); or e.g. "0,1,2" / "-0,1,2" (leading '-' flips a row's sign).
 		std::string cameraRows = "auto";
 
+		// ---- Minecraft's blocks and HUD (Render, Overlay) ----
+		// Draw Minecraft's world and HUD in GTA's frame (a draw command run by the render thread).
+		// 0: only drain the render ring, draw nothing.
+		bool render = true;
+		// The blocks' camera: auto (the render phase's grcViewport, else the final camera), phase,
+		// current (grcViewport::sm_pCurrent), finalcam (TheCamera.m_pFinalCam).
+		enum class RenderCamera { kAuto, kPhase, kCurrent, kFinalCam } renderCamera = RenderCamera::kAuto;
+		// The game's depth buffer: auto (logarithmic with FusionFix loaded, else standard), log,
+		// standard, off (no occlusion by GTA's world).
+		enum class RenderDepth { kAuto, kLog, kStandard, kOff } renderDepth = RenderDepth::kAuto;
+		// Brightness multiplier for Minecraft's blocks.
+		float renderExposure = 1.0f;
+		// Minecraft's HUD/GUI: auto (while puppeting or a Minecraft screen is open), always (whenever
+		// Minecraft is alive), off.
+		enum class OverlayMode { kAuto, kAlways, kOff } overlay = OverlayMode::kAuto;
+
+		// ---- combat (Combat.h) ----
+		// Minecraft and GTA IV fight each other: the actor table, Minecraft's hits/explosions/death,
+		// GTA damage to the puppeted player as Minecraft damage. 0: events are drained and ignored.
+		bool combat = true;
+		// Minecraft damage (half-hearts) x this = GTA health taken off a ped (ambient peds have 100).
+		float pedDamageScale = 10.0f;
+		// GTA damage to the puppeted player / this = Minecraft damage (20 = full health).
+		float playerDamageScale = 10.0f;
+		// ADD_EXPLOSION type for Minecraft's explosions (0 grenade, 2 rocket, ...) and radius scale.
+		int   explosionType = 0;
+		float explosionRadiusScale = 1.0f;
+		// A Minecraft hit knocks the ped over (SWITCH_PED_TO_RAGDOLL + APPLY_FORCE_TO_PED).
+		bool ragdollOnHit = true;
+		// Test hooks (not in the default ini): DAMAGE_CHAR the puppeted player every 5 s; 15 s into a
+		// session, move the player (out of a car / an interior) to the nearest street, among peds.
+		bool combatSelfTest = false;
+		bool debugWarpOutdoors = false;
+
 		static Config& Get();
 		// Loads <asi dir>/LibertyCraft.ini (creating it with defaults if absent). Logs what it got.
 		void Load(const wchar_t* a_asiDir);

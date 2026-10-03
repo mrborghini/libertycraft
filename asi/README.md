@@ -60,9 +60,13 @@ with `--demo-section` writes an atlas + a few cubes into the render ring.
 | `Link.*`, `LinkCore.h` | the shared mapping: transport, seqlocks, rings, overlay swap, heartbeat thread |
 | `Game.*` | per frame: SkyState, McState, teleport handshake, mouse look, puppet mode, camera |
 | `Input.*` | window subclass, raw mouse, DIK -> SDL3 scancodes, CPad zeroing |
-| `Collision.*` | v1 ground heightfield -> kColTris / kColRegion (region scheduler from SkyCraft) |
-| `Render.*`, `Overlay.*` | stubs: drain the render ring, acquire overlay frames, count them |
+| `Collision.*`, `collision/*` | v2: GTA's static collision sampled with one-sided line probes (`CWorld::ProcessLineOfSight`) per 8x8-block column: floors, ceilings and walls -> kColTris / kColRegion (region scheduler from SkyCraft); the water grid. `collision/Geometry.h` is SDK-free and tested on Linux (`tests/collision_test.cpp`) |
+| `Render.*` | `drawingEvent`: snapshots the frame's camera (render phase grcViewport / final cam), clock and flags into a draw command of our own that GTA's render thread executes; drains the render ring there |
+| `render/World.*` | the D3D9 block renderer: atlas + mips, section vertex buffers, entities/scene/avatar, outline and cracks, Minecraft lighting, depth-tested against GTA's (FusionFix log) depth |
+| `render/RenderMath.h`, `render/Shaders.h`, `render/Frame.h`, `render/D3D9Util.h` | pure helpers (tested on Linux), the HLSL (compiled at runtime by d3dcompiler_47), the frame snapshot, D3D9 helpers |
+| `Overlay.*` | Minecraft's GUI/HUD composited over the frame (premultiplied alpha, crosshair invert pass, cursor) |
 | `Coords.h` | GTA <-> MC coordinates, heading <-> yaw, camera basis |
+| `Combat.*`, `combat/CombatMath.h` | actor table (peds -> Minecraft stand-ins), Minecraft hits/explosions/death -> GTA, GTA damage to the puppeted player -> `kInHurt` |
 | `Config.*`, `Log.*`, `CrashLog.*`, `Perf.h` | ini, log file, crash handler, frame-time stats |
 
 Hooks: `processScriptsEvent` -> `Game::Tick` (natives), `processCameraEvent` -> `Game::Camera`
@@ -70,6 +74,38 @@ Hooks: `processScriptsEvent` -> `Game::Tick` (natives), `processCameraEvent` -> 
 `Render::Draw`, `ingameStartupEvent` -> `Game::OnIngameStartup`. A background thread beats the
 host heartbeat every 250 ms (through loading screens, the pause menu and alt-tab) and reopens
 the bridge file if Minecraft deleted/replaced it.
+
+## Rendering (Render, render/, Overlay)
+
+GTA IV records each frame's draw commands on the game thread and executes them on its render
+thread, so Direct3D must not be touched from `drawingEvent` (CRenderPhasePostRenderViewport's
+draw-list build, twice per frame). `Render::Draw` instead allocates a draw command of our own in
+that draw list: the game's `CDrawRectDC` constructor writes the header (id/size word), then the
+vtable is swapped for ours `{destructor, Execute, GetSize}` (the layout of every GTA IV DC, see
+`CBaseDC`) and the payload is a `render::FrameSnapshot` (camera, clock, what to draw). Its
+`Execute` runs on the render thread right after GTA's 3D scene and post-processing, before the
+HUD, with the back buffer and GTA's depth buffer (INTZ, same size) still bound. There it drains
+the render ring, uploads, draws the blocks (`render/World`) depth-tested against GTA's depth, and
+composites Minecraft's overlay. Draws once per game frame (the second command of a frame only
+drains); all state it touches is saved/restored with a per-draw `D3DSBT_ALL` state block.
+
+- Camera: `TheCamera.m_pFinalCam` (rows right/forward/up/position, vertical FOV, near/far) as a
+  camera-relative clip matrix (camera position subtracted in double). The render phase's
+  grcViewport (FusionFix's `+0xB0`) holds no valid viewport in 1.0.8.0 and
+  `grcViewport::sm_pCurrent` is a shadow-cascade viewport at that point (both logged); a one-time
+  probe looks for the viewport in the phase object. `RenderCamera=` pins a source.
+- Depth: with FusionFix loaded the depth buffer is logarithmic (FusionFix's z-fighting fix:
+  `z/w = log2(w/near) / log2(far/near)`), which the vertex shader reproduces per vertex; otherwise
+  standard D3D depth. `RenderDepth=` overrides.
+- Resources: everything static is `D3DPOOL_MANAGED` (atlas with CPU-built mips, section vertex
+  buffers, entity textures, the overlay texture) and per-frame geometry goes through
+  `DrawPrimitiveUP`, so the game's device `Reset` needs nothing from us. Section meshes are stored
+  as quads (4 vertices + a shared index buffer) when Minecraft's triangles come in (0 1 2)(0 2 3).
+- Shaders: HLSL string literals (`render/Shaders.h`) compiled at startup with `D3DCompile` from
+  `d3dcompiler_47.dll` (Proton's builtin, vkd3d-shader) to vs_3_0 / ps_3_0.
+- Lighting v1: texture x vertex colour (tint, AO) x Minecraft's face shade (from the normal
+  index) x the light-map curve of max(block, sky x day factor from GTA's clock), Minecraft gamma
+  0.5, `RenderExposure`. Cutout is alpha-tested; translucent is sorted by section, back to front.
 
 ## Transport
 
@@ -112,9 +148,20 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `FreezePed` | `1` | `FREEZE_CHAR_POSITION` while puppeting (0: zero the velocity every frame) |
 | `RootToFeet` | `1.0` | metres from the ped root to its feet until measured |
 | `MeasureRootToFeet` | `1` | measure it in game |
-| `ProbeFrom` | `top` | collision heightfield probe: `top` (1000 m: buildings are solid to the roof) or `feet` |
-| `ProbeHeight` | `3.0` | with `ProbeFrom=feet`: start the probe this far above the feet |
+| `ProbeFrom` | `top` | unused since collision v2 (was the v1 heightfield probe start) |
+| `ProbeHeight` | `3.0` | unused since collision v2 |
 | `CameraRows` | `auto` | `auto` or e.g. `0,1,2` / `-0,1,2` (right, forward, up as CMatrix rows; `-` flips) |
+| `Combat` | `1` | combat bridge (0: Minecraft's combat events are drained and ignored, the puppeted player stays invincible) |
+| `PedDamageScale` | `10` | Minecraft damage x this = GTA health off a ped (ambient peds have 100) |
+| `PlayerDamageScale` | `10` | GTA damage to the puppeted player / this = Minecraft damage |
+| `ExplosionType` | `0` | `ADD_EXPLOSION` type for Minecraft explosions |
+| `ExplosionRadiusScale` | `1.0` | Minecraft blast radius (blocks) x this = GTA radius (m) |
+| `RagdollOnHit` | `1` | a Minecraft hit ragdolls the ped and pushes it along the knockback |
+| `Render` | `1` | draw Minecraft's blocks and HUD in GTA's frame (0: only drain the render ring) |
+| `RenderCamera` | `auto` | the blocks' camera: `auto` (the render phase's grcViewport, else the final cam), `phase`, `current` (grcViewport::sm_pCurrent), `finalcam` |
+| `RenderDepth` | `auto` | GTA's depth buffer: `auto` (logarithmic when FusionFix is loaded, else standard), `log`, `standard`, `off` (blocks not hidden by GTA's world) |
+| `RenderExposure` | `1.0` | brightness multiplier for the blocks |
+| `Overlay` | `auto` | Minecraft's HUD: `auto` (while puppeting or a Minecraft screen is open), `always` (whenever Minecraft is alive), `off` |
 
 ## Input while puppeting
 
@@ -148,6 +195,13 @@ Lines look like `[HH:MM:SS.mmm] [module] text`. A healthy run shows, in order:
     [game] stats 10s: input keys ... raw-mouse ... pad-zeroed ...
     [game] stats 10s: collision regions ... (tris ..., blocks ...), columns probed ...
     [game] stats 10s: motion ... frames, ... MC ticks, ... late frames, render delay ... ms
-    [render] render ring drained ... KiB in 1.0s (...): section ... ; overlay frames acquired ...
+    [render] render: CRenderPhase::sm_pCurrent @..., grcViewport::sm_pCurrent @..., FusionFix loaded (logarithmic depth)
+    [render] first draw command executed: render thread ... (game thread ...)
+    [render] block renderer ready (vs_3_0/ps_3_0, managed buffers)
+    [render] blocks use the final cam camera (RenderCamera=auto)
+    [render] received Minecraft's block atlas 2048x2576 (5 mip levels, ... ms)
+    [overlay] overlay texture 1920x1080
+    [render] render ring ... KiB in 10.0s: section ... atlasRegion ...; overlay frames ... (uploaded ...)
+    [render] render: ... frames drawn ..., N sections (... MiB, atlas yes ...); per frame: drawn ... sections, ... draw ... ms
 
 `ERROR` / `WARNING` mark problems; an unsupported exe is a banner of `ERROR` lines.

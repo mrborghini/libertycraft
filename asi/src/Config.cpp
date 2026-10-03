@@ -41,7 +41,27 @@ namespace lc
 			"ProbeFrom=top\n"
 			"ProbeHeight=3.0\n"
 			"; camera matrix rows right,forward,up: auto, or e.g. 0,1,2 (prefix - flips a row)\n"
-			"CameraRows=auto\n";
+			"CameraRows=auto\n"
+			"; draw Minecraft's blocks and HUD in GTA's frame (0: drain the render ring only)\n"
+			"Render=1\n"
+			"; blocks' camera: auto | phase | current | finalcam\n"
+			"RenderCamera=auto\n"
+			"; GTA's depth buffer: auto (log with FusionFix) | log | standard | off (blocks not hidden by GTA's world)\n"
+			"RenderDepth=auto\n"
+			"; brightness multiplier for Minecraft's blocks\n"
+			"RenderExposure=1.0\n"
+			"; Minecraft's HUD: auto (puppeting or a Minecraft screen open) | always | off\n"
+			"Overlay=auto\n"
+			"; combat: Minecraft hits/explosions/death reach GTA IV, GTA damage to the puppeted player reaches Minecraft\n"
+			"Combat=1\n"
+			"; Minecraft damage x this = GTA health off a ped; GTA damage to the player / this = Minecraft damage\n"
+			"PedDamageScale=10\n"
+			"PlayerDamageScale=10\n"
+			"; ADD_EXPLOSION type for Minecraft explosions (0 grenade, 2 rocket, ...) and radius scale\n"
+			"ExplosionType=0\n"
+			"ExplosionRadiusScale=1.0\n"
+			"; a Minecraft hit knocks the ped over (ragdoll)\n"
+			"RagdollOnHit=1\n";
 
 		std::string Lower(std::string a_s)
 		{
@@ -146,10 +166,40 @@ namespace lc
 		if (auto v = get("probefrom")) probeFrom = Lower(*v) == "feet" ? ProbeFrom::kFeet : ProbeFrom::kTop;
 		if (auto v = get("probeheight")) probeHeight = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("camerarows")) cameraRows = Lower(*v);
+		if (auto v = get("render")) render = ToBool(*v, render);
+		if (auto v = get("rendercamera")) {
+			const auto c = Lower(*v);
+			renderCamera = c == "phase" ? RenderCamera::kPhase : c == "current" ? RenderCamera::kCurrent : c == "finalcam" ? RenderCamera::kFinalCam : RenderCamera::kAuto;
+		}
+		if (auto v = get("renderdepth")) {
+			const auto d = Lower(*v);
+			renderDepth = d == "log" ? RenderDepth::kLog : d == "standard" ? RenderDepth::kStandard : d == "off" ? RenderDepth::kOff : RenderDepth::kAuto;
+		}
+		if (auto v = get("renderexposure")) renderExposure = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("overlay")) {
+			const auto o = Lower(*v);
+			overlay = o == "always" ? OverlayMode::kAlways : o == "off" ? OverlayMode::kOff : OverlayMode::kAuto;
+		}
+		if (auto v = get("combat")) combat = ToBool(*v, combat);
+		if (auto v = get("peddamagescale")) pedDamageScale = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("playerdamagescale")) playerDamageScale = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("explosiontype")) explosionType = std::atoi(v->c_str());
+		if (auto v = get("explosionradiusscale")) explosionRadiusScale = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("ragdollonhit")) ragdollOnHit = ToBool(*v, ragdollOnHit);
+		if (auto v = get("combatselftest")) combatSelfTest = ToBool(*v, combatSelfTest);
+		if (auto v = get("debugwarpoutdoors")) debugWarpOutdoors = ToBool(*v, debugWarpOutdoors);
 
 		LC_LOG("config: Puppet=%d CameraMode=%s FovMode=%s MenuKey=%s (dik 0x%02X) Diagnostics=%d LogPerf=%d FreezePed=%d RootToFeet=%.2f (measure %d) ProbeFrom=%s ProbeHeight=%.1f CameraRows=%s",
 			puppet, cameraMode == CameraMode::kScripted ? "scripted" : "final", fovMode == FovMode::kHorizontal43 ? "horizontal43" : "vertical",
 			menuKey.c_str(), MenuKeyDik(), diagnostics, logPerf, freezePed, rootToFeet, measureRootToFeet, probeFrom == ProbeFrom::kFeet ? "feet" : "top", probeHeight, cameraRows.c_str());
+		static constexpr const char* kRenderCameras[] = { "auto", "phase", "current", "finalcam" };
+		static constexpr const char* kRenderDepths[] = { "auto", "log", "standard", "off" };
+		static constexpr const char* kOverlayModes[] = { "auto", "always", "off" };
+		LC_LOG("config: Render=%d RenderCamera=%s RenderDepth=%s RenderExposure=%.2f Overlay=%s", render, kRenderCameras[static_cast<int>(renderCamera)],
+			kRenderDepths[static_cast<int>(renderDepth)], renderExposure, kOverlayModes[static_cast<int>(overlay)]);
+		LC_LOG("config: Combat=%d PedDamageScale=%.1f PlayerDamageScale=%.1f ExplosionType=%d ExplosionRadiusScale=%.2f RagdollOnHit=%d%s%s", combat,
+			pedDamageScale, playerDamageScale, explosionType, explosionRadiusScale, ragdollOnHit, combatSelfTest ? " CombatSelfTest=1" : "",
+			debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
 	}
 
 	std::uint8_t Config::MenuKeyDik() const

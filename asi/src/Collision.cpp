@@ -5,9 +5,12 @@
 #define LC_MODULE "collision"
 #include "Collision.h"
 
-#include "Config.h"
 #include "Link.h"
 #include "Log.h"
+#include "Perf.h"
+#include "collision/Geometry.h"
+#include "collision/Rays.h"
+#include "collision/Water.h"
 
 #include <algorithm>
 #include <array>
@@ -17,6 +20,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -29,58 +33,71 @@ namespace lc
 		using Clock = std::chrono::steady_clock;
 		using namespace std::chrono_literals;
 
-		constexpr int   kRadius = 5;  // regions around the player horizontally
-		constexpr int   kBelow = 3;   // regions below the player
-		constexpr int   kAbove = 2;   // regions above the player
-		constexpr auto  kRefreshNear = 1000ms;     // re-send regions next to the player this often
-		constexpr auto  kFrameBudget = 2500us;     // probing time per frame
-		constexpr int   kMaxColumnsPerFrame = 3;   // column probes (81 natives each) per frame
-		constexpr int   kMaxRegionsPerFrame = 24;  // region jobs queued per frame (cheap once probed)
-		constexpr auto  kRequestLead = 300ms;      // REQUEST_COLLISION_AT_POSN this long before probing a far column
-		constexpr auto  kRetryMissing = 500ms;     // a column with no ground yet: try again after this
-		constexpr float kTopProbeZ = 1000.0f;
-		constexpr float kWalkableNy = 0.7f;
+		constexpr int  kRadius = 5;                // regions around the player horizontally
+		constexpr int  kBelow = 3;                 // regions below the player
+		constexpr int  kAbove = 2;                 // regions above the player
+		constexpr int  kSpanExtra = 2;             // probe this many regions more above and below (jumps, stairs: no re-probe)
+		constexpr auto kFrameBudget = 2500us;      // probing (and water) time per frame
+		constexpr int  kMaxRegionsPerFrame = 48;   // regions handed to the worker per frame
+		constexpr auto kRequestLead = 300ms;       // REQUEST_COLLISION_AT_POSN this long before probing a far column
+		constexpr auto kRetryEmpty = 500ms;        // a column with no collision at all: try again after this
+		constexpr int  kMaxEmptyRetries = 8;       // ...this often, then take it as empty (open air, deep water)
+		constexpr auto kCheckNear = 1000ms;        // re-check the 3x3 columns around the player this often
+		constexpr int  kWaterEvery = 3;            // water grid every n-th harvest frame
 
 		struct Job
 		{
-			int                         rx = 0, ry = 0, rz = 0;
-			std::uint32_t               epoch = 0;
-			bool                        clear = false;
-			Collision::ColumnHeights    heights{};
+			int                                  rx = 0, rz = 0;
+			std::uint32_t                        epoch = 0;
+			bool                                 clear = false;
+			std::shared_ptr<const col::Column>   data;
+			std::vector<int>                     rys;
 		};
 
-		struct Column
+		struct ColumnState
 		{
-			Collision::ColumnHeights heights{};
-			Clock::time_point        probed{};
-			Clock::time_point        requested{};
-			Clock::time_point        retryAt{};
-			bool                     valid = false;
-			bool                     requestedOnce = false;
+			std::shared_ptr<const col::Column> data;
+			std::uint64_t                      hash = 0;
+			std::vector<int>                   sent;  // regions (ry) sent from data
+			Clock::time_point                  requested{}, retryAt{}, checked{};
+			bool                               requestedOnce = false;
+			int                                emptyTries = 0;
 		};
 
 		std::mutex                                     mutex;
 		std::condition_variable                        cv;
 		std::deque<Job>                                queue;
 		std::atomic<std::uint32_t>                     currentEpoch{ 0 };
-		std::unordered_map<std::uint64_t, Clock::time_point> harvested;  // region -> when
-		std::unordered_map<std::uint64_t, Column>      columns;    // (rx, rz) -> heights
+		std::unordered_map<std::uint64_t, ColumnState> columns;  // (rx, rz)
 		std::vector<std::array<int, 3>>                offsets;
 		bool                                           started = false;
+		std::unique_ptr<col::ColumnProbe>              active;
+		std::uint64_t                                  activeKey = 0;
+		std::uint32_t                                  frameNo = 0;
 
 		struct AtomicCounters
 		{
 			std::atomic<std::uint32_t> regions{ 0 }, tris{ 0 }, blocks{ 0 }, columns{ 0 }, columnFailures{ 0 }, collisionRequests{ 0 }, ringWaits{ 0 },
 				dropped{ 0 }, clears{ 0 };
+			std::atomic<std::uint64_t> buildUs{ 0 };
+			std::atomic<std::uint32_t> builds{ 0 };
 		} counters;
 
-		std::uint64_t Key3(int a_x, int a_y, int a_z)
+		// game-thread perf for the 10 s line
+		struct Perf10
 		{
-			return (std::uint64_t(std::uint32_t(a_x) & 0x1FFFFF) << 42) | (std::uint64_t(std::uint32_t(a_y) & 0x1FFFFF) << 21) |
-			       std::uint64_t(std::uint32_t(a_z) & 0x1FFFFF);
-		}
+			std::uint64_t start = 0;
+			double        probeMs = 0.0, maxFrameMs = 0.0, waterMs = 0.0;
+			std::uint32_t frames = 0, workFrames = 0, vertical = 0, wall = 0, checkRays = 0, bad = 0, checks = 0, changed = 0, probed = 0, regionsQueued = 0;
+			std::uint32_t maxRaysFrame = 0;
+		} perf;
 
 		std::uint64_t Key2(int a_x, int a_z) { return (std::uint64_t(std::uint32_t(a_x)) << 32) | std::uint32_t(a_z); }
+
+		bool Covers(const col::Column& a_c, int a_ry)
+		{
+			return float(a_ry * col::kRegion) >= a_c.yLo + 2.0f && float(a_ry * col::kRegion + col::kRegion) <= a_c.yHi - 2.0f;
+		}
 
 		void Send(const std::vector<std::uint8_t>& a_payload, proto::ColType a_type, std::uint32_t a_epoch)
 		{
@@ -99,137 +116,129 @@ namespace lc
 			LC_LOG_EVERY(5000, "collision ring stayed full (or the link went away); dropped a message (type %u)", static_cast<unsigned>(a_type));
 		}
 
-		// Height of the heightfield at MC (x, z) inside the region column, matching the triangles:
-		// each block cell (i, j) is split along its (i, j+1)-(i+1, j) diagonal.
-		float SurfaceAt(const Collision::ColumnHeights& a_h, float a_u, float a_v)  // a_u, a_v in [0, 8)
+		proto::ColRegion RegionHeader(int a_rx, int a_ry, int a_rz, std::uint32_t a_epoch, std::size_t a_count)
 		{
-			constexpr int n = Collision::kCorners;
-			const int     i = std::min(static_cast<int>(a_u), Collision::kRegionSize - 1);
-			const int     j = std::min(static_cast<int>(a_v), Collision::kRegionSize - 1);
-			const float   u = a_u - float(i), v = a_v - float(j);
-			const float   h00 = a_h.h[j * n + i], h10 = a_h.h[j * n + i + 1], h01 = a_h.h[(j + 1) * n + i], h11 = a_h.h[(j + 1) * n + i + 1];
-			if (u + v <= 1.0f) {
-				return h00 + (h10 - h00) * u + (h01 - h00) * v;
-			}
-			return h11 + (h01 - h11) * (1.0f - u) + (h10 - h11) * (1.0f - v);
+			proto::ColRegion h{};
+			h.minX = a_rx * col::kRegion;
+			h.minY = a_ry * col::kRegion;
+			h.minZ = a_rz * col::kRegion;
+			h.maxX = h.minX + col::kRegion - 1;
+			h.maxY = h.minY + col::kRegion - 1;
+			h.maxZ = h.minZ + col::kRegion - 1;
+			h.epoch = a_epoch;
+			h.count = static_cast<std::uint32_t>(a_count);
+			return h;
 		}
 
-		void SendTriangles(const Job& a_job)
+		template <class T>
+		void SendRegion(proto::ColType a_type, const proto::ColRegion& a_header, const std::vector<T>& a_items, std::uint32_t a_epoch)
 		{
-			constexpr int n = Collision::kCorners;
-			const float   x0 = float(a_job.rx * Collision::kRegionSize), z0 = float(a_job.rz * Collision::kRegionSize);
-			const float   loY = float(a_job.ry * Collision::kRegionSize) - 0.5f, hiY = loY + Collision::kRegionSize + 1.0f;
-			std::vector<proto::ColTri> out;
-			out.reserve(2 * Collision::kRegionSize * Collision::kRegionSize);
-			auto add = [&](const float a_a[3], const float a_b[3], const float a_c[3]) {
-				const float lo = std::min({ a_a[1], a_b[1], a_c[1] }), hi = std::max({ a_a[1], a_b[1], a_c[1] });
-				if (hi < loY || lo > hiY) {
-					return;
-				}
-				proto::ColTri t{};
-				std::memcpy(t.v, a_a, 12);
-				std::memcpy(t.v + 3, a_b, 12);
-				std::memcpy(t.v + 6, a_c, 12);
-				// normal = (b - a) x (c - a); its y decides dirt (walkable) or stone (steep)
-				const float ux = a_b[0] - a_a[0], uy = a_b[1] - a_a[1], uz = a_b[2] - a_a[2];
-				const float wx = a_c[0] - a_a[0], wy = a_c[1] - a_a[1], wz = a_c[2] - a_a[2];
-				const float qx = uy * wz - uz * wy, qy = uz * wx - ux * wz, qz = ux * wy - uy * wx;
-				const float len = std::sqrt(qx * qx + qy * qy + qz * qz);
-				const auto  material = len > 0.0f && qy / len >= kWalkableNy ? proto::kDigDirt : proto::kDigStone;
-				t.flags = proto::kTriTerrain | proto::kTriDiggable | (std::uint32_t(material) << proto::kTriMaterialShift);
-				out.push_back(t);
-			};
-			for (int j = 0; j < Collision::kRegionSize; ++j) {
-				for (int i = 0; i < Collision::kRegionSize; ++i) {
-					const float x = x0 + float(i), z = z0 + float(j);
-					const float a[3] = { x, a_job.heights.h[j * n + i], z };                  // (i, j)
-					const float b[3] = { x, a_job.heights.h[(j + 1) * n + i], z + 1.0f };     // (i, j+1)
-					const float c[3] = { x + 1.0f, a_job.heights.h[j * n + i + 1], z };       // (i+1, j)
-					const float d[3] = { x + 1.0f, a_job.heights.h[(j + 1) * n + i + 1], z + 1.0f };  // (i+1, j+1)
-					// Outward winding (normal up, out of the ground): (b - a) x (c - a) has +y.
-					add(a, b, c);
-					add(c, b, d);
-				}
+			std::vector<std::uint8_t> payload(sizeof(a_header) + a_items.size() * sizeof(T));
+			std::memcpy(payload.data(), &a_header, sizeof(a_header));
+			if (!a_items.empty()) {
+				std::memcpy(payload.data() + sizeof(a_header), a_items.data(), a_items.size() * sizeof(T));
 			}
-			proto::ColRegion header{};
-			header.minX = a_job.rx * Collision::kRegionSize;
-			header.minY = a_job.ry * Collision::kRegionSize;
-			header.minZ = a_job.rz * Collision::kRegionSize;
-			header.maxX = header.minX + Collision::kRegionSize - 1;
-			header.maxY = header.minY + Collision::kRegionSize - 1;
-			header.maxZ = header.minZ + Collision::kRegionSize - 1;
-			header.epoch = a_job.epoch;
-			header.count = static_cast<std::uint32_t>(out.size());
-			std::vector<std::uint8_t> payload(sizeof(header) + out.size() * sizeof(proto::ColTri));
-			std::memcpy(payload.data(), &header, sizeof(header));
-			if (!out.empty()) {
-				std::memcpy(payload.data() + sizeof(header), out.data(), out.size() * sizeof(proto::ColTri));
-			}
-			Send(payload, proto::kColTris, a_job.epoch);
-			counters.tris.fetch_add(header.count, std::memory_order_relaxed);
+			Send(payload, a_type, a_epoch);
 		}
 
-		// Every 1/8-block voxel whose centre is at or below the surface is solid.
-		void Voxelize(const Job& a_job)
+		// A few probes against what a column's data says: did anything stream in or out?
+		bool ColumnChanged(const col::Column& a_c)
 		{
-			constexpr int R = Collision::kRegionSize;
-			std::array<proto::ColBlock, R * R * R> grid{};  // [bx + R * (bz + R * by)]
-			const int baseY = a_job.ry * R;
-			for (int vz = 0; vz < R * 8; ++vz) {
-				for (int vx = 0; vx < R * 8; ++vx) {
-					const float h = SurfaceAt(a_job.heights, (float(vx) + 0.5f) / 8.0f, (float(vz) + 0.5f) / 8.0f);
-					const int   bx = vx >> 3, bz = vz >> 3;
-					const auto  bit = std::uint64_t(1) << ((vz & 7) * 8 + (vx & 7));
-					for (int by = 0; by < R; ++by) {
-						// voxel sy is solid when baseY + by + (sy + 0.5) / 8 <= h
-						const float rel = (h - float(baseY + by)) * 8.0f - 0.5f;
-						if (rel < 0.0f) {
-							break;  // this block and every one above it are above the surface here
+			for (int j = 0; j < col::kGrid; j += col::kGrid / 2) {
+				for (int i = 0; i < col::kGrid; i += col::kGrid / 2) {
+					const int        s = col::Column::Index(i, j);
+					const col::Event* e = a_c.Ev(s);
+					const int        n = a_c.Count(s);
+					const col::Event* top = nullptr;
+					const col::Event* bottom = nullptr;
+					for (int k = 0; k < n; ++k) {
+						if (e[k].top && !top) {
+							top = &e[k];
 						}
-						const int count = std::min(8, static_cast<int>(std::floor(rel)) + 1);
-						auto&     blk = grid[bx + R * (bz + R * by)];
-						for (int sy = 0; sy < count; ++sy) {
-							blk.bits[sy] |= bit;
+						if (!e[k].top) {
+							bottom = &e[k];  // the lowest underside
+						}
+					}
+					const float x = a_c.X(i), z = a_c.Z(j);
+					for (int down = 0; down < 2; ++down) {
+						const float     from[3] = { x, down ? a_c.yHi : a_c.yLo, z }, to[3] = { x, down ? a_c.yLo : a_c.yHi, z };
+						col::Hit        h{};
+						const bool      hit = col::CastMc(from, to, h);
+						++perf.checkRays;
+						const col::Event* want = down ? top : bottom;
+						if (hit && !std::isfinite(h.pos[1])) {
+							continue;  // junk: don't judge
+						}
+						if (hit != (want != nullptr) || (hit && std::fabs(h.pos[1] - want->y) > 0.05f)) {
+							return true;
 						}
 					}
 				}
 			}
-			std::vector<proto::ColBlock> blocks;
-			for (int by = 0; by < R; ++by) {
-				for (int bz = 0; bz < R; ++bz) {
-					for (int bx = 0; bx < R; ++bx) {
-						auto&         blk = grid[bx + R * (bz + R * by)];
-						std::uint64_t any = 0;
-						for (auto b : blk.bits) {
-							any |= b;
+			return false;
+		}
+
+		void SelfTest(const McVec& a_c)
+		{
+			const float from[3] = { static_cast<float>(a_c.x), static_cast<float>(a_c.y) + 3.0f, static_cast<float>(a_c.z) };
+			const float to[3] = { from[0], from[1] - 6.0f, from[2] };
+			col::Hit    h{};
+			const bool  hit = col::CastMc(from, to, h);
+			LC_LOG("collision v2 self-test: probe down at MC (%.2f %.2f %.2f): hit %d at y %.3f normal (%.3f %.3f %.3f)", from[0], a_c.y, from[2], hit, h.pos[1],
+				h.n[0], h.n[1], h.n[2]);
+			// Is there water anywhere around? (GET_WATER_HEIGHT_NO_WAVES over +-600 m)
+			int   wet = 0;
+			float lo = 1e9f, hi = -1e9f, best = 1e9f, bx = 0, bz = 0;
+			for (int dz = -6; dz <= 6; ++dz) {
+				for (int dx = -6; dx <= 6; ++dx) {
+					const float x = static_cast<float>(a_c.x) + dx * 100.0f, z = static_cast<float>(a_c.z) + dz * 100.0f;
+					float       wh = 0.0f;
+					if (::Scripting::GET_WATER_HEIGHT_NO_WAVES(x, -z, static_cast<float>(a_c.y) + 2.0f, &wh) && std::isfinite(wh)) {
+						++wet;
+						lo = std::min(lo, wh);
+						hi = std::max(hi, wh);
+						const float d = std::hypot(dx * 100.0f, dz * 100.0f);
+						if (d < best) {
+							best = d;
+							bx = x;
+							bz = z;
 						}
-						if (!any) {
-							continue;
-						}
-						blk.x = a_job.rx * R + bx;
-						blk.y = baseY + by;
-						blk.z = a_job.rz * R + bz;
-						blocks.push_back(blk);
 					}
 				}
 			}
-			proto::ColRegion header{};
-			header.minX = a_job.rx * R;
-			header.minY = baseY;
-			header.minZ = a_job.rz * R;
-			header.maxX = header.minX + R - 1;
-			header.maxY = header.minY + R - 1;
-			header.maxZ = header.minZ + R - 1;
-			header.epoch = a_job.epoch;
-			header.count = static_cast<std::uint32_t>(blocks.size());
-			std::vector<std::uint8_t> payload(sizeof(header) + blocks.size() * sizeof(proto::ColBlock));
-			std::memcpy(payload.data(), &header, sizeof(header));
-			if (!blocks.empty()) {
-				std::memcpy(payload.data() + sizeof(header), blocks.data(), blocks.size() * sizeof(proto::ColBlock));
+			LC_LOG("collision v2 self-test: water at %d of 169 points within 600 m (surface %.2f..%.2f), nearest at MC (%.0f, %.0f), %.0f m away", wet,
+				wet ? lo : 0.0f, wet ? hi : 0.0f, bx, bz, wet ? best : 0.0f);
+		}
+
+		void LogPerf(std::uint64_t a_nowMs)
+		{
+			if (perf.start == 0) {
+				perf.start = a_nowMs;
+				return;
 			}
-			Send(payload, proto::kColRegion, a_job.epoch);
-			counters.blocks.fetch_add(header.count, std::memory_order_relaxed);
-			counters.regions.fetch_add(1, std::memory_order_relaxed);
+			if (a_nowMs - perf.start < 10000) {
+				return;
+			}
+			const double secs = double(a_nowMs - perf.start) / 1000.0;
+			const auto   builds = counters.builds.exchange(0);
+			const auto   buildUs = counters.buildUs.exchange(0);
+			std::size_t  queued = 0;
+			{
+				std::lock_guard lock(mutex);
+				queued = queue.size();
+			}
+			LC_LOG("collision v2 %.0fs: %u columns probed (%.1f/s), probes: %u vertical + %u wall + %u check (%u bad), %.0f/frame avg, max %u; "
+				   "probe time %.1f ms (%.2f ms/frame avg over %u frames, %.2f max), %u checks (%u changed), %u regions queued (%.1f/s), "
+				   "worker %u columns %.1f ms avg, queue %zu; water %u writes %.2f ms/write, %u wet cells, %u suppressed",
+				secs, perf.probed, perf.probed / secs, perf.vertical, perf.wall, perf.checkRays, perf.bad,
+				perf.frames ? double(perf.vertical + perf.wall + perf.checkRays) / perf.frames : 0.0, perf.maxRaysFrame, perf.probeMs,
+				perf.frames ? perf.probeMs / perf.frames : 0.0, perf.frames, perf.maxFrameMs, perf.checks, perf.changed, perf.regionsQueued,
+				perf.regionsQueued / secs, builds, builds ? double(buildUs) / builds / 1000.0 : 0.0, queued, col::waterStats.writes,
+				col::waterStats.writes ? perf.waterMs / col::waterStats.writes : 0.0, col::waterStats.wetCells, col::waterStats.suppressed);
+			perf = {};
+			perf.start = a_nowMs;
+			col::waterStats = {};
+			col::rayCounters = {};
 		}
 	}
 
@@ -255,16 +264,16 @@ namespace lc
 		std::stable_sort(offsets.begin(), offsets.end(),
 			[](const auto& a, const auto& b) { return a[0] * a[0] + a[2] * a[2] + a[1] * a[1] * 2 < b[0] * b[0] + b[2] * b[2] + b[1] * b[1] * 2; });
 		std::thread([this] { WorkerLoop(); }).detach();
-		LC_LOG("collision v1 (ground heightfield) started: %zu regions around the player, probe from %s", offsets.size(),
-			Config::Get().probeFrom == Config::ProbeFrom::kFeet ? "the feet" : "the top (1000 m)");
+		LC_LOG("collision v2 (line probes: floors, ceilings, walls) started: %zu regions around the player, %.0f us probe budget a frame", offsets.size(),
+			std::chrono::duration<double, std::micro>(kFrameBudget).count());
 	}
 
 	void Collision::Reset(std::uint32_t a_epoch)
 	{
 		Start();
 		currentEpoch = a_epoch;
-		harvested.clear();
 		columns.clear();
+		active.reset();
 		std::lock_guard lock(mutex);
 		queue.clear();
 		Job job{};
@@ -274,133 +283,195 @@ namespace lc
 		cv.notify_one();
 	}
 
-	bool Collision::HarvestColumn(int a_rx, int a_rz, float a_feetGtaZ, ColumnHeights& a_out)
-	{
-		// TODO(v2): real geometry instead of the ground height (see Collision.h).
-		const float startZ = Config::Get().probeFrom == Config::ProbeFrom::kFeet ? a_feetGtaZ + Config::Get().probeHeight : kTopProbeZ;
-		int         missing = 0;
-		bool        miss[kCorners * kCorners]{};
-		for (int j = 0; j < kCorners; ++j) {
-			for (int i = 0; i < kCorners; ++i) {
-				const GtaVec g = McToGta(double(a_rx * kRegionSize + i), 0.0, double(a_rz * kRegionSize + j));
-				float        z = 0.0f;
-				::Scripting::GET_GROUND_Z_FOR_3D_COORD(static_cast<float>(g.x), static_cast<float>(g.y), startZ, &z);
-				// 0 exactly: nothing found (collision not streamed in). Liberty City's ground is never
-				// exactly at sea level, so this costs at most a corner.
-				if (z == 0.0f || !std::isfinite(z) || z > startZ) {
-					miss[j * kCorners + i] = true;
-					++missing;
-				}
-				a_out.h[j * kCorners + i] = z;  // GTA z == MC y
-			}
-		}
-		if (missing * 2 > kCorners * kCorners) {
-			return false;
-		}
-		if (missing) {
-			// Fill the odd hole with the lowest found height (never invents a wall).
-			float lowest = 1e9f;
-			for (int k = 0; k < kCorners * kCorners; ++k) {
-				if (!miss[k]) {
-					lowest = std::min(lowest, a_out.h[k]);
-				}
-			}
-			for (int k = 0; k < kCorners * kCorners; ++k) {
-				if (miss[k]) {
-					a_out.h[k] = lowest;
-				}
-			}
-		}
-		return true;
-	}
-
 	void Collision::Update(const McVec& a_centerMc, float a_feetGtaZ)
 	{
 		Start();
+		(void)a_feetGtaZ;
+		static bool selfTested = false;
+		if (!selfTested) {
+			selfTested = true;
+			SelfTest(a_centerMc);
+		}
+		++frameNo;
+		const auto frameStart = Clock::now();
+		const auto deadline = frameStart + kFrameBudget;
+		const auto t0 = Perf::Now();
+		const auto rays0 = col::rayCounters.rays;
+
+		if (frameNo % kWaterEvery == 0) {
+			const auto w0 = Perf::Now();
+			col::WriteWater(a_centerMc);
+			perf.waterMs += double(Perf::Now() - w0) / Perf::TicksPerMs();
+		}
+
 		const int  prx = static_cast<int>(std::floor(a_centerMc.x / kRegionSize));
 		const int  pry = static_cast<int>(std::floor(a_centerMc.y / kRegionSize));
 		const int  prz = static_cast<int>(std::floor(a_centerMc.z / kRegionSize));
-		const auto start = Clock::now();
 		const auto epoch = currentEpoch.load();
-		int        probes = 0, jobs = 0;
+		auto       outOfTime = [&] { return Clock::now() >= deadline; };
+		auto       ray = [](const float* a_from, const float* a_to, col::Hit& a_hit) { return col::CastMc(a_from, a_to, a_hit); };
 
-		for (const auto& o : offsets) {
-			const int  rx = prx + o[0], ry = pry + o[1], rz = prz + o[2];
-			const auto key = Key3(rx, ry, rz);
-			const auto it = harvested.find(key);
-			const bool isNear = std::abs(o[0]) <= 1 && std::abs(o[2]) <= 1 && o[1] >= -1 && o[1] <= 0;
-			if (it != harvested.end() && !(isNear && start - it->second > kRefreshNear)) {
-				continue;
-			}
-			auto&      col = columns[Key2(rx, rz)];
-			const bool nearColumn = std::abs(o[0]) <= 1 && std::abs(o[2]) <= 1;
-			const bool stale = !col.valid || (isNear && start - col.probed > kRefreshNear);
-			if (stale) {
-				if (start < col.retryAt) {
-					continue;
-				}
-				// Far columns: ask the streamer for their collision first, probe a little later.
-				if (!nearColumn && !col.requestedOnce) {
-					const GtaVec c = McToGta(double(rx * kRegionSize + kRegionSize / 2), 0.0, double(rz * kRegionSize + kRegionSize / 2));
-					::Scripting::REQUEST_COLLISION_AT_POSN(static_cast<float>(c.x), static_cast<float>(c.y), a_feetGtaZ);
-					col.requestedOnce = true;
-					col.requested = start;
-					counters.collisionRequests.fetch_add(1, std::memory_order_relaxed);
-					continue;
-				}
-				if (!nearColumn && start - col.requested < kRequestLead) {
-					continue;
-				}
-				if (probes >= kMaxColumnsPerFrame || Clock::now() - start > kFrameBudget) {
-					break;
-				}
-				++probes;
-				counters.columns.fetch_add(1, std::memory_order_relaxed);
-				ColumnHeights heights{};
-				if (!HarvestColumn(rx, rz, a_feetGtaZ, heights)) {
+		// A column finished probing: keep it (or retry later if nothing was loaded there yet).
+		auto finish = [&] {
+			auto        data = active->Result();
+			auto&       st = columns[activeKey];
+			perf.vertical += active->verticalRays;
+			perf.wall += active->wallRays;
+			perf.bad += active->badHits;
+			if (data->emptySamples == static_cast<std::uint32_t>(col::kSamples)) {
+				// Not a single surface in the span: not streamed in yet, or open air / deep water.
+				// GET_GROUND_Z_FOR_3D_COORD says 0 where nothing is loaded at all.
+				const float cx = float(data->rx * col::kRegion + col::kRegion / 2), cz = float(data->rz * col::kRegion + col::kRegion / 2);
+				float       ground = 0.0f;
+				::Scripting::GET_GROUND_Z_FOR_3D_COORD(cx, -cz, 1000.0f, &ground);
+				if (ground == 0.0f && st.emptyTries < kMaxEmptyRetries) {
+					++st.emptyTries;
+					st.retryAt = Clock::now() + kRetryEmpty;
+					st.requestedOnce = false;  // ask again
 					counters.columnFailures.fetch_add(1, std::memory_order_relaxed);
-					col.retryAt = start + kRetryMissing;
-					col.requestedOnce = false;  // ask again
-					continue;
+					active.reset();
+					return;
 				}
-				col.heights = heights;
-				col.valid = true;
-				col.probed = start;
 			}
-			Job job{};
-			job.rx = rx;
-			job.ry = ry;
-			job.rz = rz;
-			job.epoch = epoch;
-			job.heights = col.heights;
-			{
-				std::lock_guard lock(mutex);
-				queue.push_back(job);
+			st.emptyTries = 0;
+			const auto hash = data->Hash();
+			if (!st.data || hash != st.hash) {
+				st.sent.clear();  // (re)send every region from the new data
 			}
-			cv.notify_one();
-			harvested[key] = start;
-			if (++jobs >= kMaxRegionsPerFrame) {
+			st.hash = hash;
+			st.data = data;
+			st.checked = Clock::now();
+			++perf.probed;
+			counters.columns.fetch_add(1, std::memory_order_relaxed);
+			active.reset();
+		};
+
+		if (active && active->Run(ray, outOfTime)) {
+			finish();
+		}
+
+		// What's due, nearest first: regions whose column is probed go to the worker; the first
+		// column that isn't gets probed.
+		struct Pending
+		{
+			std::uint64_t                      key;
+			int                                rx, rz;
+			std::shared_ptr<const col::Column> data;
+			std::vector<int>                   rys;
+		};
+		std::vector<Pending> pending;
+		int                  queuedRegions = 0;
+		for (const auto& o : offsets) {
+			if (queuedRegions >= kMaxRegionsPerFrame) {
 				break;
 			}
+			const int  rx = prx + o[0], ry = pry + o[1], rz = prz + o[2];
+			const auto key = Key2(rx, rz);
+			auto&      st = columns[key];
+			if (st.data && Covers(*st.data, ry)) {
+				if (std::find(st.sent.begin(), st.sent.end(), ry) == st.sent.end()) {
+					st.sent.push_back(ry);
+					auto it = std::find_if(pending.begin(), pending.end(), [&](const Pending& p) { return p.key == key; });
+					if (it == pending.end()) {
+						pending.push_back({ key, rx, rz, st.data, {} });
+						it = pending.end() - 1;
+					}
+					it->rys.push_back(ry);
+					++queuedRegions;
+				}
+				continue;
+			}
+			if (active || outOfTime() || Clock::now() < st.retryAt) {
+				continue;
+			}
+			const bool nearColumn = std::abs(o[0]) <= 1 && std::abs(o[2]) <= 1;
+			if (!nearColumn && !st.requestedOnce) {
+				const GtaVec c = McToGta(double(rx * kRegionSize + kRegionSize / 2), a_centerMc.y, double(rz * kRegionSize + kRegionSize / 2));
+				::Scripting::REQUEST_COLLISION_AT_POSN(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z));
+				st.requestedOnce = true;
+				st.requested = Clock::now();
+				counters.collisionRequests.fetch_add(1, std::memory_order_relaxed);
+				continue;
+			}
+			if (!nearColumn && Clock::now() - st.requested < kRequestLead) {
+				continue;
+			}
+			const float yLo = float((std::min(pry, ry) - kBelow - kSpanExtra) * kRegionSize);
+			const float yHi = float((std::max(pry, ry) + kAbove + 1 + kSpanExtra) * kRegionSize);
+			active = std::make_unique<col::ColumnProbe>(rx, rz, yLo, yHi);
+			activeKey = key;
+			if (active->Run(ray, outOfTime)) {
+				finish();
+			}
+		}
+		if (!pending.empty()) {
+			std::lock_guard lock(mutex);
+			for (auto& p : pending) {
+				Job job{};
+				job.rx = p.rx;
+				job.rz = p.rz;
+				job.epoch = epoch;
+				job.data = std::move(p.data);
+				job.rys = std::move(p.rys);
+				queue.push_back(std::move(job));
+			}
+			cv.notify_one();
+			perf.regionsQueued += static_cast<std::uint32_t>(queuedRegions);
 		}
 
-		// Bound memory: drop bookkeeping for far-away regions now and then.
-		if (harvested.size() > offsets.size() * 4) {
-			harvested.clear();
+		// Re-check one of the 3x3 columns around the player now and then (late streaming).
+		if (!outOfTime()) {
+			const auto now = Clock::now();
+			for (int dz = -1; dz <= 1; ++dz) {
+				for (int dx = -1; dx <= 1; ++dx) {
+					auto it = columns.find(Key2(prx + dx, prz + dz));
+					if (it == columns.end() || !it->second.data || now - it->second.checked < kCheckNear || (active && activeKey == it->first)) {
+						continue;
+					}
+					it->second.checked = now;
+					++perf.checks;
+					if (ColumnChanged(*it->second.data)) {
+						++perf.changed;
+						it->second.data.reset();  // re-probed by the scan; regions resent if the data differs
+						it->second.hash = 0;
+					}
+					dz = dx = 2;  // one a frame
+				}
+			}
 		}
-		if (columns.size() > 4 * (2 * kRadius + 1) * (2 * kRadius + 1)) {
-			columns.clear();
+
+		// Bound memory: forget columns well outside the harvest area.
+		if (frameNo % 120 == 0 && columns.size() > std::size_t((2 * kRadius + 5) * (2 * kRadius + 5))) {
+			for (auto it = columns.begin(); it != columns.end();) {
+				const int cx = static_cast<int>(static_cast<std::int32_t>(it->first >> 32)), cz = static_cast<int>(static_cast<std::int32_t>(it->first & 0xFFFFFFFF));
+				if ((std::abs(cx - prx) > kRadius + 2 || std::abs(cz - prz) > kRadius + 2) && !(active && activeKey == it->first)) {
+					it = columns.erase(it);
+				} else {
+					++it;
+				}
+			}
 		}
+
+		const double ms = double(Perf::Now() - t0) / Perf::TicksPerMs();
+		const auto   rays = col::rayCounters.rays - rays0;
+		++perf.frames;
+		perf.probeMs += ms;
+		perf.maxFrameMs = std::max(perf.maxFrameMs, ms);
+		perf.maxRaysFrame = std::max(perf.maxRaysFrame, rays);
+		LogPerf(::GetTickCount64());
 	}
 
 	void Collision::WorkerLoop()
 	{
+		std::vector<col::Tri>        all, regionTris;
+		std::vector<proto::ColTri>   out;
+		std::vector<proto::ColBlock> blocks;
 		for (;;) {
 			Job job;
 			{
 				std::unique_lock lock(mutex);
 				cv.wait(lock, [] { return !queue.empty(); });
-				job = queue.front();
+				job = std::move(queue.front());
 				queue.pop_front();
 			}
 			if (job.clear) {
@@ -409,10 +480,37 @@ namespace lc
 				Send(payload, proto::kColClear, job.epoch);
 				counters.clears.fetch_add(1, std::memory_order_relaxed);
 				LC_LOG("kColClear epoch %u sent", job.epoch);
-			} else if (job.epoch == currentEpoch.load()) {
-				SendTriangles(job);  // triangles first, like SkyCraft (kColTris precedes kColRegion)
-				Voxelize(job);
+				continue;
 			}
+			if (job.epoch != currentEpoch.load() || !job.data) {
+				continue;
+			}
+			const auto t0 = Clock::now();
+			col::BuildColumn(*job.data, all);
+			for (int ry : job.rys) {
+				if (job.epoch != currentEpoch.load()) {
+					break;
+				}
+				col::RegionTris(all, job.rx, ry, job.rz, regionTris);
+				out.clear();
+				out.reserve(regionTris.size());
+				for (const auto& t : regionTris) {
+					proto::ColTri c{};
+					std::memcpy(c.v, t.v, sizeof(c.v));
+					c.flags = t.flags;
+					out.push_back(c);
+				}
+				// triangles first, like SkyCraft (kColTris precedes kColRegion)
+				SendRegion(proto::kColTris, RegionHeader(job.rx, ry, job.rz, job.epoch, out.size()), out, job.epoch);
+				counters.tris.fetch_add(static_cast<std::uint32_t>(out.size()), std::memory_order_relaxed);
+				col::Voxelize(regionTris, job.rx, ry, job.rz, blocks);
+				SendRegion(proto::kColRegion, RegionHeader(job.rx, ry, job.rz, job.epoch, blocks.size()), blocks, job.epoch);
+				counters.blocks.fetch_add(static_cast<std::uint32_t>(blocks.size()), std::memory_order_relaxed);
+				counters.regions.fetch_add(1, std::memory_order_relaxed);
+			}
+			counters.buildUs.fetch_add(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - t0).count()),
+				std::memory_order_relaxed);
+			counters.builds.fetch_add(1, std::memory_order_relaxed);
 		}
 	}
 

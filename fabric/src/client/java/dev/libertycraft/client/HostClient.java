@@ -155,11 +155,16 @@ public final class HostClient {
 	private static final long NEVER_CONNECTED_QUIT_MS = 10 * 60 * 1000;
 	private static final long STARTED_AT = System.currentTimeMillis();
 	private static boolean gaveUpWaiting;
+	// The bridge file outlives GTA IV, so at startup its header may still name an earlier, closed
+	// GTA IV (pid set, heartbeat stale). That one must not count as "GTA IV has closed": only a host
+	// we have seen alive in this run can close on us (seen: Minecraft started before GTA IV quit
+	// at once on such a stale header).
+	private static boolean hostSeenAlive;
 
 	private static void quitWithHost(Minecraft minecraft) {
 		int pid = Link.hostPid();
 		long now = System.currentTimeMillis();
-		if (QUIT_WITH_HOST && START_HIDDEN && pid == 0 && !tookOver && !gaveUpWaiting && now - STARTED_AT > NEVER_CONNECTED_QUIT_MS) {
+		if (QUIT_WITH_HOST && START_HIDDEN && (pid == 0 || !hostSeenAlive) && !tookOver && !gaveUpWaiting && now - STARTED_AT > NEVER_CONNECTED_QUIT_MS) {
 			gaveUpWaiting = true;
 			LibertyCraft.LOG.warn("[LibertyCraft] started hidden but GTA IV never connected in {} minutes; quitting", NEVER_CONNECTED_QUIT_MS / 60000);
 			minecraft.stop();
@@ -171,8 +176,12 @@ public final class HostClient {
 		nextHostCheck = now + 1000;
 		// Process check on Windows, heartbeat age (8 s) under Wine: see Link.hostAlive.
 		if (Link.hostAlive()) {
+			hostSeenAlive = true;
 			hostGoneSince = 0;
 			return;
+		}
+		if (!hostSeenAlive) {
+			return;   // a stale header from an earlier GTA IV: keep waiting for a live one
 		}
 		if (hostGoneSince == 0) {
 			hostGoneSince = now;
@@ -300,8 +309,10 @@ public final class HostClient {
 	}
 
 	private static Vec3 liftOutOfGeometry(LocalPlayer player, Vec3 pos) {
-		// Stand on the exact GTA IV ground if it is slightly above the feet (up to 2.5 blocks).
-		double ground = HostCollider.groundAt(pos.x, pos.y, pos.z, 2.5);
+		// Stand on the exact GTA IV ground if it is slightly above the feet. GTA IV reports the feet
+		// to within centimetres (unlike Skyrim, hence SkyCraft's 2.5 blocks), and collision v2 sends
+		// ceilings and awnings too, so only walkable ground up to one block above the feet counts.
+		double ground = HostCollider.walkableGroundAt(pos.x, pos.y, pos.z, 1.0);
 		return !Double.isNaN(ground) && ground > pos.y ? new Vec3(pos.x, ground, pos.z) : pos;
 	}
 

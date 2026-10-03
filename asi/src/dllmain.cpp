@@ -19,6 +19,7 @@
 #include "Collision.cpp"
 #include "Render.cpp"
 #include "Overlay.cpp"
+#include "Combat.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

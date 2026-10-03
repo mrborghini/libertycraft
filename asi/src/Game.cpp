@@ -6,6 +6,7 @@
 #include "Game.h"
 
 #include "Collision.h"
+#include "Combat.h"
 #include "Config.h"
 #include "Coords.h"
 #include "Input.h"
@@ -34,7 +35,8 @@ namespace lc::Game
 		Shared shared;
 
 		// ---- everything below is only touched on the game thread ------------------------------------
-		proto::McState mc{};
+		proto::McState mc{};              // last McState read cleanly (never a torn copy)
+		std::uint64_t  mcGoodMs = 0;      // GetTickCount64() of that read; 0 = none yet
 		bool           mcWasAlive = false;
 		std::uint32_t  lastMcPid = 0;
 		std::uint32_t  linkGeneration = 0;
@@ -341,7 +343,8 @@ namespace lc::Game
 				S::FREEZE_CHAR_POSITION(a_ped, true);
 			}
 			S::SET_CHAR_COLLISION(a_ped, false);
-			S::SET_CHAR_INVINCIBLE(a_ped, true);
+			// Combat keeps the ped vulnerable (on a refilled health buffer) to forward GTA's damage.
+			S::SET_CHAR_INVINCIBLE(a_ped, !Combat::OwnsPlayerHealth());
 			S::DISPLAY_HUD(false);
 			S::DISPLAY_RADAR(false);
 		}
@@ -554,7 +557,7 @@ namespace lc::Game
 
 	void ReportHurt(std::uint16_t a_kind, float a_damage, std::uint32_t a_attacker, std::uint32_t a_flags)
 	{
-		// TODO(combat stream): call this when GTA damages the player while puppeting.
+		// Combat calls this when GTA damages the player while puppeting.
 		Link::Get().PushInput(proto::kInHurt, a_kind, static_cast<std::int32_t>(a_damage * 100.0f), static_cast<std::int32_t>(a_attacker),
 			static_cast<std::int32_t>(a_flags));
 	}
@@ -564,6 +567,7 @@ namespace lc::Game
 		// A save / new game / episode is about to load: the ped and our cameras are going away.
 		LC_LOG("game (re)loading: dropping puppet state");
 		LeavePuppet("the game is loading a save", false);
+		Combat::OnIngameStartup();
 		teleportPending = true;
 		haveLastSet = false;
 		measured = false;
@@ -608,10 +612,23 @@ namespace lc::Game
 			linkGeneration = link.Generation();
 		}
 		const bool mcAlive = link.MinecraftAlive();
+		// A single failed seqlock read (Minecraft mid-write, a GC pause, a slow Python stand-in) must
+		// not drop puppet mode: that releases Niko's protections for a frame (seen in game: a
+		// Minecraft explosion killed Niko 130 ms after such a flicker). Read into a scratch copy so a
+		// torn read never reaches `mc`, and keep using the last clean state for a short grace period.
+		constexpr std::uint64_t kMcStaleGraceMs = 250;
 		bool       haveMc = false;
 		if (mcAlive) {
-			haveMc = link.ReadMcState(mc);
-			++(haveMc ? stats.mcReads : stats.mcReadFails);
+			proto::McState fresh{};
+			const bool ok = link.ReadMcState(fresh);
+			++(ok ? stats.mcReads : stats.mcReadFails);
+			if (ok) {
+				mc = fresh;
+				mcGoodMs = nowMs;
+			}
+			haveMc = mcGoodMs != 0 && nowMs - mcGoodMs <= kMcStaleGraceMs;
+		} else {
+			mcGoodMs = 0;
 		}
 		const auto mcPid = link.McPid();
 		const bool newMcProcess = mcAlive && mcPid != 0 && mcPid != lastMcPid;
@@ -852,12 +869,19 @@ namespace lc::Game
 				sky.yaw, sky.viewportW, sky.viewportH, sky.gameHour);
 		}
 
-		// ---- Minecraft's events (combat is a later stream: count and log them) ------------------------
-		proto::McEvent event{};
-		for (int i = 0; i < 64 && link.PopEvent(event); ++i) {
-			++stats.events;
-			LC_LOG_EVERY(1000, "event from Minecraft: type %u form %08X a %.2f b %.2f c %.2f d %.2f flags 0x%X (not handled yet)", event.type, event.formId,
-				event.a, event.b, event.c, event.d, event.flags);
+		// ---- combat: the actor table, Minecraft's events, GTA's damage to the puppeted player ------------
+		{
+			Combat::Frame cf;
+			cf.player = player;
+			cf.ped = exists ? ped : 0;
+			cf.exists = exists;
+			cf.loading = loading;
+			cf.dead = dead;
+			cf.puppeting = puppeting;
+			cf.mcInWorld = mcInWorld;
+			cf.mc = haveMc ? &mc : nullptr;
+			cf.dt = dt;
+			stats.events += Combat::Tick(cf);
 		}
 
 		// ---- collision --------------------------------------------------------------------------------
