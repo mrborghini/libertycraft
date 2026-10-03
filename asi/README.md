@@ -66,9 +66,10 @@ with `--demo-section` writes an atlas + a few cubes into the render ring.
 | `render/World.*` | the D3D9 block renderer: atlas + mips, section vertex buffers, entities/scene/avatar, outline and cracks, Minecraft lighting, depth-tested against GTA's (FusionFix log) depth |
 | `render/RenderMath.h`, `render/Shaders.h`, `render/Frame.h`, `render/D3D9Util.h` | pure helpers (tested on Linux), the HLSL (compiled at runtime by d3dcompiler_47), the frame snapshot, D3D9 helpers |
 | `Overlay.*` | Minecraft's GUI/HUD composited over the frame (premultiplied alpha, crosshair invert pass, cursor) |
-| `HostDrive.*`, `DriveLogic.h` | vehicles and Niko mode: who drives the player (Minecraft or GTA IV) |
+| `HostDrive.*`, `DriveLogic.h` | vehicles and Niko mode: who drives the player (Minecraft or GTA IV); after a vehicle or a knockdown GTA keeps Niko until he really stands; a car running into the puppeted player (or one of GTA's explosions) knocks them over (`RagdollOnVehicleHit`) |
+| `NikoBody.*`, `render/Body.h` | the Minecraft body on Niko's skeleton (`MinecraftBody`): while GTA animates Niko (vehicles, knockdowns, cutscenes, Niko mode) he is hidden and Minecraft's standing body (`kRenRagdoll`) is drawn with each part on his bones, sized to him (see Vehicles and Niko mode). `render/Body.h` is SDK-free and tested on Linux (`tests/body_test.cpp`) |
 | `Coords.h` | GTA <-> MC coordinates, heading <-> yaw, camera basis |
-| `Combat.*`, `combat/CombatMath.h` | actor table (peds, and vehicles as pieces along their length -> Minecraft stand-ins), Minecraft hits/explosions/death -> GTA (vehicle hits: body/engine damage, windows, fire; arrows also hit the people inside), GTA damage to the puppeted player -> `kInHurt` |
+| `Combat.*`, `combat/CombatMath.h` | actor table (peds, and vehicles as rows of small boxes that stay within 0.2 m of the car's outline whichever way it faces -> Minecraft stand-ins), Minecraft hits/explosions/death -> GTA (vehicle hits: body/engine damage and fire; where a hit landed (`kEvHitPoint`) is followed into the car's model box, so a blow or an arrow on a side window's glass breaks that window (no native breaks a windscreen) and an arrow through any glass hits whoever sits behind it, who dies slumped in the seat), GTA damage to the puppeted player -> `kInHurt` |
 | `Doors.*` | GTA's doors swing open for the Minecraft player (Niko is frozen with collision off, so he never pushes one): a door (object pool, `collision/Objects.h`'s door shape) opens away from the player when they walk into it, through GTA's door state (`SET_STATE_OF_CLOSEST_DOOR_OF_TYPE`; object heading or a push as fallbacks), and is shut and handed back to GTA once they are clear |
 | `NpcBlocks.*`, `combat/BlockPush.h` | Minecraft's blocks are solid for GTA's peds and vehicles: `kRenSolids` bitsets (handed over by `render/World.cpp`'s ring consumer) push peds out of block columns (they follow walls round) and take the speed into blocks off cars and bikes. `BlockPush.h` is SDK-free and tested on Linux (`tests/combat_test.cpp`) |
 | `Config.*`, `Log.*`, `CrashLog.*`, `Perf.h` | ini, log file, crash handler, frame-time stats |
@@ -186,6 +187,8 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `Diagnostics` | `0` | stats every second instead of every 10 s, camera matrix dumps |
 | `LogPerf` | `1` | one frame-time line a minute (10 s with Diagnostics) |
 | `FreezePed` | `1` | `FREEZE_CHAR_POSITION` while puppeting (0: zero the velocity every frame) |
+| `PuppetPlayerControl` | `1` | the player keeps GTA's player control while puppeted (its pad is zeroed, so GTA doesn't move him): without it GTA's peds and police take him for a cutscene player and stop fighting and chasing him |
+| `PuppetCollision` | `0` | not in the default ini: the puppeted ped keeps its collision (not needed for GTA's peds and police to fight him: with player control on, their shots and blows reach him either way) |
 | `RootToFeet` | `1.0` | metres from the ped root to its feet until measured |
 | `MeasureRootToFeet` | `1` | measure it in game |
 | `ProbeFrom` | `top` | unused since collision v2 (was the v1 heightfield probe start) |
@@ -199,7 +202,11 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `RagdollOnHit` | `1` | a Minecraft hit ragdolls the ped and pushes it along the knockback (away from the attacker) |
 | `VehicleDamageScale` | `15` | Minecraft damage x this = GTA body and engine health off a vehicle (1000 each). An engine run below 0 catches fire and blows up a few seconds later; a hit on a burning one blows it up at once |
 | `NpcBlocks` | `1` | Minecraft's blocks are solid for GTA's peds (pushed back out, they follow the wall) and cars and bikes (their speed into the blocks is taken off) |
+| `GtaCrimes` | `1` | Minecraft's attacks are GTA crimes: the victim fights back (cops, gangs, one civilian in three) or runs, a driver whose car is hit drives off, and the police seeing it (hurting a cop always, a killing seen by anyone) give the player a wanted level |
+| `DebugWanted` | `0` | test hook: N s into play, 2 wanted stars; then every 3 s for a minute the police's interest (wanted level, cops near, in combat, shooting) and the player's health |
 | `NpcPushMethod` | `0` | not in the default ini: how a ped is moved out of blocks (`0` the entity's own set-position, `1` `SET_CHAR_COORDINATES_NO_OFFSET`) |
+| `DebugTestCar` | `0` | test hook: N s into play, park an Admiral with a driver and a front passenger 4 m east of the player (left side toward the player, frozen), log its windows and its people's health as they change, and 90 s later move it 6 m in front of the camera for a screenshot. `-N`: park it 6 m in front of the camera with all four seats taken, and from 8 s on shoot a lethal arrow through each side window in turn (the same code path as Minecraft's hits) |
+| `DebugDieInCarAB` | `0` | test hook: killing blows on vehicle occupants cycle through the ways of dealing them (`DAMAGE_CHAR`, `EXPLODE_CHAR_HEAD`, `SET_CHAR_HEALTH 0`), and each killed occupant's pelvis is logged in the car's frame 0.5, 1.5 and 4 s later |
 | `DebugKnockbackVariant` | `-1` | test hook: Minecraft's hits shove peds a different way each hit (0 world direction, 1 turned into the ped's frame, 2 the old flags, 3 no force), cycling from this one, and log how far along the push each went |
 | `Render` | `1` | draw Minecraft's blocks and HUD in GTA's frame (0: only drain the render ring) |
 | `RenderCamera` | `auto` | the blocks' camera: `auto` (the render phase's grcViewport, else the final cam), `phase`, `current` (grcViewport::sm_pCurrent), `finalcam` |
@@ -224,6 +231,14 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `PuppetMove` | `direct` | how the puppeted ped is placed: `direct` (the natives' own move without their clearing, see Conventions) or `native` (`SET_CHAR_COORDINATES_NO_OFFSET`: deletes the cars and peds the player walks into) |
 | `DebugWalkThroughCar` | `0` | test hook: walks the puppet target through a parked (ambient) car and into a pedestrian, once with each move method, and logs whether they survive |
 | `DebugFocusCycle` | `0` | test hook: a window of the plugin's own takes the foreground for 3 s and gives it back, twice (alt-tab without a keyboard); SendInput mouse moves before and after show whether raw mouse input still arrives. The first cycle runs without the raw mouse watchdog |
+| `RagdollOnVehicleHit` | `1` | a car running into the puppeted player (faster than 3 m/s, the player inside its box) knocks them over: GTA takes Niko, ragdolls him along the car's way and keeps him until he is back up; the hit hurts the Minecraft player (2.5 GTA damage per m/s / `PlayerDamageScale`, plus what GTA does to him while he tumbles). One of GTA's explosions hurting the puppeted player (20+ health) does the same, away from what blew up |
+| `MinecraftBody` | `1` | while GTA animates Niko, show the Minecraft body following his animation instead of him (master switch) |
+| `MinecraftBodyCutscenes`, `MinecraftBodyVehicles`, `MinecraftBodyNikoMode` | `1`, `1`, `0` | ... in cutscenes; getting into, driving, bailing out of and getting out of vehicles (0: Niko as before, the Minecraft player on its mount in the seat); in Niko mode. Knockdowns follow `MinecraftBody` alone |
+| `MinecraftBodyScale` | `1.0` | the body's size on top of the automatic fit (torso and arms Niko's size, the top of the head at his, the feet on the ground); 0.5 to 2 |
+| `MinecraftBodyHide` | `visible` | not in the default ini: how a ped under the body is hidden, `visible` (`SET_CHAR_VISIBLE`, every frame) or `alpha` (`SET_PED_ALPHA` 0) |
+| `DebugBody` | `0` | test hook: log the skeleton once a second (bones, limb motion, ankle heights) and, in cutscenes, the animated objects around the camera |
+| `DebugBailOut`, `DebugRunOver` | `0` | test hooks: DebugAutoVehicle's car drives off at 14 m/s and Niko bails out of it 2 s later; every 40 s of puppeting (outdoors; else moved to the road) a test car 15 m up the road drives at the player at 12 m/s |
+| `DebugCutscene` | | test hook: play this cutscene (e.g. `intro`, `rom2_a`; names from `pc/anim/cuts.img`) 20 s into puppet mode |
 
 ## Vehicles and Niko mode
 
@@ -251,9 +266,37 @@ pos/yaw with no physics, input or damage) when:
 - **in a vehicle** (`IS_CHAR_IN_ANY_CAR`, however Niko got there: the key, a mission script, a
   cutscene): GTA drives, its own F gets out. `SkyState` also carries `kSkyInVehicle`, pos = the
   riding player's feet (ped position - `VehicleSeatDrop`), yaw = the vehicle heading; Minecraft
-  puts its player on a mount there (a boat by default). Niko is hidden (`HideNikoInVehicle`).
-  On foot again for 0.5 s: the teleport handshake, then puppet mode.
+  puts its player on a mount there (a boat by default). Niko is hidden (`HideNikoInVehicle`), or
+  the Minecraft body sits in his place (`MinecraftBodyVehicles`, below). On foot again and standing
+  (getting back up, below): the teleport handshake, then puppet mode.
 - getting into a vehicle (`IS_CHAR_GETTING_IN_TO_A_CAR`, e.g. a mission script) and cutscenes.
+- **getting back up**: out of a vehicle (a bail-out from a moving car rolls and tumbles), knocked
+  over (`RagdollOnVehicleHit`) or ragdolled by GTA in Minecraft mode, GTA keeps Niko until he
+  really stands: on his feet (`IS_PED_RAGDOLL`, `IS_CHAR_GETTING_UP`, `IS_CHAR_IN_AIR` all false,
+  `GET_CHAR_SPEED` under 0.5 m/s, GTA's own standing flag) for 0.4 s, at least 0.5 s on foot, at
+  most 8 s. A knockdown is applied once puppet mode has let go of him (`SWITCH_PED_TO_RAGDOLL`,
+  then `APPLY_FORCE_TO_PED` in world axes, as Combat measured); while knocked over Minecraft
+  still owns his health (Combat's buffer), so GTA damage meanwhile goes to Minecraft and GTA can't
+  kill him.
+
+**The Minecraft body** (`MinecraftBody`, `NikoBody.*`, `render/Body.h`): while GTA drives for one
+of the reasons above (per `MinecraftBodyCutscenes` / `Vehicles` / `NikoMode`), Niko is hidden
+(`SET_CHAR_VISIBLE` every frame, also right after leaving puppet mode, which shows him) and the
+standing body Minecraft sends (`kRenRagdoll`: parts tagged per model part, held items on their
+arm; re-sent at once when the skin, armour or held items change) is drawn instead of the avatar,
+each part posed by his bones as `drawingEvent` reads them (`GET_PED_BONE_POSITION`; offsets give
+the head bone's axes): the body leans with hips -> neck and the shoulder line, legs point along
+hip -> ankle, arms from Minecraft's shoulders at his hands (hands on the wheel), the head turns
+with his head bone (x up the neck, y forward, z left; checked once by `CalibrateHead`), and the
+figure moves so its lower sole meets his. Sizes: the torso and arms by his hips -> neck length
+(about 0.81 of Minecraft's), the head so its top is his (about 0.65), the legs his length (about
+1.3), times `MinecraftBodyScale`; so the head stays inside a car. Cutscenes: GTA IV's cutscene
+Niko is no ped but an animated object of the player's model (object pool); its bones come from
+the game's own bone matrix function (1.0.8.0: `0x941E30`, code bytes checked) after
+`CDynamicEntity::GetBoneMatrix` waits for its pose job. The game only poses what it draws, so it
+can't be made invisible (invisible, it stops moving; an alpha of 0 fades back in by 16 a frame, a
+ghost over the body): its matrix is shrunk to 5% instead (a doll a few centimetres tall inside the
+body, its bones scaled back up when read). Peds keep animating while invisible (measured).
 
 `Game::State()` exposes `hostDrives`, `inVehicle` and `nikoMode` for the renderer and overlay.
 The decisions are `DriveLogic.h` (pure, tested by `asi/tests/drive_test.cpp`).

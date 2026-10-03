@@ -2,6 +2,7 @@
 #define LC_MODULE "render"
 #include "render/World.h"
 
+#include "render/Body.h"
 #include "render/D3D9Util.h"
 #include "render/RenderMath.h"
 #include "render/Shaders.h"
@@ -13,6 +14,7 @@
 #include "NpcBlocks.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <unordered_map>
 #include <vector>
@@ -55,6 +57,9 @@ namespace lc::render
 		std::unordered_map<std::uint64_t, Section>            sections;
 		std::unordered_map<std::uint32_t, IDirect3DTexture9*> entityTextures;
 		Mesh                                                  avatar, scene, sceneRest, sceneMount;
+		Mesh                                                  ragdoll, posedBody;  // kRenRagdoll as sent; posed on GTA's skeleton
+		std::atomic<bool>                                     bodyReady{ false };
+		std::uint32_t                                         ragdollMessages = 0;
 		proto::WorldEntities                                  entities{};
 		EntityBuilder                                         builder;
 		SectionMesh                                           scratch;
@@ -99,6 +104,8 @@ namespace lc::render
 			entityTextures.clear();
 			avatar.batches.clear();
 			scene.batches.clear();
+			ragdoll.batches.clear();
+			bodyReady = false;
 		}
 
 		// A new device (or none): forget everything that belonged to the old one. Its resources
@@ -116,6 +123,8 @@ namespace lc::render
 			entityTextures.clear();
 			avatar.batches.clear();
 			scene.batches.clear();
+			ragdoll.batches.clear();
+			bodyReady = false;
 			ready = false;
 			initTried = false;
 		}
@@ -349,6 +358,35 @@ namespace lc::render
 			}
 		}
 
+		// The player's standing body for GTA's skeleton (the first one, and later changes with
+		// Diagnostics, are logged with each part's extent).
+		void OnRagdoll(const std::uint8_t* a_data, std::uint32_t a_bytes)
+		{
+			const auto before = ragdoll.batches.size();
+			OnMesh(ragdoll, a_data, a_bytes, false);
+			bodyReady = !ragdoll.batches.empty();
+			++ragdollMessages;
+			if (ragdoll.batches.empty() || (ragdollMessages > 1 && (ragdoll.batches.size() == before || !Config::Get().diagnostics))) {
+				return;
+			}
+			body::PartBounds parts[proto::kPartCount];
+			body::MeasureParts(ragdoll.batches, ragdoll.verts, parts);
+			std::uint32_t held = 0;
+			for (const auto& b : ragdoll.batches) {
+				held += (b.flags & proto::kRagdollHeld) ? 1 : 0;
+			}
+			static const char* kNames[proto::kPartCount] = { "none", "head", "body", "right arm", "left arm", "right leg", "left leg" };
+			LC_LOG("received the player's body for GTA's skeleton: %zu triangles in %zu part batches (%u held items)", ragdoll.verts.size() / 3,
+				ragdoll.batches.size(), held);
+			for (std::uint32_t p = 0; p < proto::kPartCount; ++p) {
+				const auto& b = parts[p];
+				if (b.vertices) {
+					LC_LOG("  %-9s %4u vertices: x %.3f to %.3f, y %.3f to %.3f, z %.3f to %.3f", kNames[p], b.vertices, b.lo[0], b.hi[0], b.lo[1], b.hi[1],
+						b.lo[2], b.hi[2]);
+				}
+			}
+		}
+
 		// ---- drawing --------------------------------------------------------------------------
 		void SetOffset(const double a_mcOrigin[3], const double a_cam[3], float a_out[4] = nullptr)
 		{
@@ -534,8 +572,11 @@ namespace lc::render
 				case proto::kRenScene:
 					OnMesh(scene, a_data, a_bytes, true);
 					break;
+				case proto::kRenRagdoll:
+					OnRagdoll(a_data, a_bytes);
+					break;
 				default:
-					break;  // kRenLights, kRenDug, kRenRagdoll: not used yet (counted)
+					break;  // kRenLights, kRenDug: not used yet (counted)
 				}
 			},
 			64ull << 20);
@@ -595,6 +636,22 @@ namespace lc::render
 		if (a_f.flags & kFrameAvatar) {
 			DrawMesh(avatar, a_f.feet, cam, false);
 		}
+		// The player's body on GTA's skeleton (Niko hidden): the standing body's parts posed by this
+		// frame's bones.
+		const bool posed = (a_f.flags & kFrameBody) && !ragdoll.batches.empty();
+		if (posed) {
+			body::Pose pose;
+			static_assert(sizeof(pose.part) == sizeof(a_f.bodyParts));
+			std::memcpy(pose.part, a_f.bodyParts, sizeof(pose.part));
+			body::PoseMesh(ragdoll.batches, ragdoll.verts, pose, posedBody.verts);
+			posedBody.batches = ragdoll.batches;
+			const McVec o = GtaToMc(a_f.bodyOrigin[0], a_f.bodyOrigin[1], a_f.bodyOrigin[2]);
+			posedBody.origin[0] = o.x;
+			posedBody.origin[1] = o.y;
+			posedBody.origin[2] = o.z;
+			DrawMesh(posedBody, posedBody.origin, cam, false);
+			++stats.bodyFrames;
+		}
 		// In a vehicle the rider is drawn at GTA's seat of this frame (a_f.feet), not where Minecraft
 		// last saw it (a frame or two behind: ~0.8 m at 50 m/s); its mount goes along.
 		const Mesh* sceneMain = &scene;
@@ -628,6 +685,9 @@ namespace lc::render
 		if (a_f.flags & kFrameAvatar) {
 			DrawMesh(avatar, a_f.feet, cam, true);
 		}
+		if (posed) {
+			DrawMesh(posedBody, posedBody.origin, cam, true);
+		}
 		if (mount) {
 			DrawMesh(sceneMount, mountOrigin, cam, true);
 		}
@@ -643,6 +703,11 @@ namespace lc::render
 		const double ms = NowMs() - t0;
 		stats.drawMs += ms;
 		stats.maxDrawMs = std::max(stats.maxDrawMs, ms);
+	}
+
+	bool World::HasBody()
+	{
+		return bodyReady.load(std::memory_order_relaxed);
 	}
 
 	WorldStats World::TakeStats()

@@ -88,15 +88,16 @@ public final class HostCombat {
 			sync(level);
 		}
 		// Hits land during the tick (melee, sweeps, arrows, fire); send one combined hit per actor, and
-		// one per vehicle (a sweep or a blast catches several of its pieces at once).
+		// one per vehicle for blows (a sweep or a blast catches several of its pieces at once). Each
+		// projectile on a vehicle goes on its own: they can strike different windows.
 		VEHICLE_HITS.clear();
 		for (HostActorEntity proxy : PROXIES.values()) {
 			float[] hit = proxy.takeHit();
 			if (hit == null || !(hit[0] > 0.0F || hit[3] > 0.0F)) {
 				continue;
 			}
-			if (proxy.isHostVehicle()) {
-				int vehicle = proxy.formId() & ~3;
+			if (proxy.isHostVehicle() && (Float.floatToRawIntBits(hit[4]) & Proto.HIT_PROJECTILE) == 0) {
+				int vehicle = proxy.formId() & ~Proto.ACTOR_VEHICLE_PIECE_MASK;
 				VehicleHit merged = VEHICLE_HITS.get(vehicle);
 				if (merged == null) {
 					VEHICLE_HITS.put(vehicle, new VehicleHit(proxy, hit));
@@ -113,8 +114,18 @@ public final class HostCombat {
 	}
 
 	private static void sendHit(HostActorEntity proxy, float[] hit) {
+		if (hit[6] > 0.0F) {
+			// Where it landed, right before the hit itself (kEvHitPoint).
+			Link.pushEvent(Proto.EV_HIT_POINT, proxy.formId(), hit[7], hit[8], hit[9], hit[10], Float.floatToRawIntBits(hit[11]));
+		}
 		Link.pushEvent(Proto.EV_HIT_ACTOR, proxy.formId(), hit[0], hit[1], hit[2], hit[3], Float.floatToRawIntBits(hit[4]), Float.floatToRawIntBits(hit[5]));
-		LibertyCraft.LOG.info("[LibertyCraft] hit {} for {} (knockback {})", proxy.getName().getString(), hit[0], hit[3]);
+		if (hit[6] > 0.0F) {
+			LibertyCraft.LOG.info("[LibertyCraft] hit {} {} for {} (knockback {}) at {} {} {} along yaw {} pitch {}{}", proxy.getName().getString(),
+				Integer.toHexString(proxy.formId()), hit[0], hit[3], hit[7], hit[8], hit[9], hit[10], hit[11],
+				(Float.floatToRawIntBits(hit[4]) & Proto.HIT_PROJECTILE) != 0 ? " (projectile)" : "");
+		} else {
+			LibertyCraft.LOG.info("[LibertyCraft] hit {} for {} (knockback {})", proxy.getName().getString(), hit[0], hit[3]);
+		}
 	}
 
 	private static final Map<Integer, VehicleHit> VEHICLE_HITS = new HashMap<>();
@@ -135,6 +146,7 @@ public final class HostCombat {
 				this.piece = other;
 				this.hit[0] = h[0];
 				this.hit[5] = h[5];
+				System.arraycopy(h, 6, this.hit, 6, 6); // its hit point
 			}
 			if (h[3] > this.hit[3]) {
 				this.hit[1] = h[1];

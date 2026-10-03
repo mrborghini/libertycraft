@@ -62,11 +62,13 @@ public final class Proto {
 	public static final int ACTOR_IN_COMBAT = 1 << 3;
 	/**
 	 * LibertyCraft: the record is one piece of a GTA IV vehicle (up to {@link #ACTOR_VEHICLE_SEGMENTS}
-	 * along its length), formId = {@link #ACTOR_VEHICLE_TAG} | (vehicle handle << 2) | piece.
+	 * along its length), formId = {@link #ACTOR_VEHICLE_TAG} | (vehicle handle << 4) | piece.
 	 */
 	public static final int ACTOR_VEHICLE = 1 << 4;
 	public static final int ACTOR_VEHICLE_TAG = 0x56000000;
-	public static final int ACTOR_VEHICLE_SEGMENTS = 4;
+	public static final int ACTOR_VEHICLE_SEGMENTS = 16;
+	/** The piece bits of a vehicle record's formId; {@code formId & ~ACTOR_VEHICLE_PIECE_MASK} names the vehicle. */
+	public static final int ACTOR_VEHICLE_PIECE_MASK = 0xF;
 
 	// Event ring (relative to OFF_EVENT_RING)
 	public static final int EVENT_RING_ENTRIES = 512;
@@ -79,6 +81,8 @@ public final class Proto {
 	public static final int EV_EXPLOSION = 3;
 	public static final int EV_ARROW_STUCK = 4;
 	public static final int EV_SKILL_USE = 5;
+	/** LibertyCraft: where the next EV_HIT_ACTOR on the same vehicle piece landed (see kEvHitPoint). */
+	public static final int EV_HIT_POINT = 6;
 	// SkyCraft's Skyrim skills (ActorValue). Kept for protocol parity; LibertyCraft never sends
 	// EV_SKILL_USE because GTA IV has no skill XP to feed.
 	public static final int SKILL_BLOCK = 9;
@@ -132,6 +136,8 @@ public final class Proto {
 	public static final int REN_SOLIDS = 10;
 	public static final int REN_DUG = 11;
 	public static final int PART_HEAD = 1, PART_BODY = 2, PART_RIGHT_ARM = 3, PART_LEFT_ARM = 4, PART_RIGHT_LEG = 5, PART_LEFT_LEG = 6;
+	/** kRenRagdoll RenBatch flags bit 12: a held item (on its arm's part). */
+	public static final int RAGDOLL_HELD = 1 << 12;
 	public static final int LIGHT_STEADY = 0, LIGHT_FLAME = 1, LIGHT_LAVA = 2;
 	public static final int REN_VERTEX_BYTES = 32;
 

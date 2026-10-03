@@ -70,6 +70,8 @@ namespace lc
 			"VehicleDamageScale=15\n"
 			"; Minecraft blocks are solid for GTA IV's peds and vehicles\n"
 			"NpcBlocks=1\n"
+			"; Minecraft attacks are crimes: victims fight back or flee, witnesses and police give you a wanted level\n"
+			"GtaCrimes=1\n"
 			"; vehicles: this key (taken from Minecraft) enters/steals the nearest vehicle the GTA way; GTA's own F gets out\n"
 			"VehicleKey=F\n"
 			"; switches between Minecraft mode and Niko mode (plain GTA IV)\n"
@@ -80,7 +82,17 @@ namespace lc
 			"; metres from the seated ped's position down to the riding Minecraft player's feet\n"
 			"VehicleSeatDrop=0.75\n"
 			"; if GTA's enter press didn't take: warp | task | none\n"
-			"VehicleEnterFallback=warp\n";
+			"VehicleEnterFallback=warp\n"
+			"; a car running into you (or a GTA explosion) knocks you over until Niko gets back up\n"
+			"RagdollOnVehicleHit=1\n"
+			"; while GTA IV animates Niko, show your Minecraft body following his animation instead of him\n"
+			"MinecraftBody=1\n"
+			"; ... in cutscenes, getting into / driving / getting out of vehicles, and in Niko mode\n"
+			"MinecraftBodyCutscenes=1\n"
+			"MinecraftBodyVehicles=1\n"
+			"MinecraftBodyNikoMode=0\n"
+			"; the body's size on top of the automatic fit to Niko (1.0)\n"
+			"MinecraftBodyScale=1.0\n";
 
 		std::string Lower(std::string a_s)
 		{
@@ -222,6 +234,12 @@ namespace lc
 		if (auto v = get("npcblocks")) npcBlocks = ToBool(*v, npcBlocks);
 		if (auto v = get("npcpushmethod")) npcPushMethod = std::atoi(v->c_str());
 		if (auto v = get("debugknockbackvariant")) debugKnockbackVariant = std::atoi(v->c_str());
+		if (auto v = get("debugtestcar")) debugTestCar = std::atoi(v->c_str());
+		if (auto v = get("gtacrimes")) gtaCrimes = ToBool(*v, gtaCrimes);
+		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
+		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
+		if (auto v = get("puppetplayercontrol")) puppetPlayerControl = ToBool(*v, puppetPlayerControl);
+		if (auto v = get("puppetcollision")) puppetCollision = ToBool(*v, puppetCollision);
 		if (auto v = get("vehiclekey")) vehicleKey = *v;
 		if (auto v = get("togglekey")) toggleKey = *v;
 		if (auto v = get("hidenikoinvehicle")) hideNikoInVehicle = ToBool(*v, hideNikoInVehicle);
@@ -235,6 +253,17 @@ namespace lc
 		if (auto v = get("debugvehicledriver")) debugVehicleDriver = ToBool(*v, debugVehicleDriver);
 		if (auto v = get("debugfocuscycle")) debugFocusCycle = ToBool(*v, debugFocusCycle);
 		if (auto v = get("debuginjectenterkey")) debugInjectEnterKey = ToBool(*v, debugInjectEnterKey);
+		if (auto v = get("ragdollonvehiclehit")) ragdollOnVehicleHit = ToBool(*v, ragdollOnVehicleHit);
+		if (auto v = get("debugbailout")) debugBailOut = ToBool(*v, debugBailOut);
+		if (auto v = get("debugrunover")) debugRunOver = ToBool(*v, debugRunOver);
+		if (auto v = get("debugcutscene")) debugCutscene = *v;
+		if (auto v = get("minecraftbody")) minecraftBody = ToBool(*v, minecraftBody);
+		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
+		if (auto v = get("minecraftbodyvehicles")) minecraftBodyVehicles = ToBool(*v, minecraftBodyVehicles);
+		if (auto v = get("minecraftbodynikomode")) minecraftBodyNikoMode = ToBool(*v, minecraftBodyNikoMode);
+		if (auto v = get("minecraftbodyhide")) minecraftBodyHide = Lower(*v) == "alpha" ? "alpha" : "visible";
+		if (auto v = get("minecraftbodyscale")) minecraftBodyScale = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.5f, 2.0f);
+		if (auto v = get("debugbody")) debugBody = ToBool(*v, debugBody);
 
 		LC_LOG("config: Puppet=%d CameraMode=%s FovMode=%s MenuKey=%s (dik 0x%02X) Diagnostics=%d LogPerf=%d FreezePed=%d RootToFeet=%.2f (measure %d) ProbeFrom=%s ProbeHeight=%.1f CameraRows=%s",
 			puppet, cameraMode == CameraMode::kScripted ? "scripted" : "final", fovMode == FovMode::kHorizontal43 ? "horizontal43" : "vertical",
@@ -255,11 +284,21 @@ namespace lc
 			debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
 		LC_LOG("config: VehicleDamageScale=%.1f NpcBlocks=%d%s%s", vehicleDamageScale, npcBlocks, npcPushMethod ? " NpcPushMethod=1" : "",
 			debugKnockbackVariant >= 0 ? " DebugKnockbackVariant on" : "");
+		if (debugTestCar > 0) {
+			LC_LOG("config: DebugTestCar=%d", debugTestCar);
+		}
+		LC_LOG("config: GtaCrimes=%d PuppetPlayerControl=%d PuppetCollision=%d%s", gtaCrimes, puppetPlayerControl, puppetCollision,
+			debugWanted > 0 ? " DebugWanted on" : "");
 		LC_LOG("config: VehicleKey=%s (dik 0x%02X) ToggleKey=%s (dik 0x%02X) HideNikoInVehicle=%d ToggleStartsInMinecraft=%d VehicleSeatDrop=%.2f VehicleEnterFallback=%s%s%s",
 			vehicleKey.c_str(), VehicleKeyDik(), toggleKey.c_str(), ToggleKeyDik(), hideNikoInVehicle, toggleStartsInMinecraft, vehicleSeatDrop,
 			vehicleEnterFallback.c_str(), debugAutoToggle ? " DebugAutoToggle=1" : "", debugAutoVehicle ? " DebugAutoVehicle=1" : "");
 		LC_LOG("config: PuppetMove=%s%s%s%s%s", puppetMove.c_str(), debugWalkThroughCar ? " DebugWalkThroughCar=1" : "",
 			debugVehicleDriver ? " DebugVehicleDriver=1" : "", debugFocusCycle ? " DebugFocusCycle=1" : "", debugInjectEnterKey ? " DebugInjectEnterKey=1" : "");
+		LC_LOG("config: RagdollOnVehicleHit=%d%s%s%s%s", ragdollOnVehicleHit, debugBailOut ? " DebugBailOut=1" : "", debugRunOver ? " DebugRunOver=1" : "",
+			debugCutscene.empty() ? "" : " DebugCutscene=", debugCutscene.c_str());
+		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
+			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyScale, minecraftBodyHide.c_str(),
+			debugBody ? " DebugBody=1" : "");
 	}
 
 	std::uint8_t Config::MenuKeyDik() const

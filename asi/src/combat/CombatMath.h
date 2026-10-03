@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 
 namespace lc::combat
 {
@@ -33,14 +34,15 @@ namespace lc::combat
 		return true;
 	}
 
-	// Vehicles go out as up to proto::kActorVehicleSegments records along their length (see
-	// proto::kActorVehicle): formId = 'V' tag | (vehicle script handle << 2) | piece. Vehicle handles
-	// are (pool slot << 8) | generation, far below 2^22.
-	inline constexpr std::uint32_t kVehicleIdHandleMask = 0x003FFFFFu;
+	// Vehicles go out as a row of up to proto::kActorVehicleSegments records along their axis (see
+	// proto::kActorVehicle): formId = 'V' tag | (vehicle script handle << 4) | piece. Vehicle handles
+	// are (pool slot << 8) | generation, far below 2^20.
+	inline constexpr std::uint32_t kVehicleIdHandleMask = 0x000FFFFFu;
+	inline constexpr std::uint32_t kVehicleIdPieceMask = 0xFu;
 
 	inline std::uint32_t VehicleActorId(std::uint32_t a_handle, std::uint32_t a_piece)
 	{
-		return proto::kActorVehicleTag | ((a_handle & kVehicleIdHandleMask) << 2) | (a_piece & 3u);
+		return proto::kActorVehicleTag | ((a_handle & kVehicleIdHandleMask) << 4) | (a_piece & kVehicleIdPieceMask);
 	}
 
 	inline bool VehicleFromActorId(std::uint32_t a_id, std::uint32_t& a_handle, std::uint32_t& a_piece)
@@ -48,33 +50,225 @@ namespace lc::combat
 		if ((a_id & 0xFF000000u) != proto::kActorVehicleTag) {
 			return false;
 		}
-		a_handle = (a_id >> 2) & kVehicleIdHandleMask;
-		a_piece = a_id & 3u;
+		a_handle = (a_id >> 4) & kVehicleIdHandleMask;
+		a_piece = a_id & kVehicleIdPieceMask;
 		return true;
 	}
 
-	// How a vehicle of a_length x a_width metres (seen from above) is cut into upright boxes along its
-	// axis: a_count pieces of equal length, piece i centred a_offset[i] metres ahead of the vehicle's
-	// centre (0 is the front piece), each box a_boxWidth wide (at least the vehicle's width, and at
-	// least a piece's length, so the boxes still touch when the vehicle stands diagonally).
+	// How far (m) a vehicle's stand-in boxes may stick out of its real outline, seen from above.
+	inline constexpr float kVehicleBoxSlack = 0.2f;
+
+	// A vehicle of a_length x a_width metres as a row of upright boxes square to the world axes (all
+	// Minecraft entity boxes are): the vehicle's axis makes an angle with the world axes, and a_e is
+	// |cos| + |sin| of it (1 when it lies along an axis, sqrt 2 at 45 degrees). A square box of side s
+	// then reaches s/2 * a_e out from its centre along the vehicle's axis and across it, so boxes of
+	// side (width + 2 slack) / a_e, centred on the axis no further than (length - width) / 2 from the
+	// middle, stay within the outline grown by a_slack, whichever way the vehicle faces. They are
+	// spaced closely enough (at most half a box) that the gaps between them along the sides stay
+	// within 0.2 m. Turned away from the axes, the row leaves the corners open, so then four small
+	// boxes fill them. Piece i is centred a_offset[i] metres ahead of the middle and a_side[i] to its
+	// right (0 is the front piece), a_size[i] wide.
 	struct VehicleLayout
 	{
 		std::uint32_t count = 1;
 		float         offset[proto::kActorVehicleSegments]{};
-		float         boxWidth = 0.0f;
+		float         side[proto::kActorVehicleSegments]{};
+		float         size[proto::kActorVehicleSegments]{};
+		float         boxWidth = 0.0f;  // the row's boxes
 	};
 
-	inline VehicleLayout VehicleSegments(float a_length, float a_width)
+	inline constexpr float kVehicleCornerInset = 0.45f;  // corner boxes' centres from the two faces
+
+	inline VehicleLayout VehicleSegments(float a_length, float a_width, float a_e = 1.0f, float a_slack = kVehicleBoxSlack)
 	{
 		VehicleLayout l;
-		const float length = std::max(a_length, 0.5f), width = std::max(a_width, 0.5f);
-		l.count = static_cast<std::uint32_t>(std::clamp(static_cast<int>(std::ceil(length / width - 0.05f)), 1, static_cast<int>(proto::kActorVehicleSegments)));
-		const float piece = length / static_cast<float>(l.count);
+		const float length = std::max(a_length, 0.5f), width = std::max(std::min(a_width, length), 0.5f);
+		const float e = std::clamp(a_e, 1.0f, 1.41422f);
+		l.boxWidth = (width + 2.0f * a_slack) / e;
+		const float reach = std::max(0.0f, (length - width) * 0.5f);  // the end pieces' centres
+		// Between two boxes the outline's side shows a notch (d sin 2a) / 2 - slack deep for spacing d
+		// at angle a (sin 2a = e^2 - 1): keep it within 0.2 m.
+		const float spacing = std::min(l.boxWidth * 0.5f, 2.0f * (0.2f + a_slack) / std::max(e * e - 1.0f, 1e-3f));
+		const int   n = reach > 1e-3f ? 1 + static_cast<int>(std::ceil(2.0f * reach / spacing - 1e-3f)) : 1;
+		const bool corners = e > 1.05f && length > 2.0f * kVehicleCornerInset + 0.2f && width > 2.0f * kVehicleCornerInset + 0.2f;
+		const int  maxRow = static_cast<int>(proto::kActorVehicleSegments) - (corners ? 4 : 0);
+		l.count = static_cast<std::uint32_t>(std::clamp(n, 1, maxRow));
 		for (std::uint32_t i = 0; i < l.count; ++i) {
-			l.offset[i] = length * 0.5f - piece * (static_cast<float>(i) + 0.5f);
+			l.offset[i] = l.count == 1 ? 0.0f : reach - 2.0f * reach * static_cast<float>(i) / static_cast<float>(l.count - 1);
+			l.size[i] = l.boxWidth;
 		}
-		l.boxWidth = std::max(width, piece);
+		if (corners) {
+			const float cornerSize = 2.0f * (kVehicleCornerInset + a_slack) / e;
+			for (int k = 0; k < 4; ++k, ++l.count) {
+				l.offset[l.count] = (k < 2 ? 1.0f : -1.0f) * (length * 0.5f - kVehicleCornerInset);
+				l.side[l.count] = (k % 2 ? 1.0f : -1.0f) * (width * 0.5f - kVehicleCornerInset);
+				l.size[l.count] = cornerSize;
+			}
+		}
 		return l;
+	}
+
+	// ---- where a hit on a vehicle landed --------------------------------------------------------------
+	// In the vehicle's own frame (x right, y forward, z up, metres from its origin), against its model
+	// box [a_lo, a_hi] (GET_MODEL_DIMENSIONS).
+	enum CarFace : int
+	{
+		kFaceLeft = 0,
+		kFaceRight = 1,
+		kFaceRear = 2,
+		kFaceFront = 3,
+		kFaceBottom = 4,
+		kFaceTop = 5,
+	};
+
+	// Where the ray from a_o along a_d (any length) first enters the box: its parameter and the face.
+	// False if it misses or starts inside.
+	inline bool RayEntersBox(const float a_o[3], const float a_d[3], const float a_lo[3], const float a_hi[3], float& a_t, int& a_face)
+	{
+		float tEnter = -1e30f, tExit = 1e30f;
+		int   face = -1;
+		for (int axis = 0; axis < 3; ++axis) {
+			if (std::fabs(a_d[axis]) < 1e-9f) {
+				if (a_o[axis] < a_lo[axis] || a_o[axis] > a_hi[axis]) {
+					return false;
+				}
+				continue;
+			}
+			float t0 = (a_lo[axis] - a_o[axis]) / a_d[axis], t1 = (a_hi[axis] - a_o[axis]) / a_d[axis];
+			int   f0 = axis * 2, f1 = axis * 2 + 1;  // entering through lo is the -axis face
+			if (t0 > t1) {
+				std::swap(t0, t1);
+				std::swap(f0, f1);
+			}
+			if (t0 > tEnter) {
+				tEnter = t0;
+				face = f0;
+			}
+			tExit = std::min(tExit, t1);
+		}
+		if (face < 0 || tEnter > tExit || tEnter < 0.0f) {
+			return false;
+		}
+		a_t = tEnter;
+		a_face = face;
+		return true;
+	}
+
+	// GTA IV's windows (eVehicleWindow, SMASH_CAR_WINDOW) and seats (-1 driver, 0.. passengers).
+	enum CarWindow : int
+	{
+		kWindowNone = -1,  // the body
+		kWindowLF = 0,
+		kWindowRF = 1,
+		kWindowLR = 2,
+		kWindowRR = 3,
+		kWindscreen = 4,
+		kWindscreenRear = 5,
+	};
+	inline constexpr int kSeatDriver = -1;
+	inline constexpr int kSeatNone = -2;
+
+	struct CarStrike
+	{
+		int window = kWindowNone;
+		int seat = kSeatNone;  // who sits behind that glass
+	};
+
+	// The glass of a car, from its model box: the windows start at kBeltline of its height (the
+	// wheels count: the box reaches the ground); the side windows of the front doors span the
+	// middle of its length, the rear doors' the part behind (the front one ends at the A pillar, the
+	// rear one at the C pillar). Fractions of length run 0 at the back to 1 at the front.
+	inline constexpr float kBeltline = 0.58f;
+	inline constexpr float kFrontWindowFrom = 0.47f, kFrontWindowTo = 0.76f;
+	inline constexpr float kRearWindowFrom = 0.20f;
+	inline constexpr float kWindscreenFrom = 0.62f, kWindscreenTo = 0.78f;  // seen from above
+	inline constexpr float kRearScreenFrom = 0.18f, kRearScreenTo = 0.30f;
+
+	inline CarStrike ClassifyCarStrike(int a_face, const float a_p[3], const float a_lo[3], const float a_hi[3])
+	{
+		CarStrike s;
+		const float len = std::max(a_hi[1] - a_lo[1], 0.1f), height = std::max(a_hi[2] - a_lo[2], 0.1f);
+		const float along = (a_p[1] - a_lo[1]) / len;     // 0 rear .. 1 front
+		const float up = (a_p[2] - a_lo[2]) / height;      // 0 ground .. 1 roof
+		const bool  left = a_p[0] < (a_lo[0] + a_hi[0]) * 0.5f;
+		const bool  glassHeight = up >= kBeltline;
+		switch (a_face) {
+		case kFaceLeft:
+		case kFaceRight:
+			if (glassHeight && along >= kFrontWindowFrom && along <= kFrontWindowTo) {
+				s.window = a_face == kFaceLeft ? kWindowLF : kWindowRF;
+			} else if (glassHeight && along >= kRearWindowFrom && along < kFrontWindowFrom) {
+				s.window = a_face == kFaceLeft ? kWindowLR : kWindowRR;
+			}
+			break;
+		case kFaceFront:
+			s.window = glassHeight ? kWindscreen : kWindowNone;
+			break;
+		case kFaceRear:
+			s.window = glassHeight ? kWindscreenRear : kWindowNone;
+			break;
+		case kFaceTop:
+			if (along >= kWindscreenFrom && along <= kWindscreenTo) {
+				s.window = kWindscreen;
+			} else if (along >= kRearScreenFrom && along <= kRearScreenTo) {
+				s.window = kWindscreenRear;
+			}
+			break;
+		default:
+			break;
+		}
+		switch (s.window) {
+		case kWindowLF:
+			s.seat = kSeatDriver;
+			break;
+		case kWindowRF:
+			s.seat = 0;
+			break;
+		case kWindowLR:
+			s.seat = 1;
+			break;
+		case kWindowRR:
+			s.seat = 2;
+			break;
+		case kWindscreen:
+			s.seat = left ? kSeatDriver : 0;
+			break;
+		case kWindscreenRear:
+			s.seat = left ? 1 : 2;
+			break;
+		default:
+			break;
+		}
+		return s;
+	}
+
+	// The hit from kEvHitPoint (a point on the line it came along, MC, and that line's MC yaw/pitch)
+	// in the vehicle's frame: a_right/a_fwd/a_up are its unit axes in GTA space, a_pos its origin.
+	// Follows the line from a few metres back into the model box. False if it misses the box (it
+	// grazed a stand-in box where the vehicle isn't): a body hit, then.
+	inline bool StrikeOnCar(const double a_mcPoint[3], float a_mcYaw, float a_mcPitch, const float a_pos[3], const float a_right[3], const float a_fwd[3],
+		const float a_up[3], const float a_lo[3], const float a_hi[3], int& a_face, float a_local[3])
+	{
+		// MC yaw/pitch -> a GTA direction (Coords.h: heading = 180 - yaw; MC pitch positive = down).
+		const float h = (180.0f - a_mcYaw) * 3.14159265358979f / 180.0f, p = -a_mcPitch * 3.14159265358979f / 180.0f;
+		const float dir[3] = { -std::sin(h) * std::cos(p), std::cos(h) * std::cos(p), std::sin(p) };
+		const float gp[3] = { static_cast<float>(a_mcPoint[0]), static_cast<float>(-a_mcPoint[2]), static_cast<float>(a_mcPoint[1]) };
+		constexpr float kBack = 4.0f;
+		float rel[3], o[3], d[3];
+		for (int i = 0; i < 3; ++i) {
+			rel[i] = gp[i] - dir[i] * kBack - a_pos[i];
+		}
+		auto dot = [](const float* x, const float* y) { return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; };
+		o[0] = dot(rel, a_right), o[1] = dot(rel, a_fwd), o[2] = dot(rel, a_up);
+		d[0] = dot(dir, a_right), d[1] = dot(dir, a_fwd), d[2] = dot(dir, a_up);
+		float t = 0.0f;
+		if (!RayEntersBox(o, d, a_lo, a_hi, t, a_face)) {
+			return false;
+		}
+		for (int i = 0; i < 3; ++i) {
+			a_local[i] = o[i] + d[i] * t;
+		}
+		return true;
 	}
 
 	// ---- GTA IV weapon types (Scripting::eWeapon; CPhysical::m_nLastDamageWeapon) ---------------
@@ -241,14 +435,42 @@ namespace lc::combat
 		return std::min(a_mcDamage * a_scale, 100000.0f);
 	}
 
-	// Which window a hit on piece a_piece of a_count breaks (SMASH_CAR_WINDOW: 0 front left,
-	// 1 front right, 2 rear left, 3 rear right): the front half of the vehicle breaks a front window,
-	// on the side the hit came from. a_pushRight: the knockback pushes toward the vehicle's right
-	// (the attacker stands on its left).
-	inline int WindowForHit(std::uint32_t a_piece, std::uint32_t a_count, bool a_pushRight)
+	// ---- crimes (GtaCrimes) ----------------------------------------------------------------------
+	// Minecraft's hits never go through GTA IV's own damage path with the player as the attacker, so
+	// its crime system never sees them. The rules it would apply, roughly: hurting a cop is always a
+	// crime (1 star, killing one 2); an assault the police see is 1 star; a killing seen by the
+	// police is 2, seen only by bystanders (they phone it in) 1. Returns the wanted level the player
+	// should have now (never lower than a_wanted).
+	inline constexpr float kCopSightMetres = 40.0f;
+	inline constexpr float kWitnessMetres = 25.0f;
+
+	inline unsigned WantedAfterAttack(unsigned a_wanted, bool a_victimCop, bool a_killed, unsigned a_copsNear, unsigned a_witnessesNear)
 	{
-		const bool front = a_count <= 1 || static_cast<float>(a_piece) + 0.5f <= static_cast<float>(a_count) * 0.5f;
-		return (front ? 0 : 2) + (a_pushRight ? 0 : 1);
+		unsigned w = 0;
+		if (a_victimCop) {
+			w = a_killed ? 2u : 1u;
+		} else if (a_killed) {
+			w = a_copsNear ? 2u : a_witnessesNear ? 1u : 0u;
+		} else if (a_copsNear) {
+			w = 1u;
+		}
+		return std::max(a_wanted, w);
+	}
+
+	// How a ped Minecraft hurt (and that survived) reacts: cops and gang members fight back, of the
+	// rest about one in three does and the others run (a_seed: anything stable per ped).
+	enum class Reaction
+	{
+		kFight,
+		kFlee,
+	};
+
+	inline Reaction ReactionOf(bool a_cop, bool a_tough, std::uint32_t a_seed)
+	{
+		if (a_cop || a_tough) {
+			return Reaction::kFight;
+		}
+		return (a_seed * 2654435761u >> 16) % 3u == 0u ? Reaction::kFight : Reaction::kFlee;
 	}
 
 	// ---- explosions -----------------------------------------------------------------------------

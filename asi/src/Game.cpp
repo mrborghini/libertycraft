@@ -341,13 +341,16 @@ namespace lc::Game
 
 		void ApplyPuppetState(int a_player, int a_ped)
 		{
-			if (S::IS_PLAYER_CONTROL_ON(a_player)) {
-				S::SET_PLAYER_CONTROL(a_player, false);
+			// Player control stays on (PuppetPlayerControl): without it GTA's peds and cops lose interest
+			// in the player (Combat.h). The pad is zeroed while puppeting (Input), so control on doesn't
+			// let GTA move him. Collision stays off (PuppetCollision, a test hook).
+			if (S::IS_PLAYER_CONTROL_ON(a_player) != Cfg().puppetPlayerControl) {
+				S::SET_PLAYER_CONTROL(a_player, Cfg().puppetPlayerControl);
 			}
 			if (Cfg().freezePed) {
 				S::FREEZE_CHAR_POSITION(a_ped, true);
 			}
-			S::SET_CHAR_COLLISION(a_ped, false);
+			S::SET_CHAR_COLLISION(a_ped, Cfg().puppetCollision);
 			// Combat keeps the ped vulnerable (on a refilled health buffer) to forward GTA's damage.
 			S::SET_CHAR_INVINCIBLE(a_ped, !Combat::OwnsPlayerHealth());
 			S::DISPLAY_HUD(false);
@@ -930,6 +933,7 @@ namespace lc::Game
 		} else if (puppeting && ped != puppetPed) {
 			LeavePuppet("the player ped changed");
 		}
+		HostDrive::AfterPuppetDecision();
 
 		if (puppeting) {
 			const Pose pose = Interpolate();
@@ -1035,7 +1039,7 @@ namespace lc::Game
 			cf.exists = exists;
 			cf.loading = loading;
 			cf.dead = dead;
-			cf.puppeting = puppeting;
+			cf.puppeting = puppeting || HostDrive::KnockedOver();  // knocked over: Minecraft still owns the player's health
 			cf.mcInWorld = mcInWorld;
 			cf.mc = haveMc ? &mc : nullptr;
 			cf.dt = dt;

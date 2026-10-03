@@ -9,6 +9,9 @@
 #include "DriveLogic.h"
 #include "Game.h"
 #include "Log.h"
+#include "NikoBody.h"
+#include "NpcBlocks.h"
+#include "combat/CombatMath.h"
 
 #include <algorithm>
 #include <atomic>
@@ -156,25 +159,268 @@ namespace lc::HostDrive
 			S::PRINT_STRING_WITH_LITERAL_STRING_NOW("STRING", text, 2000, true);
 		}
 
-		void SetHidden(int a_ped, bool a_hide)
+		void SetHidden(int a_ped, bool a_hide, const char* a_why)
 		{
-			if (a_hide && hiddenPed != a_ped) {
-				if (hiddenPed && S::DOES_CHAR_EXIST(hiddenPed)) {
-					S::SET_CHAR_VISIBLE(hiddenPed, true);
+			if (a_hide && hiddenPed == a_ped) {
+				NikoBody::Hide(a_ped, true);  // every frame: leaving puppet mode (and scripts) show him again
+			} else if (a_hide && hiddenPed != a_ped) {
+				if (hiddenPed) {
+					NikoBody::Hide(hiddenPed, false);
 				}
-				S::SET_CHAR_VISIBLE(a_ped, false);
+				NikoBody::Hide(a_ped, true);
 				hiddenPed = a_ped;
-				LC_LOG("Niko hidden in the vehicle (Minecraft's player rides there)");
+				LC_LOG("Niko (ped %d) hidden: %s", a_ped, a_why);
 			} else if (!a_hide && hiddenPed) {
-				if (S::DOES_CHAR_EXIST(hiddenPed)) {
-					S::SET_CHAR_VISIBLE(hiddenPed, true);
-				}
+				NikoBody::Hide(hiddenPed, false);
 				hiddenPed = 0;
 				LC_LOG("Niko visible again");
 			}
 		}
 
 		bool gtaTookPress = false;  // GTA reacted to a tap in this attempt
+
+		// ---- knocked over (RagdollOnVehicleHit): a car ran into the player, a blast ------------------------
+		constexpr float kUprightSpeed = 0.5f;  // m/s: slower than this on his feet counts as standing
+		constexpr float kHitRange = 9.0f;      // vehicles this close (centre to the player) are checked
+		constexpr float kHitSpeed = 3.0f;      // m/s: slower cars push, they don't knock over
+		constexpr float kHitMargin = 0.35f;    // the player's radius around the car's box
+		struct Knock
+		{
+			bool  pending = false;  // ragdoll Niko once puppet mode has let go of him
+			float gx = 0.0f, gy = 0.0f, force = 0.0f, wait = 0.0f;
+			int   ms = 0;
+			char  what[96] = "";
+		};
+		Knock knock;
+		int   knockdowns = 0;  // for DriveLogic, this frame
+		float recoverClock = 0.0f;
+		// DebugBailOut / DebugRunOver
+		float debugBailT = 0.0f;
+		bool  debugBailed = false;
+		float debugRunT = 0.0f;
+		int   debugRunCar = 0;
+		float debugRunDrive = 0.0f;  // seconds the test car still gets pushed at the player
+		float debugRunAge = 0.0f;
+		bool  debugRunRequested = false;
+		// DebugCutscene
+		int   debugCutPhase = 0;  // 0 waiting, 1 loading, 2 playing, 3 done
+		float debugCutT = 0.0f, debugCutLog = 0.0f;
+
+		// DebugCutscene=<name>: 20 s into puppet mode, plays one of GTA's cutscenes (INIT_CUTSCENE,
+		// START_CUTSCENE, CLEAR_CUTSCENE as the mission scripts do), once.
+		void DebugCutsceneTick(const Frame& a_f)
+		{
+			const std::string& name = Cfg().debugCutscene;
+			if (name.empty() || debugCutPhase == 3 || !a_f.exists) {
+				return;
+			}
+			debugCutT += a_f.dt;
+			switch (debugCutPhase) {
+			case 0:
+				if (a_f.puppeting && debugCutT >= 20.0f) {
+					S::INIT_CUTSCENE(name.c_str());
+					debugCutPhase = 1;
+					debugCutT = 0.0f;
+					LC_LOG("DebugCutscene: INIT_CUTSCENE(%s)", name.c_str());
+				} else if (!a_f.puppeting) {
+					debugCutT = std::min(debugCutT, 10.0f);
+				}
+				break;
+			case 1:
+				if (S::HAS_CUTSCENE_LOADED()) {
+					S::START_CUTSCENE();
+					debugCutPhase = 2;
+					debugCutT = 0.0f;
+					LC_LOG("DebugCutscene: %s loaded; START_CUTSCENE", name.c_str());
+				} else if (debugCutT > 30.0f) {
+					S::CLEAR_CUTSCENE();
+					debugCutPhase = 3;
+					LC_LOG("DebugCutscene: %s didn't load in 30 s", name.c_str());
+				}
+				break;
+			case 2:
+				if ((debugCutLog -= a_f.dt) <= 0.0f) {
+					debugCutLog = 2.0f;
+					LC_LOG("DebugCutscene: %s playing, %u ms, section %u, running %d", name.c_str(), S::GET_CUTSCENE_TIME(), S::GET_CUTSCENE_SECTION_PLAYING(),
+						CCutsceneMgr::IsRunning() ? 1 : 0);
+				}
+				if (S::HAS_CUTSCENE_FINISHED() || debugCutT > 300.0f) {
+					S::CLEAR_CUTSCENE();
+					debugCutPhase = 3;
+					LC_LOG("DebugCutscene: %s finished after %.1f s; CLEAR_CUTSCENE", name.c_str(), debugCutT);
+				}
+				break;
+			default:
+				break;
+			}
+		}
+
+		void StartKnock(float a_gx, float a_gy, float a_force, int a_ms, const char* a_what)
+		{
+			knock.pending = true;
+			knock.gx = a_gx;
+			knock.gy = a_gy;
+			knock.force = a_force;
+			knock.ms = a_ms;
+			knock.wait = 0.0f;
+			std::snprintf(knock.what, sizeof(knock.what), "%s", a_what);
+			++knockdowns;
+		}
+
+		// While puppeting: a vehicle moving into the player (the player's point inside its box, plus
+		// their radius) faster than kHitSpeed. Niko is frozen with his collision off, so GTA never
+		// sees the hit itself.
+		void DetectVehicleHits(const Frame& a_f)
+		{
+			CPed* p = FindPlayerPed();
+			auto* pool = CPools::ms_pVehiclePool;
+			if (!p || !p->m_pMatrix || !pool) {
+				return;
+			}
+			const auto P = p->m_pMatrix->pos;  // the root, ~1 m above the feet
+			for (int slot = pool->FindNextUsed(0); slot >= 0; slot = pool->FindNextUsed(slot + 1)) {
+				CVehicle* veh = pool->Get(slot);
+				if (!veh || !veh->m_pMatrix) {
+					continue;
+				}
+				const auto& m = *veh->m_pMatrix;
+				const float dx = P.x - m.pos.x, dy = P.y - m.pos.y, dz = P.z - m.pos.z;
+				if (dx * dx + dy * dy > kHitRange * kHitRange || std::fabs(dz) > 4.0f) {
+					continue;
+				}
+				CVector v{};
+				veh->GetVelocity(&v);
+				const float speed = std::hypot(v.x, v.y);
+				if (!std::isfinite(speed) || speed < kHitSpeed || v.x * dx + v.y * dy <= 0.0f) {
+					continue;  // slow, or moving away from the player
+				}
+				const int handle = static_cast<int>(pool->GetIndex(veh));
+				float     lo[3], hi[3];
+				if (!NpcBlocks::ModelBox(handle, veh->m_nModelIndex, lo, hi)) {
+					continue;
+				}
+				// IV-SDK's CMatrix rows: right = x, "up" = forward (y), "at" = up (z).
+				const float lx = dx * m.right.x + dy * m.right.y + dz * m.right.z;
+				const float ly = dx * m.up.x + dy * m.up.y + dz * m.up.z;
+				const float lz = dx * m.at.x + dy * m.at.y + dz * m.at.z;
+				if (lx < lo[0] - kHitMargin || lx > hi[0] + kHitMargin || ly < lo[1] - kHitMargin || ly > hi[1] + kHitMargin || lz < lo[2] - 1.2f ||
+					lz > hi[2] + 0.3f) {
+					continue;
+				}
+				// Thrown along the car's way; harder and longer the faster it was.
+				const float force = std::clamp(2.0f * speed, 8.0f, 40.0f);
+				const int   ms = static_cast<int>(std::clamp(1500.0f + 150.0f * speed, 1500.0f, 5000.0f));
+				// (GTA's own damage while he tumbles comes on top: Minecraft still owns his health then)
+				const float gtaDamage = std::clamp(2.5f * speed, 8.0f, 100.0f);
+				char        what[96];
+				std::snprintf(what, sizeof(what), "vehicle %d hit the player at %.1f m/s", handle, speed);
+				StartKnock(v.x / speed, v.y / speed, force, ms, what);
+				float mcDamage = 0.0f;
+				if (Config::Get().combat) {
+					mcDamage = combat::McDamageFromGta(gtaDamage, Config::Get().playerDamageScale);
+					Game::ReportHurt(::libertycraft::proto::kHurtOther, combat::HostDamageForMc(mcDamage), 0, 0);
+				}
+				LC_LOG("%s (%.1f m to its side, %.1f m along it): knocked over (force %.0f, ragdoll %d ms), %.0f GTA damage -> %.2f Minecraft damage", what, lx, ly,
+					force, ms, gtaDamage, mcDamage);
+				return;
+			}
+		}
+
+		// DebugBailOut: DebugAutoVehicle's car drives off at speed after 3 s and Niko bails out at 5 s.
+		bool DebugBailOutTick(const Frame& a_f)
+		{
+			if (!Cfg().debugBailOut || !a_f.inCar) {
+				debugBailT = 0.0f;
+				debugBailed = false;
+				return false;
+			}
+			debugBailT += a_f.dt;
+			int veh = 0;
+			S::GET_CAR_CHAR_IS_USING(a_f.ped, &veh);
+			if (veh && S::DOES_VEHICLE_EXIST(veh) && debugBailT >= 3.0f && debugBailT < 6.0f) {
+				S::SET_CAR_FORWARD_SPEED(veh, 14.0f);
+			}
+			if (!debugBailed && debugBailT >= 5.0f) {
+				debugBailed = true;
+				float speed = 0.0f;
+				if (veh) {
+					S::GET_CAR_SPEED(veh, &speed);
+				}
+				LC_LOG("DebugBailOut: GTA's exit control at %.1f m/s", speed);
+				return true;
+			}
+			return false;
+		}
+
+		bool StartRelocation(int a_ped, const char* a_who, int a_interior, float a_aboveGround);
+
+		// DebugRunOver: every 40 s of puppeting (outdoors), a test car 15 m up the road drives at the player.
+		void DebugRunOverTick(const Frame& a_f)
+		{
+			if (!Cfg().debugRunOver || !a_f.exists) {
+				return;
+			}
+			if (debugRunCar) {
+				debugRunAge += a_f.dt;
+				const bool exists = S::DOES_VEHICLE_EXIST(debugRunCar);
+				if (exists && debugRunDrive > 0.0f && !knock.pending && !logic.recovering()) {
+					debugRunDrive -= a_f.dt;
+					S::SET_CAR_FORWARD_SPEED(debugRunCar, 12.0f);
+				}
+				if (!exists || debugRunAge > 12.0f) {
+					if (exists) {
+						S::MARK_CAR_AS_NO_LONGER_NEEDED(&debugRunCar);
+					}
+					debugRunCar = 0;
+				}
+			}
+			if (!a_f.puppeting || a_f.paused || logic.mode() != drive::Mode::kMinecraft) {
+				return;
+			}
+			debugRunT += a_f.dt;
+			if (debugRunT < 15.0f || debugRunCar) {
+				return;
+			}
+			float aboveGround = 99.0f;
+			S::GET_CHAR_HEIGHT_ABOVE_GROUND(a_f.ped, &aboveGround);
+			int interior = 0;
+			S::GET_INTERIOR_FROM_CHAR(a_f.ped, &interior);
+			if (aboveGround > 2.0f || interior != 0) {
+				if (debugRunT > 21.0f && StartRelocation(a_f.ped, "DebugRunOver", interior, aboveGround)) {
+					debugRunT = 0.0f;
+				}
+				return;
+			}
+			const unsigned int model = S::GET_HASH_KEY("admiral");
+			if (!debugRunRequested) {
+				debugRunRequested = true;
+				CStreaming::ScriptRequestModel(static_cast<std::int32_t>(model));
+			}
+			if (!S::HAS_MODEL_LOADED(model)) {
+				return;
+			}
+			debugRunRequested = false;
+			float x = 0, y = 0, z = 0, nx = 0, ny = 0, nz = 0, heading = 0;
+			S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
+			if (!S::GET_CLOSEST_CAR_NODE_WITH_HEADING(x, y, z, &nx, &ny, &nz, &heading)) {
+				heading = 0.0f;
+			}
+			const float h = heading * kDegToRad;
+			const float sx = x - std::sin(h) * 15.0f, sy = y + std::cos(h) * 15.0f;
+			float       ground = z;
+			S::GET_GROUND_Z_FOR_3D_COORD(sx, sy, z + 3.0f, &ground);
+			const float aim = std::atan2(-(x - sx), y - sy) / kDegToRad;
+			S::CREATE_CAR(model, sx, sy, ground + 0.5f, &debugRunCar, true);
+			S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
+			if (debugRunCar) {
+				S::SET_CAR_HEADING(debugRunCar, aim);
+			}
+			debugRunDrive = 3.0f;
+			debugRunAge = 0.0f;
+			debugRunT = -25.0f;  // the next one 40 s on
+			LC_LOG("DebugRunOver: test car %d 15 m up the road (%.1f %.1f %.1f), driving at the player at 12 m/s (heading %.0f)", debugRunCar, sx, sy, ground,
+				aim);
+		}
 
 		void EnterByOtherMeans(int a_ped)
 		{
@@ -449,6 +695,10 @@ namespace lc::HostDrive
 		pressEnter = false;
 		pressExit = false;
 		hiddenPed = 0;  // the ped is going away with the old session
+		knock = Knock{};
+		knockdowns = 0;
+		debugRunCar = 0;
+		NikoBody::OnIngameStartup();
 		seatLoggedFor = 0;
 		lastReason = nullptr;
 	}
@@ -487,6 +737,22 @@ namespace lc::HostDrive
 		}
 		in.toggles = togglePresses.exchange(0, std::memory_order_relaxed);
 		in.vehicleActions = vehiclePresses.exchange(0, std::memory_order_relaxed);
+		// Standing again? (after a vehicle or a fall, GTA keeps Niko until he is: DriveLogic)
+		if (a_f.exists && !a_f.inCar && !a_f.dead) {
+			in.ragdoll = S::IS_PED_RAGDOLL(a_f.ped) || S::IS_CHAR_GETTING_UP(a_f.ped);
+			if (!a_f.puppeting) {
+				float speed = 0.0f;
+				S::GET_CHAR_SPEED(a_f.ped, &speed);
+				in.upright = !in.ragdoll && !S::IS_CHAR_IN_AIR(a_f.ped) && speed < kUprightSpeed && PedStanding();
+			}
+		}
+		// Knocked over: a car running into the puppeted player (here), a blast (Combat, last frame).
+		if (Cfg().ragdollOnVehicleHit && active && a_f.puppeting && !a_f.inCar && logic.mode() == drive::Mode::kMinecraft && !knock.pending &&
+			!logic.recovering()) {
+			DetectVehicleHits(a_f);
+		}
+		in.knockdowns = knockdowns;
+		knockdowns = 0;
 
 		// ---- test hooks (DebugAutoToggle / DebugAutoVehicle) -----------------------------------------
 		if (Cfg().debugAutoToggle && active && (debugToggleT += a_f.dt) >= kDebugToggleSeconds) {
@@ -567,6 +833,16 @@ namespace lc::HostDrive
 			}
 		}
 		WalkTestTick(a_f);
+		if (active && DebugBailOutTick(a_f)) {
+			exitNow = true;
+			debugExitCheckT = 0.0f;
+		}
+		if (active) {
+			DebugRunOverTick(a_f);
+		}
+		if (inGame) {
+			DebugCutsceneTick(a_f);
+		}
 		if (exitNow) {
 			exitPressT = kExitPressSeconds;
 		}
@@ -640,6 +916,24 @@ namespace lc::HostDrive
 		if (out.enterFailed) {
 			LC_LOG("no vehicle entered after %.0f s; Minecraft takes the player back", drive::Logic::kGiveUpAfter);
 		}
+		recoverClock = logic.recovering() ? recoverClock + a_f.dt : 0.0f;
+		if (out.recovered && logic.mode() == drive::Mode::kMinecraft) {
+			LC_LOG("%s: Minecraft takes over", out.recoverCapped ? "Niko didn't get back up in time" : "Niko stands again");
+		}
+		// A knockdown's ragdoll, once puppet mode has let go of Niko (frozen, he wouldn't fall).
+		if (knock.pending) {
+			knock.wait += a_f.dt;
+			if (a_f.exists && !a_f.puppeting && !a_f.inCar && !a_f.dead) {
+				S::SWITCH_PED_TO_RAGDOLL(a_f.ped, knock.ms, knock.ms, false, false, false, false);
+				// World-direction force (APPLY_FORCE_TO_PED's 10th argument 0; Combat.cpp measured it).
+				S::APPLY_FORCE_TO_PED(a_f.ped, 3, knock.gx * knock.force, knock.gy * knock.force, knock.force * 0.3f, 0.0f, 0.0f, 0.0f, 0, 0, 1, 1);
+				LC_LOG("knocked over (%s): Niko ragdolled for %d ms, pushed %.2f %.2f x %.0f", knock.what, knock.ms, knock.gx, knock.gy, knock.force);
+				knock.pending = false;
+			} else if (knock.wait > 1.0f) {
+				LC_LOG("knockdown dropped (%s): Niko wasn't free to fall within 1 s", knock.what);
+				knock.pending = false;
+			}
+		}
 		if (out.blocker != lastReason) {
 			LC_LOG("GTA IV drives the player: %s", out.blocker ? out.blocker : "no, Minecraft may");
 			lastReason = out.blocker;
@@ -697,10 +991,14 @@ namespace lc::HostDrive
 			seatLoggedFor = 0;
 		}
 
-		// Minecraft's player sits on its mount in the seat: Niko would be in the way.
+		// While GTA animates Niko the Minecraft body may follow his skeleton instead (NikoBody.h);
+		// else, in a vehicle, Minecraft's player sits on its mount in the seat: Niko would be in the way.
+		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, out.why, out.hostDrives, a_f.mcInWorld);
 		const bool hide = out.inVehicle && Cfg().hideNikoInVehicle && logic.mode() == drive::Mode::kMinecraft && a_f.mcInWorld;
-		if (a_f.exists) {
-			SetHidden(a_f.ped, hide);
+		if (bodyPed) {
+			SetHidden(bodyPed, true, "the Minecraft body follows his animation");
+		} else if (a_f.exists) {
+			SetHidden(a_f.ped, hide, "Minecraft's player rides in the vehicle");
 		}
 
 		auto& st = Game::State();
@@ -708,6 +1006,28 @@ namespace lc::HostDrive
 		st.inVehicle = out.inVehicle;
 		st.nikoMode = logic.mode() == drive::Mode::kNiko;
 		return r;
+	}
+
+	void AfterPuppetDecision()
+	{
+		if (hiddenPed) {
+			NikoBody::Hide(hiddenPed, true);
+		}
+	}
+
+	bool KnockedOver()
+	{
+		return logic.recovering() && logic.recoveringFrom() == drive::Why::kRagdoll && logic.mode() == drive::Mode::kMinecraft;
+	}
+
+	void KnockDown(float a_gx, float a_gy, float a_force, int a_ragdollMs, const char* a_what)
+	{
+		if (!Cfg().ragdollOnVehicleHit || knock.pending || logic.recovering() || logic.mode() != drive::Mode::kMinecraft) {
+			return;
+		}
+		const float len = std::hypot(a_gx, a_gy);
+		StartKnock(len > 1e-3f ? a_gx / len : 0.0f, len > 1e-3f ? a_gy / len : 0.0f, a_force, a_ragdollMs, a_what);
+		LC_LOG("%s: knocked over (force %.0f, ragdoll %d ms)", a_what, a_force, a_ragdollMs);
 	}
 
 	int DebugPuppetTarget(GtaVec& a_feet)

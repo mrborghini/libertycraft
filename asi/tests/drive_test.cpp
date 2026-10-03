@@ -21,6 +21,7 @@ namespace
 	using lc::drive::Input;
 	using lc::drive::Logic;
 	using lc::drive::Mode;
+	using lc::drive::Why;
 	using lc::drive::Output;
 
 	constexpr float kDt = 1.0f / 60.0f;
@@ -292,9 +293,15 @@ namespace
 		in.toggles = 1;
 		auto out = logic.Step(in);
 		CHECK(logic.mode() == Mode::kNiko && out.inVehicle);
+		CHECK(out.why == Why::kNikoMode);
 		in.toggles = 1;  // back to Minecraft mode while still driving: GTA keeps the wheel
 		out = logic.Step(in);
 		CHECK(logic.mode() == Mode::kMinecraft && out.inVehicle && !out.resync);
+		CHECK(out.why == Why::kVehicle);
+		in.toggles = 0;
+		in.inCar = false;  // just out: still the vehicle's, until on foot for kExitSettle
+		out = logic.Step(in);
+		CHECK(out.hostDrives && out.why == Why::kVehicle);
 	}
 
 	void TestCutsceneAndLoading()
@@ -304,9 +311,11 @@ namespace
 		in.cutscene = true;
 		auto out = logic.Step(in);
 		CHECK(out.hostDrives && std::strstr(out.blocker, "cutscene"));
+		CHECK(out.why == Why::kCutscene);
 		in.inGame = false;  // loading: nobody follows, no resync (Game teleports after loads anyway)
 		out = logic.Step(in);
 		CHECK(!out.hostDrives && !out.resync);
+		CHECK(out.why == Why::kNone);
 		in.inGame = true;
 		in.cutscene = false;
 		out = logic.Step(in);
@@ -337,6 +346,82 @@ namespace
 		auto out = logic.Step(in);
 		CHECK(!logic.entering() && !out.hostDrives);
 	}
+
+	// Bailing out of a moving car: Niko rolls and tumbles (ragdoll), gets up; GTA keeps him until he
+	// has stood still for kUprightSettle, however long the tumble takes.
+	void TestBailOutWaitsUntilStanding()
+	{
+		Logic logic(true);
+		Input in = OnFoot(false);
+		in.inCar = true;
+		logic.Step(in);
+		in.inCar = false;
+		in.upright = false;
+		in.ragdoll = true;
+		auto r = Frames(logic, in, 3.0f);  // tumbling, far past kExitSettle
+		CHECK(r.last.hostDrives && r.last.why == Why::kVehicle && r.resyncs == 0);
+		CHECK(std::strstr(r.last.blocker, "until Niko stands"));
+		in.ragdoll = false;  // getting up: not ragdolled any more, not upright yet either
+		r = Frames(logic, in, 1.0f);
+		CHECK(r.last.hostDrives && r.resyncs == 0);
+		in.upright = true;
+		r = Frames(logic, in, Logic::kUprightSettle - 0.1f);
+		CHECK(r.last.hostDrives && r.resyncs == 0);
+		r = Frames(logic, in, 0.2f);
+		CHECK(!r.last.hostDrives && r.resyncs == 1 && !logic.recovering());
+		// An upright moment in the middle of a tumble doesn't count: it has to last.
+		Logic l2(true);
+		in = OnFoot(false);
+		in.inCar = true;
+		l2.Step(in);
+		in.inCar = false;
+		for (int i = 0; i < 10; ++i) {
+			in.upright = (i % 2) == 0;
+			r = Frames(l2, in, 0.3f);
+			CHECK(r.last.hostDrives);
+		}
+	}
+
+	// A car runs the puppeted player over: GTA takes him (kRagdoll) until he is back on his feet.
+	void TestKnockdownUntilBackUp()
+	{
+		Logic logic(true);
+		Input in = OnFoot(true);
+		CHECK(!logic.Step(in).hostDrives);
+		in.knockdowns = 1;
+		auto out = logic.Step(in);
+		CHECK(out.hostDrives && out.why == Why::kRagdoll && std::strstr(out.blocker, "knocked over"));
+		in.knockdowns = 0;
+		in.puppeting = false;
+		in.ragdoll = true;
+		in.upright = false;
+		auto r = Frames(logic, in, 2.0f);
+		CHECK(r.last.hostDrives && r.last.why == Why::kRagdoll);
+		in.ragdoll = false;
+		in.upright = true;
+		r = Frames(logic, in, Logic::kUprightSettle + 0.05f);
+		CHECK(!r.last.hostDrives && r.resyncs == 1);
+		// Never stands up (stuck somewhere): kRecoverCap hands him back anyway.
+		in.knockdowns = 1;
+		in.upright = false;
+		out = logic.Step(in);
+		in.knockdowns = 0;
+		r = Frames(logic, in, Logic::kRecoverCap + 0.1f);
+		CHECK(!r.last.hostDrives && r.resyncs == 1);
+		// GTA ragdolls Niko by itself in Minecraft mode (a blast): the same.
+		Logic l3(true);
+		in = OnFoot(true);
+		in.ragdoll = true;
+		in.upright = false;
+		out = l3.Step(in);
+		CHECK(out.hostDrives && out.why == Why::kRagdoll);
+		// In Niko mode GTA plays anyway: no recovery to wait for.
+		Logic l4(false);
+		in = OnFoot(false);
+		in.knockdowns = 1;
+		out = l4.Step(in);
+		CHECK(out.why == Why::kNikoMode && !l4.recovering());
+	}
 }
 
 int main()
@@ -359,6 +444,8 @@ int main()
 	TestCutsceneAndLoading();
 	TestPausedTimersStandStill();
 	TestDeathDropsAttempt();
+	TestBailOutWaitsUntilStanding();
+	TestKnockdownUntilBackUp();
 	if (failures) {
 		std::fprintf(stderr, "drive_test: %d failure(s)\n", failures);
 		return EXIT_FAILURE;

@@ -247,19 +247,19 @@ namespace libertycraft::proto
 		kActorEssential = 1u << 2,
 		kActorInCombat = 1u << 3,
 		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): the record is one
-		// piece of a GTA IV vehicle, not a ped. A vehicle is long and an ActorRecord is an upright box,
-		// so it goes out as up to 4 records along its length (kActorVehicleSegments), each one an
-		// upright box centred on its piece of the vehicle's axis: width = the vehicle's width (or more,
-		// so the pieces touch), height = the vehicle's height, (x, y, z) = the bottom centre. Their
-		// formId is kActorVehicleTag | (vehicle script handle << 2) | piece (0 at the front). Minecraft
-		// makes them hittable and solid like the ped records; a kEvHitActor on any piece hits the
-		// vehicle (projectile hits also reach the people inside it). Peds sitting in a vehicle get no
-		// record of their own.
+		// piece of a GTA IV vehicle, not a ped. A vehicle is long and turned any way, and an
+		// ActorRecord is an upright box square to the world axes, so a vehicle goes out as a row of up
+		// to kActorVehicleSegments such boxes along its axis, small enough that none sticks out of the
+		// vehicle's outline (seen from above) by more than about 0.2 m whichever way it faces:
+		// width = the box's side, height = the vehicle's height, (x, y, z) = the box's bottom centre.
+		// Their formId is kActorVehicleTag | (vehicle script handle << 4) | piece (0 at the front).
+		// Minecraft makes them hittable and solid like the ped records; a kEvHitActor on any piece hits
+		// the vehicle (where it landed: kEvHitPoint). Peds sitting in a vehicle get no record of their own.
 		kActorVehicle = 1u << 4,
 	};
 
 	inline constexpr std::uint32_t kActorVehicleTag = 0x56000000u;  // 'V'
-	inline constexpr std::uint32_t kActorVehicleSegments = 4;      // at most, per vehicle
+	inline constexpr std::uint32_t kActorVehicleSegments = 16;     // at most, per vehicle
 
 	struct ActorRecord
 	{
@@ -300,6 +300,13 @@ namespace libertycraft::proto
 		                    // flags = flight pitch (float bits), weapon = arrow texture (0 plain, 1 tipped, 2 spectral)
 		kEvSkillUse = 5,    // the player used a Skyrim skill in Minecraft: formId = Skyrim skill (ActorValue: 9 Block,
 		                    // 10 Smithing, 11 Heavy Armor, 12 Light Armor), a = uses (as Skyrim's AdvanceSkill counts them)
+		// LibertyCraft addition (a new type; the layout and kVersion stay SkyCraft's): where the next
+		// kEvHitActor with the same formId landed, sent right before it. a/b/c = a point on the line
+		// the blow or projectile came along, at the stand-in (MC coords); d = that line's yaw and
+		// flags = its pitch (float bits), MC degrees, pointing the way it travelled. The host follows
+		// the line into the real vehicle to find what it struck (body or which window). Sent for
+		// vehicle pieces (kActorVehicle) only; a host that doesn't know it ignores it.
+		kEvHitPoint = 6,
 	};
 
 	enum HitFlags : std::uint32_t
@@ -403,8 +410,10 @@ namespace libertycraft::proto
 		                      // were dug out of Skyrim's world (its geometry there is gone); 0 = none
 		kRenRagdoll = 9,      // RenAvatar + RenBatch[] + RenVertex[]: the player's body standing still,
 		                      // relative to the feet and facing +Z, split into its parts (RenBatch
-		                      // flags bits 8-11: RagdollPart). Sent about once a second while alive;
-		                      // Skyrim hangs the parts on its ragdoll when the player dies.
+		                      // flags bits 8-11: RagdollPart; bit 12 kRagdollHeld: a held item, on its
+		                      // arm). Sent about once a second while alive and at once when the skin,
+		                      // armour or held items change. Skyrim hangs the parts on its ragdoll when
+		                      // the player dies; GTA IV poses them on Niko's skeleton while it animates him.
 	};
 
 	struct RenSolids
@@ -462,6 +471,10 @@ namespace libertycraft::proto
 		kPartLeftLeg = 6,
 		kPartCount = 7,
 	};
+	// kRenRagdoll RenBatch flags: the part (bits 8-11) and whether the batch is a held item (Minecraft
+	// drops it when the player dies; it rides its arm while alive).
+	inline constexpr std::uint32_t kRagdollPartShift = 8;
+	inline constexpr std::uint32_t kRagdollHeld = 1u << 12;
 
 	struct RenLights
 	{

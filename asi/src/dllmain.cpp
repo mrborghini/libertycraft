@@ -23,6 +23,7 @@
 #include "Combat.cpp"
 #include "NpcBlocks.cpp"
 #include "Doors.cpp"
+#include "NikoBody.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

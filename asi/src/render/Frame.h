@@ -21,6 +21,7 @@ namespace lc::render
 		kFrameAvatar = 1u << 8,        // the player's third-person body at feet
 		kFrameMountShift = 1u << 9,    // in a vehicle: feet = GTA's seat this frame; the mount moves there too
 		kFrameGtaLighting = 1u << 10,  // light with GTA's sun, ambient and fog (else Minecraft's own lighting)
+		kFrameBody = 1u << 11,         // the player's body posed on GTA's skeleton (bodyParts at bodyOrigin; Body.h)
 	};
 
 	enum class CameraSource : std::uint32_t
@@ -51,5 +52,8 @@ namespace lc::render
 		float         exposure = 1.0f;
 		std::uint32_t viewportW = 0, viewportH = 0;  // the camera's grcViewport size, when known
 		std::uint32_t pad = 0;
+		// kFrameBody: per RagdollPart, the standing body -> GTA metres relative to bodyOrigin (GTA world).
+		double        bodyOrigin[3]{};
+		float         bodyParts[7][3][4]{};
 	};
 }

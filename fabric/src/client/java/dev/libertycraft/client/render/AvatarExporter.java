@@ -25,7 +25,9 @@ import java.util.Set;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.model.HumanoidModel;
 import net.minecraft.client.model.Model;
+import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.geom.builders.UVPair;
 import net.minecraft.client.renderer.OrderedSubmitNodeCollector;
 import net.minecraft.client.renderer.SubmitNodeCollector;
@@ -58,10 +60,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.projectile.ItemSupplier;
 import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.item.ItemDisplayContext;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.joml.Matrix4f;
@@ -105,6 +109,15 @@ final class AvatarExporter implements SubmitNodeCollector {
 	private static final AvatarExporter SCENE = new AvatarExporter();
 	private static final AvatarExporter RAGDOLL = new AvatarExporter();
 	private static long nextRagdollNanos;
+	private static int ragdollLook;  // lookKey of the last ragdoll export
+
+	// Ragdoll export: which of the body's parts the vertices being captured belong to (Batch.tags).
+	private static final int TAG_NONE = 0;     // not known: by position (partAt)
+	private static final int TAG_PENDING = 15; // a model or item that isn't a humanoid's: by where it is, when it's done
+	private static final int TAG_HELD = 16;    // with a part: a held item (Proto.RAGDOLL_HELD)
+	private boolean tagParts;
+	private int tag = TAG_NONE;
+	private int freeDepth;
 
 	private final Map<Long, Batch> batches = new HashMap<>();
 	private final Capture capture = new Capture();
@@ -125,6 +138,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		SCENE.shown = false;
 		RAGDOLL.shown = false;
 		nextRagdollNanos = 0;
+		ragdollLook = 0;
 		movingBlocks = null;
 	}
 
@@ -132,10 +146,25 @@ final class AvatarExporter implements SubmitNodeCollector {
 		AVATAR.exportAvatar(minecraft, atlas, partialTick);
 		SCENE.exportScene(minecraft, atlas, partialTick);
 		long now = System.nanoTime();
-		if (now >= nextRagdollNanos) {
+		int look = lookKey(minecraft);
+		if (now >= nextRagdollNanos || look != ragdollLook) {
 			nextRagdollNanos = now + 1_000_000_000L;
+			ragdollLook = look;
 			RAGDOLL.exportRagdoll(minecraft, atlas, partialTick);
 		}
+	}
+
+	/** What the player's body looks like: its skin and everything it wears or holds (a change re-sends the ragdoll at once). */
+	private static int lookKey(Minecraft minecraft) {
+		var player = minecraft.player;
+		if (player == null) {
+			return 0;
+		}
+		int h = player.getSkin().hashCode();
+		for (EquipmentSlot slot : EquipmentSlot.values()) {
+			h = 31 * h + ItemStack.hashItemAndComponents(player.getItemBySlot(slot));
+		}
+		return h;
 	}
 
 	// ---- the two captures -------------------------------------------------------------------------
@@ -167,8 +196,9 @@ final class AvatarExporter implements SubmitNodeCollector {
 
 	/**
 	 * The player's body standing still, facing +Z, feet at the origin, split into Minecraft's six
-	 * parts, for GTA IV to hang on its ragdoll when the player dies. Kept up to date while alive
-	 * (skin and armour change), so the last one before death is the one that falls.
+	 * parts (held items ride their arm, flagged RAGDOLL_HELD): GTA IV poses it on Niko's skeleton
+	 * while the game animates him (vehicles, cutscenes), and a death ragdoll would hang it on its
+	 * bones. Kept up to date while alive (skin, armour and held items change).
 	 */
 	private void exportRagdoll(Minecraft minecraft, HostAtlas atlas, float partialTick) {
 		this.atlas = atlas;
@@ -193,9 +223,9 @@ final class AvatarExporter implements SubmitNodeCollector {
 				living.pose = Pose.STANDING;
 			}
 			if (state instanceof ArmedEntityRenderState armed) {
-				// Everything in hand drops when a Minecraft player dies.
-				armed.rightHandItemState.clear();
-				armed.leftHandItemState.clear();
+				// Held items stay (flagged, on their arm), the arms hanging straight down.
+				armed.rightArmPose = HumanoidModel.ArmPose.EMPTY;
+				armed.leftArmPose = HumanoidModel.ArmPose.EMPTY;
 				armed.currentSwing = null;
 				armed.swingAnimation = 0.0F;
 			}
@@ -208,24 +238,89 @@ final class AvatarExporter implements SubmitNodeCollector {
 				avatar.parrotOnLeftShoulder = avatar.parrotOnRightShoulder = null;
 			}
 			CameraRenderState cameraState = minecraft.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
+			this.tagParts = true;
 			dispatcher.submit(state, cameraState, 0.0, 0.0, 0.0, new PoseStack(), this);
 		} catch (RuntimeException e) {
 			LibertyCraft.LOG.warn("[LibertyCraft] couldn't capture the player's body for the ragdoll", e);
 			return;
+		} finally {
+			this.capture.flush();
+			this.tagParts = false;
+			this.tag = TAG_NONE;
+			this.freeDepth = 0;
 		}
 		this.sendParts(Proto.REN_RAGDOLL);
 	}
 
+	// The standing player model (AvatarRenderer scales it by 0.9375; the model's y = 0, the neck, is
+	// 1.501 blocks up): the neck and hip heights, the body's half width.
+	private static final float NECK_Y = 1.501F * 0.9375F;
+	private static final float HIP_Y = (1.501F - 0.75F) * 0.9375F;
+	private static final float BODY_HALF_WIDTH = 4.0F / 16.0F * 0.9375F;
+
 	/** Which of Minecraft's six parts a point of the standing, +Z-facing body belongs to. */
 	private static int partAt(float x, float y) {
-		if (y >= 1.5F) {
+		if (y >= NECK_Y) {
 			return Proto.PART_HEAD;
 		}
-		if (y >= 0.75F) {
+		if (y >= HIP_Y) {
 			// The arms hang outside the body's 8-pixel width; its right side is -X facing +Z.
-			return x < -0.255F ? Proto.PART_RIGHT_ARM : x > 0.255F ? Proto.PART_LEFT_ARM : Proto.PART_BODY;
+			return x < -BODY_HALF_WIDTH ? Proto.PART_RIGHT_ARM : x > BODY_HALF_WIDTH ? Proto.PART_LEFT_ARM : Proto.PART_BODY;
 		}
 		return x < 0.0F ? Proto.PART_RIGHT_LEG : Proto.PART_LEFT_LEG;
+	}
+
+	/**
+	 * A model or item that isn't part of a humanoid model (held items, a shield, a skull or pumpkin on
+	 * the head, the elytra), by its middle: above the neck the head's, outside the body's width an
+	 * arm's (held), else the body's.
+	 */
+	private static int freePart(float x, float y) {
+		if (y >= NECK_Y - 0.06F) {
+			return Proto.PART_HEAD;
+		}
+		if (Math.abs(x) > BODY_HALF_WIDTH) {
+			return (x < 0.0F ? Proto.PART_RIGHT_ARM : Proto.PART_LEFT_ARM) | TAG_HELD;
+		}
+		return Proto.PART_BODY;
+	}
+
+	/** The ragdoll capture: a submission that isn't a humanoid's parts starts; its vertices wait for freePart. */
+	private void beginFree() {
+		if (this.tagParts && this.freeDepth++ == 0) {
+			this.capture.flush();
+			this.tag = TAG_PENDING;
+		}
+	}
+
+	private void endFree() {
+		if (!this.tagParts || this.freeDepth == 0 || --this.freeDepth > 0) {
+			return;
+		}
+		this.capture.flush();
+		this.tag = TAG_NONE;
+		double sx = 0.0, sy = 0.0;
+		int n = 0;
+		for (Batch b : this.batches.values()) {
+			for (int i = 0; i < b.count; i++) {
+				if (b.tags[i] == TAG_PENDING) {
+					sx += Float.intBitsToFloat(b.data[i * 8]);
+					sy += Float.intBitsToFloat(b.data[i * 8 + 1]);
+					n++;
+				}
+			}
+		}
+		if (n == 0) {
+			return;
+		}
+		int part = freePart((float) (sx / n), (float) (sy / n));
+		for (Batch b : this.batches.values()) {
+			for (int i = 0; i < b.count; i++) {
+				if (b.tags[i] == TAG_PENDING) {
+					b.tags[i] = part;
+				}
+			}
+		}
 	}
 
 	/** Like send, with each batch split by the part its quads belong to (RenBatch flags bits 8-11). */
@@ -240,22 +335,29 @@ final class AvatarExporter implements SubmitNodeCollector {
 			if (quadCount == 0) {
 				continue;
 			}
-			int[][] byPart = new int[7][quadCount];
-			int[] counts = new int[7];
+			// Index part + 7 * held.
+			int[][] byPart = new int[14][quadCount];
+			int[] counts = new int[14];
 			for (int q = 0; q < quadCount; q++) {
-				float cx = 0.0F, cy = 0.0F;
-				for (int k = 0; k < 4; k++) {
-					int o = (q * 4 + k) * 8;
-					cx += Float.intBitsToFloat(b.data[o]);
-					cy += Float.intBitsToFloat(b.data[o + 1]);
+				int t = b.tags[q * 4];
+				int part = t & 15;
+				if (part < Proto.PART_HEAD || part > Proto.PART_LEFT_LEG) {
+					float cx = 0.0F, cy = 0.0F;
+					for (int k = 0; k < 4; k++) {
+						int o = (q * 4 + k) * 8;
+						cx += Float.intBitsToFloat(b.data[o]);
+						cy += Float.intBitsToFloat(b.data[o + 1]);
+					}
+					part = partAt(cx * 0.25F, cy * 0.25F);
+					t = part;
 				}
-				int part = partAt(cx * 0.25F, cy * 0.25F);
-				byPart[part][counts[part]++] = q;
+				int slot = part + ((t & TAG_HELD) != 0 ? 7 : 0);
+				byPart[slot][counts[slot]++] = q;
 			}
-			for (int part = 1; part < 7; part++) {
-				if (counts[part] > 0) {
-					groups.add(new Group(b, part, byPart[part], counts[part]));
-					vertices += counts[part] * 6;
+			for (int slot = 1; slot < 14; slot++) {
+				if (counts[slot] > 0) {
+					groups.add(new Group(b, slot, byPart[slot], counts[slot]));
+					vertices += counts[slot] * 6;
 				}
 			}
 		}
@@ -268,7 +370,8 @@ final class AvatarExporter implements SubmitNodeCollector {
 		int first = 0;
 		for (Group g : groups) {
 			int count = g.count() * 6;
-			header.putInt(g.batch().texture).putInt(first).putInt(count).putInt((g.batch().translucent ? 1 : 0) | g.part() << 8);
+			int part = g.part() % 7, held = g.part() >= 7 ? Proto.RAGDOLL_HELD : 0;
+			header.putInt(g.batch().texture).putInt(first).putInt(count).putInt((g.batch().translucent ? 1 : 0) | part << 8 | held);
 			for (int i = 0; i < g.count(); i++) {
 				g.batch().writeQuad(body, g.quads()[i]);
 			}
@@ -451,6 +554,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		final int flags;
 		final boolean translucent;
 		int[] data = new int[8 * 256];
+		int[] tags = new int[256];  // per vertex, ragdoll export only: the part (TAG_*)
 		int count;
 
 		Batch(int texture, int uvMode, int flags) {
@@ -467,6 +571,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		void add(float x, float y, float z, float u, float v, int argb, int light, int overlay) {
 			if ((this.count + 1) * 8 > this.data.length) {
 				this.data = java.util.Arrays.copyOf(this.data, this.data.length * 2);
+				this.tags = java.util.Arrays.copyOf(this.tags, this.data.length / 8);
 			}
 			if (this.uvMode == UV_BLOCK_ATLAS) {
 				u = AvatarExporter.this.atlas.blockU(u);
@@ -493,6 +598,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 			this.data[o + 5] = argb;
 			this.data[o + 6] = ((light >> 4) & 0xF) | (((light >> 20) & 0xF) << 8);
 			this.data[o + 7] = this.flags;
+			this.tags[this.count] = AvatarExporter.this.tag;
 			this.count++;
 		}
 
@@ -708,7 +814,28 @@ final class AvatarExporter implements SubmitNodeCollector {
 		this.capture.begin(batch);
 		VertexConsumer buffer = uvMapping != null ? uvMapping.wrap(this.capture) : this.capture;
 		model.setupAnim(state);
-		model.renderToBuffer(poseStack, buffer, lightCoords, overlayCoords, tintedColor);
+		if (this.tagParts && model instanceof HumanoidModel<?> humanoid) {
+			// The ragdoll: the player's (or its armour's) parts one by one, each tagged with its part.
+			ModelPart[] parts = { humanoid.head, humanoid.body, humanoid.rightArm, humanoid.leftArm, humanoid.rightLeg, humanoid.leftLeg };
+			int[] tags = { Proto.PART_HEAD, Proto.PART_BODY, Proto.PART_RIGHT_ARM, Proto.PART_LEFT_ARM, Proto.PART_RIGHT_LEG, Proto.PART_LEFT_LEG };
+			poseStack.pushPose();
+			model.root().translateAndRotate(poseStack);
+			for (int i = 0; i < parts.length; i++) {
+				this.capture.flush();
+				this.tag = tags[i];
+				parts[i].render(poseStack, buffer, lightCoords, overlayCoords, tintedColor);
+			}
+			poseStack.popPose();
+			this.capture.flush();
+			this.tag = TAG_NONE;
+			return;
+		}
+		this.beginFree();
+		try {
+			model.renderToBuffer(poseStack, buffer, lightCoords, overlayCoords, tintedColor);
+		} finally {
+			this.endFree();
+		}
 		this.capture.flush();
 	}
 
@@ -716,10 +843,15 @@ final class AvatarExporter implements SubmitNodeCollector {
 	public void submitItem(PoseStack poseStack, ItemDisplayContext displayContext, int lightCoords, int overlayCoords, int outlineColor, int[] tintLayers,
 		ItemQuads quads, ItemStackRenderState.FoilType foilType) {
 		this.capture.flush();
-		Batch batch = this.batch(0, UV_RAW, SOLID);
-		Matrix4f pose = poseStack.last().pose();
-		for (BakedQuad quad : quads.all()) {
-			this.addQuad(batch, pose, quad, tintLayers, lightCoords, overlayCoords);
+		this.beginFree();
+		try {
+			Batch batch = this.batch(0, UV_RAW, SOLID);
+			Matrix4f pose = poseStack.last().pose();
+			for (BakedQuad quad : quads.all()) {
+				this.addQuad(batch, pose, quad, tintLayers, lightCoords, overlayCoords);
+			}
+		} finally {
+			this.endFree();
 		}
 	}
 
@@ -728,14 +860,19 @@ final class AvatarExporter implements SubmitNodeCollector {
 	public void submitBlockModel(PoseStack poseStack, RenderType renderType, List<BlockStateModelPart> parts, int[] tintLayers, int lightCoords, int overlayCoords,
 		int outlineColor) {
 		this.capture.flush();
-		Batch batch = this.batch(0, UV_RAW, SOLID);
-		Matrix4f pose = poseStack.last().pose();
-		for (BlockStateModelPart part : parts) {
-			for (Direction face : FACES_AND_NONE) {
-				for (BakedQuad quad : part.getQuads(face)) {
-					this.addQuad(batch, pose, quad, tintLayers, lightCoords, overlayCoords);
+		this.beginFree();
+		try {
+			Batch batch = this.batch(0, UV_RAW, SOLID);
+			Matrix4f pose = poseStack.last().pose();
+			for (BlockStateModelPart part : parts) {
+				for (Direction face : FACES_AND_NONE) {
+					for (BakedQuad quad : part.getQuads(face)) {
+						this.addQuad(batch, pose, quad, tintLayers, lightCoords, overlayCoords);
+					}
 				}
 			}
+		} finally {
+			this.endFree();
 		}
 	}
 
@@ -746,15 +883,25 @@ final class AvatarExporter implements SubmitNodeCollector {
 	public void submitBlockModel(PoseStack poseStack, java.util.function.Function<ChunkSectionLayer, RenderType> renderTypes, boolean translucentLayer,
 		List<BlockStateModelPart> parts, net.fabricmc.fabric.api.client.renderer.v1.mesh.@Nullable Mesh mesh, int[] tintLayers, int lightCoords, int overlayCoords,
 		int outlineColor) {
-		this.submitBlockModel(poseStack, (RenderType) null, parts, tintLayers, lightCoords, overlayCoords, outlineColor);
-		this.addMesh(poseStack.last().pose(), mesh, lightCoords, overlayCoords);
+		this.beginFree();
+		try {
+			this.submitBlockModel(poseStack, (RenderType) null, parts, tintLayers, lightCoords, overlayCoords, outlineColor);
+			this.addMesh(poseStack.last().pose(), mesh, lightCoords, overlayCoords);
+		} finally {
+			this.endFree();
+		}
 	}
 
 	@Override
 	public void submitItem(PoseStack poseStack, ItemDisplayContext displayContext, int lightCoords, int overlayCoords, int outlineColor, int[] tintLayers,
 		ItemQuads quads, @Nullable MeshView mesh, ItemStackRenderState.FoilType foilType) {
-		this.submitItem(poseStack, displayContext, lightCoords, overlayCoords, outlineColor, tintLayers, quads, foilType);
-		this.addMesh(poseStack.last().pose(), mesh, lightCoords, overlayCoords);
+		this.beginFree();
+		try {
+			this.submitItem(poseStack, displayContext, lightCoords, overlayCoords, outlineColor, tintLayers, quads, foilType);
+			this.addMesh(poseStack.last().pose(), mesh, lightCoords, overlayCoords);
+		} finally {
+			this.endFree();
+		}
 	}
 
 	@Override

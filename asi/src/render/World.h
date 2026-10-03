@@ -1,8 +1,9 @@
 // Minecraft's world inside GTA IV, on Direct3D 9: the D3D9 port of SkyCraft's WorldRender.
 // Consumes the render ring (kRenAtlas, kRenAtlasRegion, kRenSection, kRenClearAll, kRenTexture,
-// kRenAvatar, kRenScene; kRenLights/kRenSolids/kRenDug/kRenRagdoll are counted and ignored) and
-// draws the block sections, Minecraft's entities and particles, and the WorldEntities table
-// (dropped items/blocks, arrows, cracks, the selection outline) with Minecraft-style lighting.
+// kRenAvatar, kRenScene, kRenRagdoll; kRenSolids goes to NpcBlocks; kRenLights/kRenDug are counted
+// and ignored) and draws the block sections, Minecraft's entities and particles, the WorldEntities
+// table (dropped items/blocks, arrows, cracks, the selection outline) and the player's body posed
+// on GTA's skeleton (kFrameBody, render/Body.h) with Minecraft-style lighting.
 //
 // Render thread only (our draw command, see Render.cpp). Static data lives in D3DPOOL_MANAGED
 // resources and per-frame geometry goes through DrawPrimitiveUP, so nothing has to be released
@@ -35,6 +36,7 @@ namespace lc::render
 		std::uint64_t drainedBytes = 0;
 		std::uint32_t frames = 0;
 		std::uint64_t sectionsDrawn = 0, sectionsCulled = 0, drawCalls = 0, triangles = 0;
+		std::uint32_t bodyFrames = 0;  // frames the posed body was drawn
 		double        drainMs = 0.0, drawMs = 0.0, maxDrawMs = 0.0;
 		// current
 		std::uint32_t sections = 0;
@@ -58,6 +60,9 @@ namespace lc::render
 			const double* a_mountFrom);
 
 		WorldStats TakeStats();
+
+		// Any thread: Minecraft's standing body (kRenRagdoll) is here, so kFrameBody can draw it.
+		static bool HasBody();
 
 	private:
 		World() = default;

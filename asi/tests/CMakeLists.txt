@@ -38,3 +38,9 @@ target_include_directories(render_test PRIVATE ../src ../../protocol)
 target_compile_options(render_test PRIVATE -Wall -Wextra -O2)
 add_test(NAME render_test COMMAND render_test)
 add_test(NAME drive_test COMMAND drive_test)
+
+# render/Body.h (Stream K): the Minecraft body's parts on GTA's skeleton.
+add_executable(body_test body_test.cpp)
+target_include_directories(body_test PRIVATE ../src ../../protocol)
+target_compile_options(body_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME body_test COMMAND body_test)

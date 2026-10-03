@@ -141,35 +141,138 @@ static void TestKnockbackChain()
 	CHECK(Near(AngleBetween(1, 1, 2, 2), 0.0f, 1e-2f));
 }
 
+// Every box of a vehicle's row stays within its outline grown by the slack, at any heading, and the
+// row covers the outline except a shallow strip along its edges (where an aimed hit then lands a
+// little deeper in, on the next box).
+static void CheckLayout(float a_length, float a_width, float a_angleDeg)
+{
+	const float a = a_angleDeg * 3.14159265f / 180.0f;
+	const float fx = std::cos(a), fy = std::sin(a);  // the vehicle's axis, world x/y
+	const float e = std::fabs(fx) + std::fabs(fy);
+	const auto  l = VehicleSegments(a_length, a_width, e);
+	// Box centres in the world (right of the axis = (fy, -fx)), and their half sides.
+	float cxs[proto::kActorVehicleSegments], cys[proto::kActorVehicleSegments], halves[proto::kActorVehicleSegments];
+	for (std::uint32_t i = 0; i < l.count; ++i) {
+		cxs[i] = fx * l.offset[i] + fy * l.side[i];
+		cys[i] = fy * l.offset[i] - fx * l.side[i];
+		halves[i] = l.size[i] * 0.5f;
+	}
+	bool inside = true;
+	for (std::uint32_t i = 0; i < l.count; ++i) {
+		const float cx = cxs[i], cy = cys[i], half = halves[i];
+		for (int k = 0; k < 4; ++k) {  // the box's corners, in the vehicle's frame
+			const float px = cx + (k & 1 ? half : -half), py = cy + (k & 2 ? half : -half);
+			const float along = px * fx + py * fy, across = -px * fy + py * fx;
+			inside = inside && std::fabs(along) <= a_length * 0.5f + kVehicleBoxSlack + 1e-3f && std::fabs(across) <= a_width * 0.5f + kVehicleBoxSlack + 1e-3f;
+		}
+	}
+	CHECK(inside);
+	bool covered = true;
+	const float inset = 0.3f;
+	for (float u = -a_length * 0.5f + inset; u <= a_length * 0.5f - inset + 1e-4f; u += 0.05f) {
+		for (float v = -a_width * 0.5f + inset; v <= a_width * 0.5f - inset + 1e-4f; v += 0.05f) {
+			const float px = fx * u - fy * v, py = fy * u + fx * v;
+			bool        any = false;
+			for (std::uint32_t i = 0; i < l.count && !any; ++i) {
+				any = std::fabs(px - cxs[i]) <= halves[i] && std::fabs(py - cys[i]) <= halves[i];
+			}
+			covered = covered && any;
+		}
+	}
+	CHECK(covered);
+	if (!inside || !covered) {
+		std::fprintf(stderr, "  layout %.1f x %.1f at %.0f deg: %u boxes of %.2f m (inside %d, covered %d)\n", a_length, a_width, a_angleDeg, l.count, l.boxWidth,
+			inside, covered);
+	}
+}
+
 static void TestVehicles()
 {
 	std::uint32_t h = 0, piece = 0;
-	CHECK(VehicleActorId(0x1234, 2) == 0x560048D2u);
+	CHECK(VehicleActorId(0x1234, 2) == 0x56012342u);
 	CHECK(VehicleFromActorId(VehicleActorId(0x1234, 2), h, piece) && h == 0x1234 && piece == 2);
-	CHECK(VehicleFromActorId(VehicleActorId(0x3FFFFF, 3), h, piece) && h == 0x3FFFFF && piece == 3);
+	CHECK(VehicleFromActorId(VehicleActorId(0xFFFFF, 15), h, piece) && h == 0xFFFFF && piece == 15);
 	CHECK(!VehicleFromActorId(ActorIdFromHandle(0x1234), h, piece));  // a ped isn't a vehicle
 	CHECK(!HandleFromActorId(VehicleActorId(0x1234, 0), h));           // and a vehicle isn't a ped
 	CHECK(VehicleActorId(0, 0) != 0);
+	CHECK(proto::kActorVehicleSegments == 16);
 
-	// A saloon: 4.8 x 1.9 m -> 3 pieces, front first.
-	auto l = VehicleSegments(4.8f, 1.9f);
-	CHECK(l.count == 3 && Near(l.offset[0], 1.6f) && Near(l.offset[1], 0.0f) && Near(l.offset[2], -1.6f) && Near(l.boxWidth, 1.9f));
-	// A bus: 12 x 2.6 m -> 4 pieces of 3 m, boxes 3 m wide so they touch.
-	l = VehicleSegments(12.0f, 2.6f);
-	CHECK(l.count == 4 && Near(l.offset[0], 4.5f) && Near(l.offset[3], -4.5f) && Near(l.boxWidth, 3.0f));
-	// Something square: one piece.
-	l = VehicleSegments(2.0f, 2.0f);
-	CHECK(l.count == 1 && Near(l.offset[0], 0.0f) && Near(l.boxWidth, 2.0f));
-	// Degenerate dimensions still give something sane.
-	l = VehicleSegments(0.0f, 0.0f);
+	// A saloon (4.8 x 1.9 m) along an axis: 4 boxes 2.3 m wide (0.2 m slack each side), the end ones
+	// centred 1.45 m from the middle, front first.
+	auto l = VehicleSegments(4.8f, 1.9f, 1.0f);
+	CHECK(l.count == 4 && Near(l.offset[0], 1.45f) && Near(l.offset[3], -1.45f) && Near(l.boxWidth, 2.3f));
+	// The same car at 45 degrees: smaller boxes (1.63 m), more of them.
+	l = VehicleSegments(4.8f, 1.9f, std::sqrt(2.0f));
+	CHECK(l.count == 5 + 4 && Near(l.boxWidth, 2.3f / std::sqrt(2.0f), 1e-3f) && Near(l.side[5], -0.5f) && Near(l.offset[5], 1.95f));
+	// Something square: one box.
+	l = VehicleSegments(2.0f, 2.0f, 1.0f);
+	CHECK(l.count == 1 && Near(l.offset[0], 0.0f) && Near(l.boxWidth, 2.4f));
+	// Degenerate dimensions still give something sane; a long one is capped at 16 boxes.
+	l = VehicleSegments(0.0f, 0.0f, 1.0f);
 	CHECK(l.count == 1 && l.boxWidth >= 0.5f);
+	l = VehicleSegments(40.0f, 2.5f, std::sqrt(2.0f));
+	CHECK(l.count == proto::kActorVehicleSegments);
+	for (float angle = 0.0f; angle <= 90.0f; angle += 7.5f) {
+		CheckLayout(4.8f, 1.9f, angle);   // a saloon
+		CheckLayout(5.4f, 2.0f, angle);   // a big car
+		CheckLayout(12.0f, 2.6f, angle);  // a bus
+		CheckLayout(2.2f, 0.8f, angle);   // a motorbike
+	}
 
 	CHECK(Near(VehicleDamageFromMc(7.0f, 15.0f), 105.0f));
 	CHECK(VehicleDamageFromMc(0.0f, 15.0f) == 0.0f && VehicleDamageFromMc(5.0f, 0.0f) == 0.0f);
-	CHECK(WindowForHit(0, 3, true) == 0 && WindowForHit(0, 3, false) == 1);
-	CHECK(WindowForHit(2, 3, true) == 2 && WindowForHit(2, 3, false) == 3);
-	CHECK(WindowForHit(1, 4, true) == 0 && WindowForHit(2, 4, true) == 2);
-	CHECK(WindowForHit(0, 1, false) == 1);
+}
+
+// Where a hit lands on a car (ADMIRAL-like model box: 1.98 x 5.0 x 1.5 m, origin 0.6 m above ground).
+static void TestCarStrikes()
+{
+	const float lo[3] = { -0.99f, -2.5f, -0.6f }, hi[3] = { 0.99f, 2.5f, 0.9f };
+	auto strike = [&](int a_face, float a_x, float a_y, float a_z) {
+		const float p[3] = { a_x, a_y, a_z };
+		return ClassifyCarStrike(a_face, p, lo, hi);
+	};
+	// The driver's door window (left side, glass height, middle) and the door below it.
+	auto s = strike(kFaceLeft, -0.99f, 0.3f, 0.5f);
+	CHECK(s.window == kWindowLF && s.seat == kSeatDriver);
+	s = strike(kFaceLeft, -0.99f, 0.3f, -0.1f);
+	CHECK(s.window == kWindowNone && s.seat == kSeatNone);
+	// The rear doors' windows, either side; the passenger's front window.
+	CHECK(strike(kFaceLeft, -0.99f, -1.0f, 0.5f).window == kWindowLR && strike(kFaceLeft, -0.99f, -1.0f, 0.5f).seat == 1);
+	CHECK(strike(kFaceRight, 0.99f, -1.0f, 0.5f).window == kWindowRR && strike(kFaceRight, 0.99f, -1.0f, 0.5f).seat == 2);
+	CHECK(strike(kFaceRight, 0.99f, 0.3f, 0.5f).window == kWindowRF && strike(kFaceRight, 0.99f, 0.3f, 0.5f).seat == 0);
+	// Level with the bonnet or the boot, on the side: body.
+	CHECK(strike(kFaceLeft, -0.99f, 2.2f, 0.5f).window == kWindowNone);
+	CHECK(strike(kFaceLeft, -0.99f, -2.3f, 0.5f).window == kWindowNone);
+	// From the front: the windscreen above the bonnet (whoever sits on that side), the grille below.
+	CHECK(strike(kFaceFront, -0.4f, 2.5f, 0.6f).window == kWindscreen && strike(kFaceFront, -0.4f, 2.5f, 0.6f).seat == kSeatDriver);
+	CHECK(strike(kFaceFront, 0.4f, 2.5f, 0.6f).seat == 0);
+	CHECK(strike(kFaceFront, 0.0f, 2.5f, 0.0f).window == kWindowNone);
+	CHECK(strike(kFaceRear, 0.4f, -2.5f, 0.6f).window == kWindscreenRear && strike(kFaceRear, 0.4f, -2.5f, 0.6f).seat == 2);
+	// From above: the roof is body, the windscreen ahead of it glass.
+	CHECK(strike(kFaceTop, 0.0f, 0.0f, 0.9f).window == kWindowNone);
+	CHECK(strike(kFaceTop, 0.0f, 1.0f, 0.9f).window == kWindscreen);
+
+	// The whole chain: a car at GTA (100, 200, 10.6), facing east (heading 270: right = -y,
+	// forward = +x). Its left side faces north (+y = MC -z). An arrow flying south (MC +z, yaw 0) at
+	// glass height enters the left face: the driver's window. One flying 1 m lower hits the door.
+	const float pos[3] = { 100.0f, 200.0f, 10.6f };
+	const float right[3] = { 0.0f, -1.0f, 0.0f }, fwd[3] = { 1.0f, 0.0f, 0.0f }, up[3] = { 0.0f, 0.0f, 1.0f };
+	int   face = -1;
+	float local[3];
+	// The arrow is at the stand-in's box (0.3 m outside the body, MC z = -(200 + 1.3)), 0.3 m ahead of the middle.
+	const double glass[3] = { 100.3, 10.6 + 0.5, -(200.0 + 1.3) };
+	CHECK(StrikeOnCar(glass, 0.0f, 0.0f, pos, right, fwd, up, lo, hi, face, local));
+	CHECK(face == kFaceLeft && Near(local[1], 0.3f, 1e-3f) && Near(local[2], 0.5f, 1e-3f));
+	CHECK(ClassifyCarStrike(face, local, lo, hi).window == kWindowLF);
+	const double door[3] = { 100.3, 10.6 - 0.5, -(200.0 + 1.3) };
+	CHECK(StrikeOnCar(door, 0.0f, 0.0f, pos, right, fwd, up, lo, hi, face, local) && ClassifyCarStrike(face, local, lo, hi).window == kWindowNone);
+	// Flying west along the car's flank, 0.25 m clear of it (a stand-in box's slack): misses the car.
+	const double graze[3] = { 103.0, 10.6, -(200.0 + 1.24) };
+	CHECK(!StrikeOnCar(graze, 90.0f, 0.0f, pos, right, fwd, up, lo, hi, face, local));
+	// A sword swung down at the windscreen from in front (east of it, looking west and 30 degrees down).
+	const double swing[3] = { 103.0, 10.6 + 1.0, -200.0 };
+	CHECK(StrikeOnCar(swing, 90.0f, 30.0f, pos, right, fwd, up, lo, hi, face, local) && face == kFaceFront);
+	CHECK(ClassifyCarStrike(face, local, lo, hi).window == kWindscreen);
 }
 
 static void TestBlockPush()
@@ -252,6 +355,28 @@ static void TestBlockPush()
 	CHECK(g.Empty() && !g.Solid(5, 64, 3));
 }
 
+static void TestCrimes()
+{
+	// Hurting a cop: 1 star, killing one 2, whoever watches.
+	CHECK(WantedAfterAttack(0, true, false, 0, 0) == 1);
+	CHECK(WantedAfterAttack(0, true, true, 0, 0) == 2);
+	// An assault on a civilian: only if the police see it.
+	CHECK(WantedAfterAttack(0, false, false, 0, 5) == 0);
+	CHECK(WantedAfterAttack(0, false, false, 1, 0) == 1);
+	// A killing: 2 seen by the police, 1 by bystanders, nothing unseen.
+	CHECK(WantedAfterAttack(0, false, true, 1, 3) == 2);
+	CHECK(WantedAfterAttack(0, false, true, 0, 3) == 1);
+	CHECK(WantedAfterAttack(0, false, true, 0, 0) == 0);
+	// Never lowers what the player has.
+	CHECK(WantedAfterAttack(4, true, true, 3, 3) == 4);
+	CHECK(ReactionOf(true, false, 7) == Reaction::kFight && ReactionOf(false, true, 7) == Reaction::kFight);
+	int fight = 0;
+	for (std::uint32_t seed = 0; seed < 3000; ++seed) {
+		fight += ReactionOf(false, false, seed << 8) == Reaction::kFight;
+	}
+	CHECK(fight > 800 && fight < 1200);  // about one civilian in three
+}
+
 static void TestPacer()
 {
 	HurtPacer p;
@@ -302,6 +427,8 @@ int main()
 	TestKnockback();
 	TestKnockbackChain();
 	TestVehicles();
+	TestCarStrikes();
+	TestCrimes();
 	TestBlockPush();
 	TestPacer();
 	if (failures) {

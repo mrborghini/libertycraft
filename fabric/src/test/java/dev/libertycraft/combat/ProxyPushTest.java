@@ -80,13 +80,15 @@ class ProxyPushTest {
 
 	@Test
 	void vehicleIdsMatchTheProtocol() {
-		// libertycraft_protocol.h: kActorVehicle = 1 << 4, formId = 'V' tag | handle << 2 | piece.
+		// libertycraft_protocol.h: kActorVehicle = 1 << 4, formId = 'V' tag | handle << 4 | piece.
 		assertEquals(1 << 4, Proto.ACTOR_VEHICLE);
 		assertEquals(0x56000000, Proto.ACTOR_VEHICLE_TAG);
-		assertEquals(4, Proto.ACTOR_VEHICLE_SEGMENTS);
+		assertEquals(16, Proto.ACTOR_VEHICLE_SEGMENTS);
+		assertEquals(Proto.ACTOR_VEHICLE_SEGMENTS - 1, Proto.ACTOR_VEHICLE_PIECE_MASK);
 		assertEquals(1 << 4, Proto.HIT_EXPLOSION);
-		int id = Proto.ACTOR_VEHICLE_TAG | (0x1234 << 2) | 2;
-		assertEquals(0x560048D2, id); // the same id combat_test.cpp checks on the host side
-		assertEquals(Proto.ACTOR_VEHICLE_TAG | (0x1234 << 2), id & ~3);
+		assertEquals(6, Proto.EV_HIT_POINT);
+		int id = Proto.ACTOR_VEHICLE_TAG | (0x1234 << 4) | 2;
+		assertEquals(0x56012342, id); // the same id combat_test.cpp checks on the host side
+		assertEquals(Proto.ACTOR_VEHICLE_TAG | (0x1234 << 4), id & ~Proto.ACTOR_VEHICLE_PIECE_MASK);
 	}
 }

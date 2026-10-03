@@ -55,7 +55,7 @@ OFF_IN = 0x1000
 OFF_EVENTS = 0x17000
 OFF_ACTORS = 0x12000
 EV_ENTRIES = 512
-EV_HIT_ACTOR, EV_PLAYER_DIED, EV_EXPLOSION = 1, 2, 3
+EV_HIT_ACTOR, EV_PLAYER_DIED, EV_EXPLOSION, EV_HIT_POINT = 1, 2, 3, 6
 ACTOR_FMT = "<II7fHH24s"  # formId, flags, x, y, z, yaw, width, height, healthFrac, level, pad, name
 ACTOR_DEAD = 2
 OFF_COL = 0x20000
@@ -512,7 +512,7 @@ def combat_step(bridge, args, sky, t, t0, st):
         near = sorted(actors, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
         desc = ", ".join(f"{r[9]} {r[0]:08X} {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f}m hp{r[8]:.2f}{' DEAD' if r[1] & ACTOR_DEAD else ''}"
                          f"{f' {r[6]:.1f}x{r[7]:.1f}' if r[1] & ACTOR_VEHICLE else ''}" for r in near[:4])
-        vehicles = len({r[0] & ~3 for r in actors if r[1] & ACTOR_VEHICLE})
+        vehicles = len({r[0] & ~15 for r in actors if r[1] & ACTOR_VEHICLE})
         print(f"actors: {len(actors)} ({sum(1 for r in actors if r[1] & ACTOR_DEAD)} dead; {vehicles} vehicles in "
               f"{sum(1 for r in actors if r[1] & ACTOR_VEHICLE)} pieces); nearest: {desc}")
     if args.hit_nearest_actor > 0 and actors and t >= st["next_hit"]:
@@ -528,9 +528,25 @@ def combat_step(bridge, args, sky, t, t0, st):
             st["hits"] = st.get("hits", 0) + 1
             arrow = args.hit_projectile or (args.hit_projectile_every > 0 and st["hits"] % args.hit_projectile_every == 0)
             flags, weapon = (HIT_PROJECTILE, 5) if arrow else (0, 1)
+            where = ""
+            if r[1] & ACTOR_VEHICLE:
+                # kEvHitPoint first: aimed from the eye at the piece's middle, at a fraction of its height
+                # (--hit-heights, in turn), the point on that line at the piece's box.
+                heights = [float(v) for v in args.hit_heights.split(",")]
+                frac = heights[(st["hits"] - 1) % len(heights)]
+                tx, ty, tz = r[2], r[3] + r[7] * frac, r[4]
+                ex, ey, ez = px, py + 1.62, pz
+                lx, ly, lz = tx - ex, ty - ey, tz - ez
+                ln = math.sqrt(lx * lx + ly * ly + lz * lz) or 1.0
+                lx, ly, lz = lx / ln, ly / ln, lz / ln
+                back = r[6] * 0.5  # to about the box's face
+                hx, hy, hz = tx - lx * back, ty - ly * back, tz - lz * back
+                yaw_l, pitch_l = math.degrees(math.atan2(-lx, lz)), math.degrees(-math.asin(max(-1.0, min(1.0, ly))))
+                bridge.push_event(EV_HIT_POINT, r[0], hx, hy, hz, yaw_l, struct.unpack("<I", struct.pack("<f", pitch_l))[0], 0)
+                where = f", at {frac:.2f} of its height (yaw {yaw_l:.0f} pitch {pitch_l:.0f})"
             bridge.push_event(EV_HIT_ACTOR, r[0], args.hit_nearest_actor, dx / n, dz / n, 0.4, flags, weapon)
             print(f"combat: hit {r[9]} {r[0]:08X} at {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f} blocks (health {r[8]:.2f}) "
-                  f"for {args.hit_nearest_actor}{' (projectile)' if arrow else ''}, push MC {dx / n:.2f} {dz / n:.2f}")
+                  f"for {args.hit_nearest_actor}{' (projectile)' if arrow else ''}, push MC {dx / n:.2f} {dz / n:.2f}{where}")
     if args.explode_ahead is not None and t >= st["next_blast"] and st["next_blast"] >= 0:
         st["next_blast"] = t + args.explode_ahead if args.explode_ahead > 0 else -1.0
         r = math.radians(yaw)
@@ -581,6 +597,9 @@ def main():
                     help="--hit-nearest-actor hits the nearest ped (default), vehicle piece or either")
     ap.add_argument("--hit-projectile", action="store_true", help="--hit-nearest-actor hits like an arrow (kHitProjectile) instead of a sword")
     ap.add_argument("--hit-projectile-every", type=int, default=0, metavar="N", help="--hit-nearest-actor: every Nth hit is an arrow")
+    ap.add_argument("--hit-heights", default="0.8,0.3", metavar="F,F",
+                    help="--hit-kind vehicle: where the hits land (kEvHitPoint), as fractions of the piece's height, in turn "
+                         "(default %(default)s: glass, then the door)")
     ap.add_argument("--wall-ring", type=int, default=0, metavar="R",
                     help="a square ring of stone blocks R blocks out from the first teleport point (meshes + kRenSolids): "
                          "GTA IV's peds and vehicles should not get through it")

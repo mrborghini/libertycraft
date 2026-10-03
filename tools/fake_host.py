@@ -99,6 +99,7 @@ class Link:
         self.atlas = None
         self.lights = []  # (x, y, z, level, when) from kRenLights
         self.hits = []    # (form, damage, push x, push z, flags) of kEvHitActor
+        self.points = []  # (form, x, y, z, yaw, pitch) of kEvHitPoint
 
     def heartbeat(self):
         struct.pack_into("<Q", self.m, 0x10, tick())
@@ -113,6 +114,8 @@ class Link:
             self.events.append(typ)
             if typ == 1:
                 self.hits.append((form, a, b, c, flags))
+            elif typ == 6:
+                self.points.append((form, a, b, c, d, struct.unpack("<f", struct.pack("<I", flags))[0]))
             tail += 1
         struct.pack_into("<Q", self.m, OFF_EVENTS + 0x40, tail)
 
@@ -408,7 +411,7 @@ class NpcScenario:
         recs = []
         for piece, off in enumerate((1.6, 0.0, -1.6)):
             x, z = (cx, cz + off) if axis == "z" else (cx + off, cz)
-            recs.append(struct.pack("<IIfffffffHH24s", VEHICLE_TAG | (self.CAR << 2) | piece, ACTOR_VEHICLE, x, FLOOR_Y, z, 0.0, 1.9, 1.5, 1.0, 0, 0,
+            recs.append(struct.pack("<IIfffffffHH24s", VEHICLE_TAG | (self.CAR << 4) | piece, ACTOR_VEHICLE, x, FLOOR_Y, z, 0.0, 1.9, 1.5, 1.0, 0, 0,
                                     b"ADMIRAL"))
         return recs
 
@@ -470,10 +473,16 @@ class NpcScenario:
         self.click(link, t, 5.2, 1)
         if self.once(t, 6.1, "melee"):
             hits = [h for h in link.hits if (h[0] & 0xFF000000) == VEHICLE_TAG]
-            ok = len(hits) >= 1 and all((h[0] >> 2) & 0x3FFFFF == self.CAR and h[2] > 0.9 and not h[4] & HIT_PROJECTILE for h in hits)
+            ok = len(hits) >= 1 and all((h[0] >> 4) & 0xFFFFF == self.CAR and h[2] > 0.9 and not h[4] & HIT_PROJECTILE for h in hits)
             self.check("melee on a vehicle", ok, f"{len(hits)} vehicle hit event(s): {[(f'{h[0]:08X}', round(h[1], 2), round(h[2], 2), round(h[3], 2), h[4]) for h in hits]}"
                        " (want one per hit, on the car, pushed +x away from the player)")
+            # Where they landed: on the car's near face (x = car - 0.95 - slack), along the look (yaw -90, pitch 20).
+            pts = [p for p in link.points if (p[0] & 0xFF000000) == VEHICLE_TAG]
+            face_x = self.spawn[0] + 3.0 - 1.9 / 2
+            ok = len(pts) == len(hits) and all(abs(p[1] - face_x) < 0.15 and abs(p[4] + 90.0) < 1.0 and abs(p[5] - 20.0) < 1.0 for p in pts)
+            self.check("melee hit points", ok, f"{[tuple(round(v, 2) for v in p[1:]) for p in pts]} (want one per hit, x near {face_x:.2f}, yaw -90, pitch 20)")
             self.marks["hits_before_bow"] = len(link.hits)
+            self.marks["points_before_bow"] = len(link.points)
         # Bow (slot 3) into the car.
         self.key(link, t, 6.2, 32)
         self.click(link, t, 6.7, 3, hold=1.3)
@@ -481,6 +490,9 @@ class NpcScenario:
             hits = [h for h in link.hits[self.marks["hits_before_bow"]:] if (h[0] & 0xFF000000) == VEHICLE_TAG]
             ok = len(hits) >= 1 and all(h[4] & HIT_PROJECTILE for h in hits)
             self.check("arrow into a vehicle", ok, f"{len(hits)} vehicle hit event(s), flags {[h[4] for h in hits]} (want the projectile flag)")
+            pts = [p for p in link.points[self.marks["points_before_bow"]:] if (p[0] & 0xFF000000) == VEHICLE_TAG]
+            ok = len(pts) == len(hits) and all(abs(p[4] + 90.0) < 10.0 for p in pts)
+            self.check("arrow hit point", ok, f"{[tuple(round(v, 2) for v in p[1:]) for p in pts]} (want one per arrow, flying east: yaw about -90)")
         # Walk south into the ped standing 4.5 blocks away.
         if t >= 9.1:
             self.yaw, self.pitch = 0.0, 0.0

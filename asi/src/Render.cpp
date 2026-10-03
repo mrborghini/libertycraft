@@ -15,6 +15,7 @@
 #include "Game.h"
 #include "Link.h"
 #include "Log.h"
+#include "NikoBody.h"
 #include "Overlay.h"
 #include "Perf.h"
 
@@ -550,6 +551,11 @@ namespace lc::Render
 					}
 				}
 			}
+			// The Minecraft body on Niko's skeleton (MinecraftBody, NikoBody.h) instead of the avatar:
+			// while GTA animates Niko (the mount, if shown, still moves to the seat).
+			if (inWorld && NikoBody::Capture(a_f)) {
+				a_f.flags &= ~render::kFrameAvatar;
+			}
 			a_f.guiScale = haveMc ? mc.guiScale : 0;
 			a_f.cursorX = st.cursorX;
 			a_f.cursorY = st.cursorY;
@@ -1065,6 +1071,9 @@ namespace lc::Render
 					double(ws.sectionsDrawn) / frames, double(ws.sectionsCulled) / frames, double(ws.drawCalls) / frames, double(ws.triangles) / frames / 1000.0,
 					ws.drawMs / frames, ws.maxDrawMs, stateMs / frames, ws.drainMs / frames, overlayMs / frames);
 				(void)a_f;
+			}
+			if (ws.bodyFrames) {
+				LC_LOG("Minecraft body on Niko's skeleton drawn in %u frames", ws.bodyFrames);
 			}
 			if (mountFrames) {
 				LC_LOG("rider at GTA's seat in %u frames: Minecraft's feet were %.2f m behind on average (worst %.2f m)", mountFrames, mountShiftSum / mountFrames,

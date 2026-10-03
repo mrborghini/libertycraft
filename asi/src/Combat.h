@@ -9,6 +9,9 @@
 //    Minecraft is in a world and the game is in play, puppeted or not (in a car too).
 //  - kEvHitActor: MC damage * PedDamageScale off the ped's health (DAMAGE_CHAR, falling back to
 //    SET_CHAR_HEALTH), plus a ragdoll pushed along Minecraft's knockback (RagdollOnHit).
+//  - GtaCrimes=1: GTA's crime system never sees Minecraft's hits (no attacker), so we act for it: the
+//    victim fights back or runs (a driver drives off), and police or bystanders seeing it give the
+//    player a wanted level (combat/CombatMath.h WantedAfterAttack).
 //  - kEvExplosion: ADD_EXPLOSION(ExplosionType) at the blast, radius * ExplosionRadiusScale; GTA's
 //    blast knocks peds and cars about. A puppeted player is explosion-proof for a moment around
 //    it (Minecraft already hurt its player).

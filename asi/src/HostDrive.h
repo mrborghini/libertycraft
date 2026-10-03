@@ -50,6 +50,16 @@ namespace lc::HostDrive
 	// enter / exit controls while an action asks for it. (GTA hands the player's ped its pad only
 	// while player control is on: during puppet mode this isn't called.)
 	void Pad(CPad* a_pad);
+	// Knocks the player over (RagdollOnVehicleHit; Combat calls it when one of GTA's explosions hurt
+	// the puppeted player): GTA takes Niko, ragdolls him along (a_gx, a_gy) with a_force for
+	// a_ragdollMs and keeps him until he is back on his feet. Game thread.
+	void KnockDown(float a_gx, float a_gy, float a_force, int a_ragdollMs, const char* a_what);
+	// Game::Tick after its puppet decision: leaving puppet mode shows Niko again; the ped HostDrive
+	// hides (under the Minecraft body, in a vehicle) goes straight back into hiding, so no frame shows him.
+	void AfterPuppetDecision();
+	// Knocked over in Minecraft mode, until Niko is back up: Minecraft still owns the player's health
+	// (Game hands Combat this as part of puppet mode).
+	bool KnockedOver();
 	// Game::Tick while puppeting, with the feet Minecraft wants: the DebugWalkThroughCar test hook
 	// may move them. Returns how to place the ped: 0 as configured, 1 the native, 2 the direct move.
 	int DebugPuppetTarget(GtaVec& a_feet);

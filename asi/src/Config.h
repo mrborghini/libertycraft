@@ -28,6 +28,12 @@ namespace lc
 		bool logPerf = true;
 		// FREEZE_CHAR_POSITION while puppeting (0: zero the velocity every frame instead).
 		bool freezePed = true;
+		// While puppeting, the player keeps GTA's player control (its pad input is zeroed anyway):
+		// without it GTA's peds and cops take the player for a cutscene player and stop fighting or
+		// chasing him (Combat.h, GtaCrimes). Not in the default ini: the puppeted ped keeps its
+		// collision too (not needed for that: their shots and blows reach him either way).
+		bool puppetPlayerControl = true;
+		bool puppetCollision = false;
 		// Metres from the ped's reported position (its root) down to its feet, used until the
 		// plugin has measured it with GET_CHAR_HEIGHT_ABOVE_GROUND (0 = always use this value).
 		float rootToFeet = 1.0f;
@@ -112,6 +118,18 @@ namespace lc
 		// each hit (0 world direction, 1 world direction in the ped's own frame, 2 the old flags, 3 no
 		// force), cycling from this one, and log how far and which way each went.
 		int debugKnockbackVariant = -1;
+		// Test hook (not in the default ini): N s into play, park a car with people in it 4 m east of the
+		// player (Combat.cpp TestCarHook); 0 off.
+		int debugTestCar = 0;
+		// Minecraft's attacks are crimes in GTA IV: victims fight back or flee, police seeing it (or
+		// any witness of a killing) give the player a wanted level, hurting a cop always does.
+		bool gtaCrimes = true;
+		// Test hook (not in the default ini): N s into play, give the player 2 wanted stars and log the
+		// police's interest (Combat.cpp); 0 off.
+		int debugWanted = 0;
+		// Test hook (not in the default ini): occupants Minecraft kills alternately die the old way
+		// (no SET_CHAR_FORCE_DIE_IN_CAR), to compare where their bodies end up.
+		bool debugDieInCarAB = false;
 		// ---- vehicles and Niko mode (HostDrive.h) ----
 		// While Minecraft drives the player: hand Niko back to GTA IV and enter/steal the nearest
 		// vehicle (GTA's own enter control). In the vehicle GTA drives (and its own F gets out).
@@ -145,6 +163,32 @@ namespace lc
 		bool debugFocusCycle = false;
 		// Test hook: the vehicle key's taps of GTA's enter control as real key events (SendInput).
 		bool debugInjectEnterKey = false;
+		// A car running into the puppeted player (or one of GTA's explosions hurting them) knocks
+		// them over: GTA ragdolls Niko along the hit and keeps him until he is back on his feet,
+		// the hit hurts the Minecraft player. HostDrive.cpp.
+		bool ragdollOnVehicleHit = true;
+		// Test hooks (not in the default ini): DebugAutoVehicle's car drives off at speed and Niko
+		// bails out of it; a test car is driven into the puppeted player every 40 s.
+		bool debugBailOut = false;
+		bool debugRunOver = false;
+		// Test hook (not in the default ini): play this GTA IV cutscene (e.g. rom2_a) 20 s into puppet mode.
+		std::string debugCutscene;
+		// ---- the Minecraft body on Niko's skeleton (Body.h, render/Body.h) ----
+		// While GTA IV animates Niko itself, show the player's Minecraft body following his
+		// animation (Niko hidden): master switch, in cutscenes, getting into / driving / getting out
+		// of vehicles (else the Minecraft player rides its mount at the seat), and in Niko mode.
+		bool minecraftBody = true;
+		bool minecraftBodyCutscenes = true;
+		bool minecraftBodyVehicles = true;
+		bool minecraftBodyNikoMode = false;
+		// The body's size on top of the automatic fit to Niko (1: torso and arms his size, the top of
+		// the head at his, the feet on the ground); larger covers more of him.
+		float minecraftBodyScale = 1.0f;
+		// Not in the default ini: how Niko is hidden under the body ("visible": SET_CHAR_VISIBLE,
+		// "alpha": SET_PED_ALPHA 0, in case an invisible ped stopped animating); log the bones
+		// (DebugBody: once a second, plus a ped scan in cutscenes).
+		std::string minecraftBodyHide = "visible";
+		bool        debugBody = false;
 
 		static Config& Get();
 		// Loads <asi dir>/LibertyCraft.ini (creating it with defaults if absent). Logs what it got.

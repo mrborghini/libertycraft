@@ -13,6 +13,11 @@
 //    by other means once; after kGiveUpAfter without a car, Minecraft gets the player back.
 //  * While GTA drives (hostDrives) Minecraft only follows; when that ends the caller does the
 //    teleport handshake (resync) before Minecraft takes over again.
+//  * Out of a vehicle (a bail-out from a moving car rolls and tumbles), knocked down (the caller's
+//    knockdowns: a car ran the player over, a blast) or ragdolled by GTA in Minecraft mode, GTA keeps
+//    the player until Niko really stands again: upright (on his feet, not ragdolled or getting up,
+//    not in the air, nearly still) for kUprightSettle, and on foot for kExitSettle at least; at most
+//    kRecoverCap.
 #pragma once
 
 #include <algorithm>
@@ -20,6 +25,9 @@
 namespace lc::drive
 {
 	enum class Mode { kMinecraft, kNiko };
+
+	// Why GTA IV drives the player (Output::why): what it animates Niko for.
+	enum class Why { kNone, kNikoMode, kVehicle, kCutscene, kRagdoll };
 
 	struct Input
 	{
@@ -33,6 +41,9 @@ namespace lc::drive
 		bool  puppeting = false;  // Minecraft drives the ped right now (before this frame's decision)
 		bool  controlReady = false;  // GTA reads the player's pad again and the ped stands (or waited long enough)
 		bool  moving = false;     // the ped walks on its own (GTA took the press: off to a door)
+		bool  ragdoll = false;    // Niko is ragdolled or getting back up
+		bool  upright = true;     // Niko stands on his feet: not ragdolled, getting up or in the air, nearly still
+		int   knockdowns = 0;     // the caller knocked the player over this frame (a car ran into them, a blast)
 		int   toggles = 0;        // toggle-key presses since the last frame
 		int   vehicleActions = 0; // vehicle-key presses since the last frame
 	};
@@ -49,6 +60,9 @@ namespace lc::drive
 		bool        fallbackEnter = false;  // once per attempt: the press didn't take, enter another way
 		bool        enterFailed = false;    // the attempt timed out without a car
 		bool        modeChanged = false;
+		Why         why = Why::kNone;      // with hostDrives: Niko mode, a vehicle (getting in, in, just out), a cutscene, knocked over
+		bool        recovered = false;     // a recovery ended this frame (Niko stands, or kRecoverCap)
+		bool        recoverCapped = false; // ...because kRecoverCap ran out
 	};
 
 	class Logic
@@ -63,6 +77,8 @@ namespace lc::drive
 		static constexpr float kGiveUpAfter = 4.0f;    // still on foot by then: back to Minecraft
 		static constexpr float kExitSettle = 0.5f;     // on foot this long after a car before Minecraft takes over
 		static constexpr float kStalledAfter = 1.0f;   // GTA took a tap but Niko stands still this long: not progressing
+		static constexpr float kUprightSettle = 0.4f;  // after a vehicle or a fall: upright this long before Minecraft takes over
+		static constexpr float kRecoverCap = 8.0f;     // ...but at most this long
 
 		explicit Logic(bool a_startInMinecraft = true) :
 			mode_(a_startInMinecraft ? Mode::kMinecraft : Mode::kNiko)
@@ -77,7 +93,11 @@ namespace lc::drive
 			entering_ = false;
 			wasHostDrives_ = false;
 			onFoot_ = kExitSettle;
+			recovering_ = false;
 		}
+
+		bool recovering() const { return recovering_; }
+		Why  recoveringFrom() const { return recoverWhy_; }  // with recovering(): a vehicle or a knockdown
 
 		Output Step(const Input& a_in)
 		{
@@ -158,15 +178,39 @@ namespace lc::drive
 				onFoot_ = onFoot_ < kExitSettle ? onFoot_ + dt : onFoot_;
 			}
 
+			// Getting back up: after a vehicle, a knockdown, or GTA ragdolling Niko in Minecraft mode.
+			if (!a_in.inGame || a_in.dead) {
+				recovering_ = false;
+			} else if (a_in.inCar || a_in.gettingIn) {
+				StartRecovery(Why::kVehicle);
+			} else if (mode_ == Mode::kMinecraft && (a_in.knockdowns > 0 || (a_in.ragdoll && !recovering_ && !entering_))) {
+				StartRecovery(recovering_ ? recoverWhy_ : Why::kRagdoll);
+			}
+			if (recovering_ && !a_in.inCar && !a_in.gettingIn) {
+				recoverT_ += dt;
+				uprightT_ = a_in.upright && !a_in.ragdoll ? uprightT_ + dt : 0.0f;
+				const bool stands = onFoot_ >= kExitSettle && uprightT_ >= kUprightSettle;
+				if (stands || recoverT_ >= kRecoverCap || mode_ == Mode::kNiko) {
+					recovering_ = false;
+					out.recovered = true;
+					out.recoverCapped = !stands && mode_ != Mode::kNiko;
+				}
+			}
+
 			const char* reason = mode_ == Mode::kNiko ? "Niko mode (toggle key)"
 			                     : entering_          ? "entering a vehicle (vehicle key)"
 			                     : a_in.gettingIn     ? "the game is putting the player in a vehicle"
 			                     : a_in.inCar         ? "player in a vehicle"
-			                     : onFoot_ < kExitSettle ? "just left a vehicle"
+			                     : recovering_        ? (recoverWhy_ == Why::kVehicle ? "just left a vehicle (until Niko stands)" : "knocked over (until Niko is back up)")
 			                     : a_in.cutscene      ? "cutscene"
 			                                          : nullptr;
 			out.blocker = reason;
 			out.hostDrives = a_in.inGame && !a_in.dead && reason != nullptr;
+			out.why = !out.hostDrives                                    ? Why::kNone
+			          : mode_ == Mode::kNiko                             ? Why::kNikoMode
+			          : (entering_ || a_in.gettingIn || a_in.inCar)    ? Why::kVehicle
+			          : recovering_                                      ? recoverWhy_
+			                                                             : Why::kCutscene;
 			out.inVehicle = out.hostDrives && a_in.inCar;
 			out.resync = wasHostDrives_ && !out.hostDrives && a_in.inGame;
 			wasHostDrives_ = out.hostDrives;
@@ -176,6 +220,14 @@ namespace lc::drive
 	private:
 		// GTA took a tap and is still walking Niko to a door: no fallback, more time.
 		bool Progressing() const { return accepted_ && stillT_ < kStalledAfter; }
+
+		void StartRecovery(Why a_why)
+		{
+			recovering_ = true;
+			recoverWhy_ = a_why;
+			recoverT_ = 0.0f;
+			uprightT_ = 0.0f;
+		}
 
 		Mode  mode_;
 		bool  entering_ = false;
@@ -192,5 +244,9 @@ namespace lc::drive
 		float fallbackAt_ = 0.0f;
 		bool  wasHostDrives_ = false;
 		float onFoot_ = kExitSettle;  // seconds on foot since the last car (capped)
+		bool  recovering_ = false;    // GTA keeps the player until Niko stands again
+		Why   recoverWhy_ = Why::kVehicle;
+		float recoverT_ = 0.0f;       // seconds of this recovery (on foot)
+		float uprightT_ = 0.0f;       // seconds Niko has been upright in a row
 	};
 }

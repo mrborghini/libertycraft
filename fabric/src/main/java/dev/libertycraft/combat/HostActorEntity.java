@@ -18,6 +18,7 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -44,6 +45,9 @@ public class HostActorEntity extends LivingEntity {
 	private double pushX, pushZ;
 	private float pushStrength;
 	private boolean hitThisTick;
+	// Vehicles: where this tick's biggest hit landed and the way it travelled (kEvHitPoint).
+	private @Nullable Vec3 hitAt, hitDir;
+	private float hitAtDamage;
 
 	public HostActorEntity(EntityType<? extends HostActorEntity> type, Level level) {
 		super(type, level);
@@ -125,6 +129,9 @@ public class HostActorEntity extends LivingEntity {
 		if (source.is(net.minecraft.tags.DamageTypeTags.IS_EXPLOSION)) {
 			this.pendingFlags |= Proto.HIT_EXPLOSION;
 		}
+		if (this.isHostVehicle() && dmg > this.hitAtDamage) {
+			this.noteHitPoint(source, dmg);
+		}
 		this.hitThisTick = true;
 		this.getCombatTracker().recordDamage(source, dmg);
 	}
@@ -142,6 +149,39 @@ public class HostActorEntity extends LivingEntity {
 			this.pushZ = -zd / len;
 		}
 		this.hitThisTick = true;
+	}
+
+	/**
+	 * Where a hit on a vehicle piece landed, for GTA IV to work out what it struck (body or glass): a
+	 * projectile is at the point it hit (AbstractArrow moves it there before it hurts us) and flies
+	 * along its motion; a blow follows the attacker's look from the eye into this box (or, for a
+	 * sweep that caught this box off the look line, toward its nearest point).
+	 */
+	private void noteHitPoint(DamageSource source, float dmg) {
+		var box = this.getBoundingBox();
+		Vec3 at = null, dir = null;
+		if (source.getDirectEntity() instanceof Projectile projectile) {
+			Vec3 v = projectile.getDeltaMovement();
+			if (v.lengthSqr() > 1.0E-8) {
+				at = projectile.position();
+				dir = v.normalize();
+			}
+		} else if (source.getEntity() instanceof LivingEntity attacker && source.getDirectEntity() == attacker) {
+			Vec3 eye = attacker.getEyePosition();
+			Vec3 look = attacker.getViewVector(1.0F);
+			at = box.inflate(0.01).clip(eye, eye.add(look.scale(8.0))).orElse(null);
+			dir = look;
+			if (at == null) {
+				at = new Vec3(Math.clamp(eye.x, box.minX, box.maxX), Math.clamp(eye.y, box.minY, box.maxY), Math.clamp(eye.z, box.minZ, box.maxZ));
+				Vec3 to = at.subtract(eye);
+				dir = to.lengthSqr() > 1.0E-8 ? to.normalize() : look;
+			}
+		}
+		if (at != null && dir != null) {
+			this.hitAt = at;
+			this.hitDir = dir;
+			this.hitAtDamage = dmg;
+		}
 	}
 
 	/** Player.crit() was called on us this tick. */
@@ -176,13 +216,26 @@ public class HostActorEntity extends LivingEntity {
 		return Proto.WEAPON_BLUNT;
 	}
 
-	/** Returns this tick's hit (damage, flags, push, weapon) and clears it; null if nothing hit us. */
+	/**
+	 * Returns this tick's hit and clears it; null if nothing hit us. {damage, push x, push z, push
+	 * strength, flags (bits), weapon (bits), has a hit point (1/0), point x, y, z, its line's yaw, pitch}.
+	 */
 	public float[] takeHit() {
 		if (!this.hitThisTick) {
 			return null;
 		}
 		float[] hit = { this.pendingDamage, (float) this.pushX, (float) this.pushZ, this.pushStrength, Float.intBitsToFloat(this.pendingFlags),
-			Float.intBitsToFloat(this.pendingWeapon) };
+			Float.intBitsToFloat(this.pendingWeapon), 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F };
+		if (this.hitAt != null && this.hitDir != null) {
+			hit[6] = 1.0F;
+			hit[7] = (float) this.hitAt.x;
+			hit[8] = (float) this.hitAt.y;
+			hit[9] = (float) this.hitAt.z;
+			hit[10] = (float) Math.toDegrees(Math.atan2(-this.hitDir.x, this.hitDir.z));
+			hit[11] = (float) Math.toDegrees(-Math.asin(Math.clamp(this.hitDir.y, -1.0, 1.0)));
+		}
+		this.hitAt = this.hitDir = null;
+		this.hitAtDamage = 0.0F;
 		this.pendingDamage = 0.0F;
 		this.pendingFlags = 0;
 		this.pushX = this.pushZ = 0.0;
