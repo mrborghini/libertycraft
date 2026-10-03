@@ -6,9 +6,12 @@
 // collision/Objects.h's door shape test) and swings a door open, away from the player, when they
 // walk into it: within ~1.2 m of its leaf and moving towards it, or standing in the doorway.
 // Opening holds the door open through GTA's door state (SET_STATE_OF_CLOSEST_DOOR_OF_TYPE, locked
-// at a fully open ratio); once the player is well clear it is shut and handed back to GTA
-// (unlocked, as it was). A door GTA itself keeps locked shut (a mission door) is left alone.
-// If the state native doesn't move a door, it is pushed open with an impulse instead.
+// at a fully open ratio); once the player is well clear (or Minecraft lets go of the player, or
+// the player is teleported) it is handed back to GTA in one call, as GTA had it (unlocked,
+// usually), and swings shut by itself. A door GTA itself keeps locked (a mission door) is left
+// alone. If the state native doesn't move a door, it is turned (heading) or pushed instead.
+// Doors are remembered by pool handle and found again every frame; a door whose object is gone
+// (streamed out, deleted, recreated) is forgotten, and no native ever runs on one.
 // Unity-built into dllmain.cpp (needs IV-SDK).
 #pragma once
 

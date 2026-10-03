@@ -29,7 +29,8 @@ namespace lc::Doors
 		constexpr float kVerifyAfter = 0.7f;     // an opening that hasn't turned the door by then: try the next way
 		constexpr float kOpenedDeg = 25.0f;      // turned this far from shut: it's open
 		constexpr float kOpenDeg = 85.0f;        // how far we swing a door (heading method)
-		constexpr float kUnlockAfter = 1.0f;     // after shutting a door we held, hand it back to GTA this much later (s)
+		constexpr float kUnlockAfter = 2.5f;     // after handing a door back, watch it this long before it can open again (s)
+		constexpr float kJump = 5.0f;            // the feet moved this far in a frame: a teleport
 		constexpr float kPushForce = 6.0f;       // impulse method, per frame while pushing
 		constexpr float kPushFor = 0.5f;         // s
 		constexpr float kRad = 3.14159265f / 180.0f;
@@ -49,14 +50,15 @@ namespace lc::Doors
 			kShut,
 			kOpening,  // asked to open (method `method`), waiting to see it turn
 			kOpen,     // held open while the player is near
-			kShutting, // shut by us, handed back to GTA after kUnlockAfter
+			kShutting, // handed back to GTA: watched for kUnlockAfter before it may open again
 			kStuck,    // no way of ours turns it: leave it
 		};
 
+		// A door is remembered by its pool handle (slot << 8 | the slot's generation byte, what
+		// GetIndex returns and object natives take) and found again every frame (Resolve): never by a
+		// pointer kept from an earlier frame, which may be a streamed-out or recreated object.
 		struct Door
 		{
-			CObject*    obj = nullptr;
-			int         slot = -1;
 			int         handle = 0;
 			int         model = -1;
 			unsigned    modelHash = 0;
@@ -64,7 +66,8 @@ namespace lc::Doors
 			float       lo[3]{}, hi[3]{};
 			int         wide = 0;       // local axis along the leaf (0 x, 1 y); the other one is across it
 			float       leafSign = 1.0f;  // the leaf runs from the hinge towards +wide (1) or -wide (-1)
-			bool        gameDoor = false;  // GTA's door system knows it (GET_STATE_OF_CLOSEST_DOOR_OF_TYPE answered)
+			bool        gameChecked = false;  // asked GTA's door state (right before opening it the first time)
+			bool        gameDoor = false;     // GTA's door system knows it (GET_STATE_OF_CLOSEST_DOOR_OF_TYPE answered)
 			int         gameState = 0;
 			float       gameRatio = 0.0f;
 			Phase       phase = Phase::kShut;
@@ -82,10 +85,11 @@ namespace lc::Doors
 		int               preferred = kByState;
 		float             stateSign = 1.0f;  // which way a positive door-state ratio turns a door (learned)
 		bool              stateSignKnown = false;
-		int               logged = 0, traced = 0, opensTraced = 0;
+		int               logged = 0, traced = 0, opensTraced = 0, shutTraced = 0;
+		bool              handleChecked = false;
 		struct Counters
 		{
-			unsigned opened = 0, shut = 0, failed = 0, reasserted = 0, locked = 0;
+			unsigned opened = 0, shut = 0, failed = 0, reasserted = 0, locked = 0, gone = 0, jumps = 0;
 		} counters;
 
 		float Dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -100,18 +104,39 @@ namespace lc::Doors
 			}
 		}
 
-		bool Alive(const Door& a_d)
+		int HandleOf(const CPool<CObject>& a_pool, int a_slot) { return (a_slot << 8) | a_pool.m_pFlags[a_slot]; }
+
+		// The door's object this frame, or null if it's gone: its slot is free or holds another
+		// generation (streamed out, deleted, recreated), another model, or it isn't where the door
+		// was (a door turns about its origin, the hinge: that never moves). Only valid until the
+		// game runs again: never keep it.
+		CObject* Resolve(const Door& a_d)
 		{
 			auto* pool = CPools::ms_pObjectPool;
-			return pool && a_d.slot >= 0 && a_d.slot < static_cast<int>(pool->m_nCount) && pool->Get(a_d.slot) == a_d.obj && a_d.obj->m_nModelIndex == a_d.model &&
-			       a_d.obj->m_pMatrix;
+			if (!pool || !pool->m_pFlags || a_d.handle <= 0) {
+				return nullptr;
+			}
+			const int slot = a_d.handle >> 8;
+			if (slot < 0 || slot >= static_cast<int>(pool->m_nCount) || (pool->m_pFlags[slot] & 0x80) || HandleOf(*pool, slot) != a_d.handle) {
+				return nullptr;
+			}
+			CObject* obj = pool->Get(slot);
+			if (!obj || obj->m_nModelIndex != a_d.model || !obj->m_pMatrix) {
+				return nullptr;
+			}
+			const auto& p = obj->m_pMatrix->pos;
+			const float dx = p.x - a_d.shut[9], dy = p.y - a_d.shut[10], dz = p.z - a_d.shut[11];
+			if (!(dx * dx + dy * dy + dz * dz < 0.5f * 0.5f)) {
+				return nullptr;  // (NaN fails too)
+			}
+			return obj;
 		}
 
 		// Signed turn (degrees, + counter-clockwise seen from above) of the door from its shut pose.
-		float Turned(const Door& a_d)
+		float Turned(const Door& a_d, CObject* a_obj)
 		{
 			float m[12];
-			ReadMatrix(*a_d.obj->m_pMatrix, m);
+			ReadMatrix(*a_obj->m_pMatrix, m);
 			const float* r0 = a_d.shut;
 			const float* z = a_d.shut + 6;
 			const float  c[3] = { r0[1] * m[2] - r0[2] * m[1], r0[2] * m[0] - r0[0] * m[2], r0[0] * m[1] - r0[1] * m[0] };
@@ -167,11 +192,14 @@ namespace lc::Doors
 				if (dx * dx + dy * dy > kScanRadius * kScanRadius || std::fabs(dz) > 4.0f) {
 					continue;
 				}
-				auto it = std::find_if(doors.begin(), doors.end(), [&](const Door& d) { return d.obj == obj && d.model == obj->m_nModelIndex; });
-				if (it != doors.end()) {
+				const int handle = HandleOf(*pool, slot);
+				auto      it = std::find_if(doors.begin(), doors.end(), [&](const Door& d) { return d.handle == handle; });
+				if (it != doors.end() && it->model == obj->m_nModelIndex) {
 					it->seen = scanNo;
-					it->slot = slot;
 					continue;
+				}
+				if (it != doors.end()) {
+					doors.erase(it);  // that slot holds something else now
 				}
 				const int       model = obj->m_nModelIndex;
 				CBaseModelInfo* mi = model >= 0 && model < 31000 ? CModelInfo::ms_modelInfoPtrs[model] : nullptr;
@@ -186,9 +214,13 @@ namespace lc::Doors
 				if (col::Classify(box) != col::ObjClass::kDoor) {
 					continue;
 				}
+				if (!handleChecked) {
+					handleChecked = true;
+					const int gameHandle = static_cast<int>(pool->GetIndex(obj));
+					LC_LOG("doors: object handle of slot %d: ours 0x%X, the game's 0x%X (%s)", slot, handle, gameHandle, gameHandle == handle ? "same" : "DIFFERENT");
+				}
 				Door d;
-				d.obj = obj;
-				d.slot = slot;
+				d.handle = handle;
 				d.model = model;
 				d.seen = scanNo;
 				std::memcpy(d.shut, m, sizeof(m));
@@ -196,31 +228,19 @@ namespace lc::Doors
 				std::memcpy(d.hi, box.hi, sizeof(d.hi));
 				d.wide = (box.hi[0] - box.lo[0]) >= (box.hi[1] - box.lo[1]) ? 0 : 1;
 				d.leafSign = std::fabs(box.lo[d.wide]) <= std::fabs(box.hi[d.wide]) ? 1.0f : -1.0f;
-				d.handle = static_cast<int>(pool->GetIndex(obj));
-				unsigned hash = 0;
-				if (d.handle && S::DOES_OBJECT_EXIST(d.handle)) {
-					S::GET_OBJECT_MODEL(d.handle, &hash);
-				}
-				d.modelHash = hash ? hash : mi->m_nHash;
-				// Is it one of GTA's doors? The query only writes its answers if it found one (and the
-				// state as a single byte: seen in game).
-				int   state = 0;
-				float ratio = -12345.0f;
-				S::GET_STATE_OF_CLOSEST_DOOR_OF_TYPE(d.modelHash, m[9], m[10], m[11], &state, &ratio);
-				d.gameDoor = ratio != -12345.0f;
-				d.gameState = state & 0xFF;
-				d.gameRatio = d.gameDoor ? ratio : 0.0f;
+				d.modelHash = mi->m_nHash;  // (= GET_OBJECT_MODEL: checked in game)
 				d.method = preferred;
 				if (logged < 30) {
 					++logged;
-					LC_LOG("door model %d hash 0x%08X (GET_OBJECT_MODEL 0x%08X, model info 0x%08X) handle %d at GTA (%.2f %.2f %.2f) heading %.1f: "
-						   "%.2f wide (axis %d, leaf %+.0f), local (%.2f %.2f %.2f)..(%.2f %.2f %.2f); door state: %s %d ratio %.2f",
-						model, d.modelHash, hash, mi->m_nHash, d.handle, m[9], m[10], m[11], Heading(m), box.hi[d.wide] - box.lo[d.wide], d.wide, d.leafSign, lo[0], lo[1],
-						lo[2], hi[0], hi[1], hi[2], d.gameDoor ? "known" : "unknown", state, ratio);
+					LC_LOG("door model %d hash 0x%08X handle 0x%X at GTA (%.2f %.2f %.2f) heading %.1f: %.2f wide (axis %d, leaf %+.0f), local (%.2f %.2f %.2f)..(%.2f %.2f %.2f)",
+						model, d.modelHash, handle, m[9], m[10], m[11], Heading(m), box.hi[d.wide] - box.lo[d.wide], d.wide, d.leafSign, lo[0], lo[1], lo[2], hi[0],
+						hi[1], hi[2]);
 				}
 				doors.push_back(d);
 			}
 		}
+
+		// Every native below runs on a door resolved this very frame (a_obj), near the player.
 
 		void SetHeading(Door& a_d, float a_turnDeg)
 		{
@@ -238,6 +258,27 @@ namespace lc::Doors
 			S::APPLY_FORCE_TO_OBJECT(a_d.handle, 3, across[0] * s * kPushForce, across[1] * s * kPushForce, 0.0f, 0.0f, 0.0f, 0.0f, 0, 1, 1, 1);
 		}
 
+		void SetState(const Door& a_d, int a_state, float a_ratio)
+		{
+			S::SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], a_state, a_ratio);
+		}
+
+		// Is it one of GTA's doors, and does GTA keep it locked? Asked once, as the player walks into
+		// it (the query only writes its answers if it found the door, the state as a single byte).
+		void CheckGameState(Door& a_d)
+		{
+			if (a_d.gameChecked) {
+				return;
+			}
+			a_d.gameChecked = true;
+			int   state = 0;
+			float ratio = -12345.0f;
+			S::GET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], &state, &ratio);
+			a_d.gameDoor = ratio != -12345.0f;
+			a_d.gameState = state & 0xFF;
+			a_d.gameRatio = a_d.gameDoor ? ratio : 0.0f;
+		}
+
 		void Open(Door& a_d, float a_side)
 		{
 			// Swing the leaf to the side away from the player: a turn by +90 about local z takes the
@@ -249,7 +290,7 @@ namespace lc::Doors
 			a_d.phase = Phase::kOpening;
 			switch (a_d.method) {
 			case kByState:
-				S::SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], 1, a_d.want * stateSign);
+				SetState(a_d, 1, a_d.want * stateSign);
 				break;
 			case kByHeading:
 				SetHeading(a_d, a_d.want * kOpenDeg);
@@ -260,66 +301,59 @@ namespace lc::Doors
 			}
 		}
 
-		// Shut a door we opened (and, by state, hand it back to GTA a moment later).
-		void Shut(Door& a_d)
+		// Hand a door we opened back to GTA as it had it (unlocked, usually): one call, so a door can
+		// never be left locked by us.
+		void Release(Door& a_d, CObject* a_obj, const char* a_why)
 		{
 			switch (a_d.method) {
 			case kByState:
-				S::SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], 1, 0.0f);
+				SetState(a_d, a_d.gameDoor ? a_d.gameState : 0, a_d.gameDoor ? a_d.gameRatio : 0.0f);
 				break;
 			case kByHeading:
 				SetHeading(a_d, 0.0f);
 				break;
 			default:
-				break;  // pushed: it swings back by itself (or stays; GTA's door)
+				break;  // pushed: it swings back by itself
+			}
+			if (traced < 12) {
+				++traced;
+				LC_LOG("door 0x%08X handed back to GTA (%s; turned %.0f deg)", a_d.modelHash, a_why, Turned(a_d, a_obj));
 			}
 			a_d.phase = Phase::kShutting;
 			a_d.timer = 0.0f;
 			++counters.shut;
-			if (traced < 12) {
-				++traced;
-				LC_LOG("door 0x%08X: the player is clear, shutting it (%s; turned %.0f deg)", a_d.modelHash, kMethodNames[a_d.method], Turned(a_d));
-			}
 		}
 
-		void Release(Door& a_d)
-		{
-			if (traced < 12 && a_d.phase == Phase::kShutting) {
-				++traced;
-				LC_LOG("door 0x%08X handed back to GTA (turned %.0f deg from shut)", a_d.modelHash, Turned(a_d));
-			}
-			if (a_d.method == kByState) {
-				// as GTA had it (unlocked, usually)
-				S::SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], a_d.gameDoor ? a_d.gameState : 0,
-					a_d.gameDoor ? a_d.gameRatio : 0.0f);
-			}
-			a_d.phase = Phase::kShut;
-		}
-
-		void Step(Door& a_d, const Rel& a_r, bool a_puppeting, float a_dt)
+		void Step(Door& a_d, CObject* a_obj, const Rel& a_r, bool a_puppeting, float a_dt)
 		{
 			const bool inReach = a_r.lz > a_d.lo[2] - 1.0f && a_r.lz < a_d.hi[2];
 			const bool want = a_puppeting && inReach && (a_r.dist < kOpenAlways || (a_r.dist < kOpenReach && a_r.towards > kOpenTowards));
 			switch (a_d.phase) {
 			case Phase::kShut:
-				if (want && a_d.gameDoor && a_d.gameState != 0) {
+				if (!want) {
+					break;
+				}
+				CheckGameState(a_d);
+				if (a_d.gameDoor && a_d.gameState != 0) {
 					// GTA keeps it locked (a mission door, a place not open yet): so do we
 					a_d.phase = Phase::kStuck;
 					++counters.locked;
 					LC_LOG("door 0x%08X is locked by GTA (state %d, ratio %.2f): leaving it shut", a_d.modelHash, a_d.gameState, a_d.gameRatio);
-				} else if (want) {
+				} else {
 					Open(a_d, a_r.side);
 				}
 				break;
 			case Phase::kOpening: {
 				const float before = a_d.timer;
 				a_d.timer += a_dt;
-				const float turned = Turned(a_d);
+				const float turned = Turned(a_d, a_obj);
 				if (traced < 6 && before < 0.25f && a_d.timer >= 0.25f) {
 					++traced;
 					LC_LOG("door 0x%08X opening by %s (asked %+.0f): turned %.1f deg after %.2f s", a_d.modelHash, kMethodNames[a_d.method], a_d.want, turned, a_d.timer);
 				}
-				if (std::fabs(turned) >= kOpenedDeg) {
+				if (!a_puppeting) {
+					Release(a_d, a_obj, "Minecraft let go of the player");
+				} else if (std::fabs(turned) >= kOpenedDeg) {
 					a_d.phase = Phase::kOpen;
 					a_d.timer = 0.0f;
 					a_d.reasserted = 0.0f;
@@ -328,7 +362,7 @@ namespace lc::Doors
 						stateSignKnown = true;
 						if (turned * a_d.want < 0.0f) {
 							stateSign = -stateSign;  // it swung towards the player: the ratio's sign is the other way round
-							S::SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], 1, a_d.want * stateSign);
+							SetState(a_d, 1, a_d.want * stateSign);
 						}
 						LC_LOG("doors: a positive door-state ratio turns a door %s", stateSign > 0 ? "counter-clockwise" : "clockwise");
 					}
@@ -343,7 +377,7 @@ namespace lc::Doors
 					LC_LOG("door 0x%08X (%s door) didn't open by %s (turned %.1f deg in %.2f s)", a_d.modelHash, a_d.gameDoor ? "GTA" : "not a GTA", kMethodNames[a_d.method],
 						turned, a_d.timer);
 					if (a_d.method == kByState) {
-						Release(a_d);
+						SetState(a_d, a_d.gameDoor ? a_d.gameState : 0, a_d.gameDoor ? a_d.gameRatio : 0.0f);
 					}
 					if (++a_d.method >= kMethods) {
 						a_d.method = preferred;
@@ -358,32 +392,41 @@ namespace lc::Doors
 			case Phase::kOpen: {
 				const float before = a_d.timer;
 				a_d.timer += a_dt;
-				const float turned = Turned(a_d);
+				const float turned = Turned(a_d, a_obj);
 				if (opensTraced < 3 && ((before < 0.5f && a_d.timer >= 0.5f) || (before < 2.0f && a_d.timer >= 2.0f) || (before < 4.0f && a_d.timer >= 4.0f))) {
 					LC_LOG("door 0x%08X open %.1f s: turned %.0f deg, player %.1f m from the leaf", a_d.modelHash, a_d.timer, turned, a_r.dist);
 					opensTraced += a_d.timer >= 4.0f ? 1 : 0;
 				}
-				a_d.away = (!a_puppeting || a_r.dist > kCloseDist) ? a_d.away + a_dt : 0.0f;
-				if (a_d.away >= kCloseAfter || (!a_puppeting && a_d.away > 0.0f)) {
-					Shut(a_d);
+				a_d.away = a_r.dist > kCloseDist ? a_d.away + a_dt : 0.0f;
+				if (!a_puppeting) {
+					Release(a_d, a_obj, "Minecraft let go of the player");
+				} else if (a_d.away >= kCloseAfter) {
+					Release(a_d, a_obj, "the player is clear");
 				} else if (std::fabs(turned) < kOpenedDeg && a_d.timer - a_d.reasserted > 0.5f) {
 					// GTA swung it back while we hold it open: again
 					a_d.reasserted = a_d.timer;
 					++counters.reasserted;
 					if (a_d.method == kByState) {
-						S::SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(a_d.modelHash, a_d.shut[9], a_d.shut[10], a_d.shut[11], 1, a_d.want * stateSign);
+						SetState(a_d, 1, a_d.want * stateSign);
 					} else if (a_d.method == kByHeading) {
 						SetHeading(a_d, a_d.want * kOpenDeg);
 					}
 				}
 				break;
 			}
-			case Phase::kShutting:
+			case Phase::kShutting: {
+				// watch it swing shut (logged for the first few), then it's GTA's again
+				const float before = a_d.timer;
 				a_d.timer += a_dt;
+				if (shutTraced < 4 && ((before < 0.5f && a_d.timer >= 0.5f) || (before < 2.0f && a_d.timer >= 2.0f))) {
+					LC_LOG("door 0x%08X %.1f s after handing it back: turned %.0f deg", a_d.modelHash, a_d.timer, Turned(a_d, a_obj));
+					shutTraced += a_d.timer >= 2.0f ? 1 : 0;
+				}
 				if (a_d.timer >= kUnlockAfter) {
-					Release(a_d);
+					a_d.phase = Phase::kShut;
 				}
 				break;
+			}
 			case Phase::kStuck:
 				break;
 			}
@@ -406,6 +449,13 @@ namespace lc::Doors
 				vel[i] += (v - vel[i]) * k;
 			}
 		}
+		// A jump (teleport, world change, warp): doors we hold go back to GTA now, while their objects
+		// are certainly still there.
+		const float jx = a_frame.feet[0] - lastFeet[0], jy = a_frame.feet[1] - lastFeet[1], jz = a_frame.feet[2] - lastFeet[2];
+		const bool  jumped = haveLast && jx * jx + jy * jy + jz * jz > kJump * kJump;
+		if (jumped) {
+			++counters.jumps;
+		}
 		std::memcpy(lastFeet, a_frame.feet, sizeof(lastFeet));
 		haveLast = true;
 		const bool anyBusy = std::any_of(doors.begin(), doors.end(), [](const Door& d) { return d.phase != Phase::kShut && d.phase != Phase::kStuck; });
@@ -417,20 +467,25 @@ namespace lc::Doors
 			Scan(a_frame.feet);
 		}
 		for (auto it = doors.begin(); it != doors.end();) {
-			if (!Alive(*it)) {
-				it = doors.erase(it);  // gone (streamed out, deleted): nothing to hand back
+			CObject* obj = Resolve(*it);
+			if (!obj) {
+				if (it->phase == Phase::kOpening || it->phase == Phase::kOpen) {
+					++counters.gone;
+					LC_LOG_EVERY(5000, "door 0x%08X went away while open (streamed out or deleted): forgetting it", it->modelHash);
+				}
+				it = doors.erase(it);  // nothing left to call a native on
 				continue;
 			}
 			const Rel r = Relate(*it, a_frame.feet);
-			Step(*it, r, a_frame.puppeting, dt);
+			Step(*it, obj, r, a_frame.puppeting && !jumped, dt);
 			const bool idle = it->phase == Phase::kShut || it->phase == Phase::kStuck;
-			if (idle && it->seen + 4 < scanNo) {
+			if (idle && (it->seen + 4 < scanNo || r.dist > kScanRadius + 2.0f)) {
 				it = doors.erase(it);  // out of range
 			} else {
 				++it;
 			}
 		}
-		LC_LOG_EVERY(60000, "doors: %zu near, %u opened, %u shut, %u would not open, %u locked by GTA, %u held open again", doors.size(), counters.opened,
-			counters.shut, counters.failed, counters.locked, counters.reasserted);
+		LC_LOG_EVERY(60000, "doors: %zu near, %u opened, %u handed back, %u would not open, %u locked by GTA, %u held open again, %u gone while open, %u jumps",
+			doors.size(), counters.opened, counters.shut, counters.failed, counters.locked, counters.reasserted, counters.gone, counters.jumps);
 	}
 }
