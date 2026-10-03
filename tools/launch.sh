@@ -28,7 +28,29 @@ done
 INST=$(lc_instance_dir 2>/dev/null || true)
 GAME=$(find_gta_dir 2>/dev/null || true)
 
+if (( GTA )); then
+  step "GTA IV (Steam app $LC_STEAM_APPID)"
+  if [[ -n $GAME ]]; then
+    v=$(pe_version "$GAME/GTAIV.exe")
+    [[ $v == 1.0.8.0 ]] || warn "GTAIV.exe is $v, not 1.0.8.0 (Steam update/verify?) - run tools/install.sh"
+    [[ -f "$GAME/plugins/LibertyCraft.asi" ]] || warn "plugins/LibertyCraft.asi missing - run tools/build.sh --asi --install"
+  fi
+  if gta_running; then warn "GTA IV is already running"
+  else
+    url="steam://rungameid/$LC_STEAM_APPID"
+    if command -v steam >/dev/null 2>&1; then
+      if (( DRY_RUN )); then plan "steam $url"; else nohup steam "$url" >/dev/null 2>&1 & disown; fi
+    else
+      run xdg-open "$url"
+    fi
+    ok "asked Steam to start the game (launch options set in Steam apply)"
+  fi
+fi
+
 if (( MC )); then
+  # GTA IV first: it (re)writes the bridge header, so Minecraft finds a live host instead of a
+  # stale one from an earlier run. Both load in parallel anyway; GTA's intro takes longer.
+  (( GTA )) && { if (( DRY_RUN )); then plan "sleep 3"; else sleep 3; fi; }
   step "Minecraft (Prism instance $LC_INSTANCE_NAME)"
   [[ -n $INST && -d $INST ]] || die "Prism instance not found - run tools/install.sh"
   compgen -G "$INST/minecraft/mods/libertycraft-*.jar" >/dev/null \
@@ -48,26 +70,6 @@ if (( MC )); then
     nohup $PRISM --launch "$LC_INSTANCE_NAME" >/dev/null 2>&1 &
     disown
     ok "started (Minecraft runs hidden: -Dlibertycraft.startHidden=true)"
-  fi
-fi
-
-if (( GTA )); then
-  step "GTA IV (Steam app $LC_STEAM_APPID)"
-  if [[ -n $GAME ]]; then
-    v=$(pe_version "$GAME/GTAIV.exe")
-    [[ $v == 1.0.8.0 ]] || warn "GTAIV.exe is $v, not 1.0.8.0 (Steam update/verify?) - run tools/install.sh"
-    [[ -f "$GAME/plugins/LibertyCraft.asi" ]] || warn "plugins/LibertyCraft.asi missing - run tools/build.sh --asi --install"
-  fi
-  if gta_running; then warn "GTA IV is already running"
-  else
-    (( MC )) && { if (( DRY_RUN )); then plan "sleep 2"; else sleep 2; fi; }
-    url="steam://rungameid/$LC_STEAM_APPID"
-    if command -v steam >/dev/null 2>&1; then
-      if (( DRY_RUN )); then plan "steam $url"; else nohup steam "$url" >/dev/null 2>&1 & disown; fi
-    else
-      run xdg-open "$url"
-    fi
-    ok "asked Steam to start the game (launch options set in Steam apply)"
   fi
 fi
 
