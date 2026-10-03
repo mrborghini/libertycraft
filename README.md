@@ -29,17 +29,47 @@ This is a port of the idea (and most of the Minecraft-side code) of
 
 * Linux with Steam + Proton (developed on Arch, Proton 11). Windows should work too but is untested.
 * **GTA IV: The Complete Edition** on Steam. The install script downgrades it to **1.0.8.0** (the
-  version the modding SDKs support) and installs FusionFix + ZolikaPatch.
-* **Minecraft: Java Edition** (owned) with [Prism Launcher](https://prismlauncher.org/).
-* To build from source: `clang`/`lld`, `cmake`, `ninja`, `xwin`, a JDK 21+ (Gradle downloads the rest).
+  version IV-SDK and ZolikaPatch support) and installs FusionFix + ZolikaPatch.
+* **Minecraft: Java Edition** (owned) with [Prism Launcher](https://prismlauncher.org/) and a
+  Minecraft account signed in. Java 25 is picked up from Prism's own runtimes.
+* For the scripts: `bash`, `curl`, `unzip`, `python3`.
+* To build from source: `xwin`, `clang` (clang-cl), `lld`, `llvm` (llvm-rc), `cmake`, `ninja`, a JDK 25
+  (Gradle fetches the rest). `tools/setup-toolchain.sh` checks them and prints the install line, e.g.
+  `paru -S xwin clang lld cmake ninja jq 7zip unzip curl python jdk-openjdk`.
 
 ## Setup
 
-_Coming with the first milestone._ The intended flow is three steps:
+```sh
+tools/install.sh        # 1. downgrade GTA IV, install the ASI loader, ZolikaPatch, FusionFix,
+                        #    create the "LibertyCraft" Prism instance (Minecraft 26.3 + Fabric)
+tools/setup-toolchain.sh && tools/build.sh --install
+                        # 2. build LibertyCraft.asi + the Fabric mod and copy them in place
+tools/launch.sh         # 3. start Minecraft (hidden) and GTA IV
+```
 
-1. `tools/install.sh` — downgrades GTA IV, installs FusionFix/ZolikaPatch, creates the Prism instance.
-2. `tools/build.sh` — builds the plugin and the mod (or download a release).
-3. `tools/launch.sh` — starts Minecraft and GTA IV together.
+Every script takes `--dry-run` (show what would happen) and `--help`; `install.sh` and `build.sh`
+also take `--yes`. Re-running any of them is safe.
+
+What `tools/install.sh` does to the game folder (`…/steamapps/common/Grand Theft Auto IV/GTAIV`):
+
+* Replaces `GTAIV.exe` with 1.0.8.0 plus its scripts/text (`script.img`, `*.gxt`, `PlayGTAIV.exe`,
+  `play.dll`), from [Gillian's downgrade assets](https://github.com/gillian-guide/GTAIVFullDowngradeAssets)
+  — the same defaults as Gillian's GTA IV Downgrade Utility. `--full` also copies the complete
+  1.0.8.0 file set.
+* Installs Ultimate ASI Loader **as `xlive.dll`** (FusionFix Legacy Addon). 1.0.8.0 needs Games for
+  Windows Live's `xlive.dll`; this one replaces GFWL and loads the `.asi` plugins, so no
+  `dinput8.dll` and no `WINEDLLOVERRIDES` are needed.
+* Installs ZolikaPatch (with the options FusionFix already covers switched off), FusionFix
+  (`plugins/`, `update/`), XLivelessAddon and — once built — `plugins/LibertyCraft.asi`.
+* Backs up every file it replaces to `_libertycraft_backup/` with a manifest;
+  `tools/uninstall.sh` (= `install.sh --uninstall`) restores them and deletes what was added.
+  Steam → GTA IV → Properties → Installed Files → **Verify integrity of game files** also reverts
+  the downgrade (and so does a Steam update of the game — just run `tools/install.sh` again).
+
+Recommended Steam launch options (Properties → General): `PROTON_LOG=1 %command%` while developing
+(writes `~/steam-12210.log`). Logs: Minecraft `…/PrismLauncher/instances/LibertyCraft/minecraft/logs/latest.log`,
+the plugin `<gamedir>/LibertyCraft.log`. `tools/dev/run-gta-with-log.sh` starts the game through Proton
+directly with `PROTON_LOG=1`, without touching Steam's launch options.
 
 ## Milestones
 
