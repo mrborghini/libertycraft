@@ -8,7 +8,8 @@ This is a port of the idea (and most of the Minecraft-side code) of
 [SkyCraft](https://github.com/chasmlol/SkyCraft) by chasm, which does the same for Skyrim.
 
 > **Status: early development, but playable.** Minecraft drives Niko, its blocks and HUD render in
-> Liberty City, collision follows GTA IV's map, and combat works both ways. See [Milestones](#milestones).
+> Liberty City with GTA's lighting, collision follows GTA IV's map, combat and crimes work both ways, and
+> your Minecraft character plays Niko in cutscenes and cars. See [Milestones](#milestones).
 
 ## Screenshots
 
@@ -112,9 +113,12 @@ Minecraft's `config/libertycraft.properties`.
 - [x] **M4**: collision from GTA IV's real map geometry: streets, stairs, interiors, overpasses, walls; water for swimming
 - [x] **M5**: combat: Minecraft hits damage/ragdoll/kill peds, TNT and creepers make GTA explosions, GTA damage hurts the Minecraft player, death runs GTA's "wasted" flow
 - [x] **M6**: cars (F steals one the GTA way, the Minecraft player rides a boat in it) and Backslash to switch between Niko and Minecraft
+- [x] **M7**: your Minecraft character plays Niko when GTA animates him (cutscenes, cars, bail-outs, knockdowns);
+  doors open, street furniture is solid, NPCs and cops fight back, Minecraft attacks count as crimes, cars and
+  their occupants can be hit, optional radio restoration
 
-Known gaps: doors and street furniture (lamp posts, bins, fences) are not solid yet; Minecraft blocks get no
-GTA shadows or fog; peds take double damage from Minecraft explosions.
+Known gaps: blocks get no GTA shadows; windscreens can't be broken (only side windows); cutscene support
+needs 1.0.8.0; peds take double damage from Minecraft explosions.
 
 ## Licenses
 

@@ -15,6 +15,8 @@
 #include "combat/CombatMath.h"
 
 #include <algorithm>
+#include <iterator>
+#include <unordered_map>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -288,6 +290,41 @@ namespace lc::Combat
 			}
 		}
 
+		// ---- vehicles we know ---------------------------------------------------------------------------------
+		// How many frames we have seen each vehicle near the player (AddVehicles). A vehicle created a
+		// moment ago isn't put together yet (its skeleton, its seats): the window and seat natives read
+		// garbage on it and crashed the game in tests, so it is left alone for its first frames.
+		constexpr std::uint32_t kSettledFrames = 30;
+		struct SeenVehicle
+		{
+			std::uint32_t first, last;
+		};
+		std::unordered_map<int, SeenVehicle> seenVehicles;
+		std::uint32_t                         frameNo = 0;
+
+		void NoteVehicle(int a_handle)
+		{
+			auto [it, fresh] = seenVehicles.try_emplace(a_handle, SeenVehicle{ frameNo, frameNo });
+			it->second.last = frameNo;
+			(void)fresh;
+		}
+
+		bool Settled(int a_handle)
+		{
+			const auto it = seenVehicles.find(a_handle);
+			return it != seenVehicles.end() && frameNo - it->second.first >= kSettledFrames;
+		}
+
+		void PruneVehicles()
+		{
+			if (frameNo % 600 != 0) {
+				return;
+			}
+			for (auto it = seenVehicles.begin(); it != seenVehicles.end();) {
+				it = frameNo - it->second.last > 600 ? seenVehicles.erase(it) : std::next(it);
+			}
+		}
+
 		// Vehicles near the player, nearest first, as pieces along their length (proto::kActorVehicle)
 		// in whatever room the peds left. Not the one the player uses (sits in or is getting into).
 		void AddVehicles(const Frame& a_frame, float a_px, float a_py, float a_pz)
@@ -312,6 +349,7 @@ namespace lc::Combat
 				const float d2 = dx * dx + dy * dy + dz * dz;
 				if (d2 <= kVehicleRange * kVehicleRange) {
 					vehicleCandidates.emplace_back(d2, slot);
+					NoteVehicle(static_cast<int>(pool->GetIndex(veh)));
 				}
 			}
 			std::sort(vehicleCandidates.begin(), vehicleCandidates.end());
@@ -673,10 +711,125 @@ namespace lc::Combat
 			}
 		}
 
+		// ---- breaking vehicle windows safely ---------------------------------------------------------------
+		// SMASH_CAR_WINDOW (1.0.8.0: handler 0xB21D10, body 0xB1EB60) maps the window to a vehicle part
+		// through a table (0xF4B3E8: windows 0 to 3 are parts 30 to 33), finds the part's bone in the model
+		// (model info +0xCC, -1 if the model has no such window), then asks the vehicle's fragment
+		// instance (virtual +0xA0) for the glass; the vehicle's matrix is read on the way. A vehicle the
+		// pool doesn't know, or without a fragment instance, crashes it. IS_VEH_WINDOW_INTACT (0xB22DB0)
+		// reads the bone's matrix from a skeleton without checking it: not used at all. The code is checked
+		// once; anything unexpected (another game version) and windows are never broken.
+		int  windowNatives = -1;   // -1 not checked yet, 0 unusable, 1 verified
+		int  windowPart[4]{};      // the game's part for windows 0 to 3
+		bool windowFaulted = false;
+
+		bool WindowNativesVerified()
+		{
+			if (windowNatives >= 0) {
+				return windowNatives == 1;
+			}
+			windowNatives = 0;
+			if (plugin::gameVer != plugin::VERSION_1080) {
+				LC_LOG("windows: not GTA IV 1.0.8.0: Minecraft hits never break car windows");
+				return false;
+			}
+			const auto* base = reinterpret_cast<const std::uint8_t*>(AddressSetter::gBaseAddress);
+			auto        at = [&](std::uint32_t a_va) { return base + (a_va - 0x400000u); };
+			auto        rd32 = [&](std::uint32_t a_va) {
+				std::uint32_t v = 0;
+				std::memcpy(&v, at(a_va), 4);
+				return v;
+			};
+			const auto rel = [&](std::uint32_t a_va) { return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(at(a_va))); };
+			// The handler: two args, a call to the body.
+			static constexpr std::uint8_t kHandler[] = { 0x8B, 0x44, 0x24, 0x04, 0x8B, 0x40, 0x08, 0x8B, 0x48, 0x04, 0x8B, 0x10, 0x51, 0x52, 0xE8 };
+			const bool handlerOk = std::memcmp(at(0xB21D10), kHandler, sizeof(kHandler)) == 0 && rel(0xB21D23) + rd32(0xB21D1F) == rel(0xB1EB60);
+			// The body: the pool lookup, the part table, then (at 0xB1EC1A) the model's bone table and the
+			// fragment instance's virtual.
+			const bool tableOk = std::memcmp(at(0xB1EB7C), "\x8B\x0C\x8D", 3) == 0 && rd32(0xB1EB7F) == rel(0xF4B3E8);
+			static constexpr std::uint8_t kBone[] = { 0x0F, 0xBF, 0x56, 0x2E, 0x8B, 0x04, 0x95 };
+			static constexpr std::uint8_t kBone2[] = { 0x8B, 0x90, 0xCC, 0x00, 0x00, 0x00, 0x8B, 0x04, 0x8A, 0x83, 0xF8, 0xFF, 0x7E };
+			static constexpr std::uint8_t kFrag[] = { 0x50, 0x8B, 0x06, 0x8B, 0x90, 0xA0, 0x00, 0x00, 0x00, 0x8B, 0xCE, 0xFF, 0xD2 };
+			const bool boneOk = std::memcmp(at(0xB1EC1A), kBone, sizeof(kBone)) == 0 &&
+			                    rd32(0xB1EC21) == static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(CModelInfo::ms_modelInfoPtrs)) &&
+			                    std::memcmp(at(0xB1EC25), kBone2, sizeof(kBone2)) == 0 && std::memcmp(at(0xB1EC33), kFrag, sizeof(kFrag)) == 0;
+			if (handlerOk && tableOk && boneOk) {
+				for (int w = 0; w < 4; ++w) {
+					windowPart[w] = static_cast<int>(rd32(0xF4B3E8 + 4u * static_cast<std::uint32_t>(w)));
+				}
+				windowNatives = std::all_of(std::begin(windowPart), std::end(windowPart), [](int a_p) { return a_p > 0 && a_p < 128; }) ? 1 : 0;
+			}
+			LC_LOG("windows: SMASH_CAR_WINDOW %s (handler %d, part table %d, bone lookup %d; parts %d %d %d %d)",
+				windowNatives ? "checked: Minecraft hits break car windows" : "NOT as expected: Minecraft hits never break car windows", handlerOk, tableOk,
+				boneOk, windowPart[0], windowPart[1], windowPart[2], windowPart[3]);
+			return windowNatives == 1;
+		}
+
+		// The SEH part on its own (no C++ objects to unwind): calls the virtual SMASH_CAR_WINDOW will
+		// call, then the native. False if anything faulted.
+		bool SmashGuarded(CVehicle* a_veh, int a_handle, int a_window, bool& a_noFrag)
+		{
+			__try {
+				using FragFn = void*(__thiscall*)(CVehicle*);
+				void* frag = reinterpret_cast<FragFn>((*reinterpret_cast<void***>(a_veh))[0xA0 / 4])(a_veh);
+				a_noFrag = frag == nullptr;
+				if (!a_noFrag) {
+					S::SMASH_CAR_WINDOW(a_handle, a_window);
+				}
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		// Breaks side window a_window (0 to 3) of a_handle if that is safe. Returns what happened, for the log.
+		const char* SmashWindow(int a_handle, int a_window)
+		{
+			if (a_window < kWindowLF || a_window > kWindowRR) {
+				return " (no native breaks a windscreen)";
+			}
+			if (!WindowNativesVerified() || windowFaulted) {
+				return " (windows are left alone in this game)";
+			}
+			CVehicle* veh = CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(a_handle)) : nullptr;
+			if (!veh || !veh->m_pMatrix || !S::DOES_VEHICLE_EXIST(a_handle) || S::IS_CAR_DEAD(a_handle) || veh->m_fEngineHealth < 0.0f) {
+				return " (a wreck: left alone)";
+			}
+			if (!Settled(a_handle)) {
+				return " (a vehicle that just appeared: left alone)";
+			}
+			const int model = veh->m_nModelIndex;
+			if (model < 0 || model >= 31000 || !CModelInfo::ms_modelInfoPtrs[model]) {
+				return " (unknown model)";
+			}
+			const auto* info = reinterpret_cast<const std::uint8_t*>(CModelInfo::ms_modelInfoPtrs[model]);
+			const int*  bones = *reinterpret_cast<const int* const*>(info + 0xCC);
+			const int   bone = bones ? bones[windowPart[a_window]] : -1;
+			if (bone < 0) {
+				return " (this model has no such window)";
+			}
+			bool noFrag = false;
+			if (!SmashGuarded(veh, a_handle, a_window, noFrag)) {
+				windowFaulted = true;
+				LC_LOG("WARNING: SMASH_CAR_WINDOW(%d, %d) faulted (model %d, bone %d): car windows are left alone from now on", a_handle, a_window, model, bone);
+				return " (faulted: windows off)";
+			}
+			if (noFrag) {
+				return " (no fragment instance: left alone)";
+			}
+			++counters.windows;
+			return " (smashed)";
+		}
+
 		// ---- Minecraft hit a vehicle ---------------------------------------------------------------------
-		// The ped in seat a_seat (kSeatDriver, or a passenger seat), 0 if none (or the player).
+		// The ped in seat a_seat (kSeatDriver, or a passenger seat), 0 if none (or the player). Nobody in
+		// a vehicle that just appeared (its seats may not be filled in yet: the seat natives handed the
+		// game a garbage ped and crashed it in a test).
 		int Occupant(int a_veh, int a_seat, int a_player)
 		{
+			if (!Settled(a_veh)) {
+				return 0;
+			}
 			int p = 0;
 			if (a_seat == kSeatDriver) {
 				S::GET_DRIVER_OF_CAR(a_veh, &p);
@@ -770,17 +923,9 @@ namespace lc::Combat
 				}
 				S::SET_ENGINE_HEALTH(veh, engineAfter);
 			}
-			const char* glass = "";
-			if (strike.window >= kWindowLF && strike.window <= kWindowRR) {
-				// (IS_VEH_WINDOW_INTACT only notices a smash a frame later.)
-				glass = S::IS_VEH_WINDOW_INTACT(veh, static_cast<unsigned>(strike.window)) ? " (smashed)" : " (smashed again)";
-				S::SMASH_CAR_WINDOW(veh, strike.window);
-				++counters.windows;
-			} else if (strike.window != kWindowNone) {
-				// The window natives only know the four side windows: given 4 or 5 they read past them
-				// (garbage, and in game a crash). A windscreen keeps its glass; whoever is behind it is hit.
-				glass = " (no native breaks a windscreen)";
-			}
+			// The window natives only know the four side windows (given 4 or 5 they read past their table):
+			// a windscreen keeps its glass; whoever is behind it is hit all the same.
+			const char* glass = strike.window != kWindowNone ? SmashWindow(veh, strike.window) : "";
 			// A projectile through the glass hits whoever sits behind it.
 			char occupantText[112] = "";
 			if (projectile && strike.window != kWindowNone) {
@@ -1287,7 +1432,12 @@ namespace lc::Combat
 				return;
 			}
 			t.timer += a_frame.dt;
-			const unsigned model = S::GET_HASH_KEY("admiral");
+			const unsigned model = Cfg().debugTestCarModel.empty() ? 0u : S::GET_HASH_KEY(Cfg().debugTestCarModel.c_str());
+			if (t.stage == 0 && (!model || !S::IS_MODEL_IN_CDIMAGE(model) || !S::IS_THIS_MODEL_A_VEHICLE(model))) {
+				LC_LOG("DebugTestCar: \"%s\" isn't a vehicle model", Cfg().debugTestCarModel.c_str());
+				t.stage = 4;
+				return;
+			}
 			if (t.stage == 0) {
 				if (t.timer >= static_cast<float>(std::abs(Cfg().debugTestCar))) {
 					CStreaming::ScriptRequestModel(static_cast<std::int32_t>(model));
@@ -1337,6 +1487,10 @@ namespace lc::Combat
 					heading, x, y, z, t.driver, t.passenger);
 				t.stage = 2;
 				t.timer = Cfg().debugTestCar < 0 ? -1e9f : 0.0f;  // (in view already: never moved)
+				if (Cfg().debugTestCar < 0) {
+					// One more arrow at once, while the car is brand new: its windows and seats must be left alone.
+					TestCarArrow(a_frame, t.car, kWindowLF);
+				}
 				return;
 			}
 			if (!S::DOES_VEHICLE_EXIST(t.car)) {
@@ -1355,11 +1509,8 @@ namespace lc::Combat
 				if (t.passenger && S::DOES_CHAR_EXIST(t.passenger)) {
 					S::GET_CHAR_HEALTH(t.passenger, &ph);
 				}
-				int n = std::snprintf(line, sizeof(line), "windows");
-				for (unsigned w = 0; w < 4; ++w) {  // (the natives only know the side windows)
-					n += std::snprintf(line + n, sizeof(line) - n, " %s", S::IS_VEH_WINDOW_INTACT(t.car, w) ? "ok" : "BROKEN");
-				}
-				std::snprintf(line + n, sizeof(line) - n, " (LF RF LR RR); body %u; driver %u, passenger %u", body, dh, ph);
+				// (Not the windows: IS_VEH_WINDOW_INTACT reads a bone matrix unchecked and crashed the game.)
+				std::snprintf(line, sizeof(line), "body %u; driver %u, passenger %u", body, dh, ph);
 				if (std::strcmp(line, t.last) != 0) {
 					std::strcpy(t.last, line);
 					LC_LOG("DebugTestCar: %s", line);
@@ -1540,12 +1691,15 @@ namespace lc::Combat
 		shoves.clear();
 		warpTimer = 0.0f;
 		testCar = TestCar{};
+		seenVehicles.clear();
 		ClearActorTable();
 	}
 
 	std::uint32_t Tick(const Frame& a_frame)
 	{
 		InstallFaultTrace();
+		++frameNo;
+		PruneVehicles();
 		auto& link = Link::Get();
 		++counters.frames;
 		const bool playable = a_frame.exists && !a_frame.loading;

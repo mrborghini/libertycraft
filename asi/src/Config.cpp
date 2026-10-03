@@ -235,6 +235,7 @@ namespace lc
 		if (auto v = get("npcpushmethod")) npcPushMethod = std::atoi(v->c_str());
 		if (auto v = get("debugknockbackvariant")) debugKnockbackVariant = std::atoi(v->c_str());
 		if (auto v = get("debugtestcar")) debugTestCar = std::atoi(v->c_str());
+		if (auto v = get("debugtestcarmodel")) debugTestCarModel = *v;
 		if (auto v = get("gtacrimes")) gtaCrimes = ToBool(*v, gtaCrimes);
 		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
 		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
@@ -284,8 +285,8 @@ namespace lc
 			debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
 		LC_LOG("config: VehicleDamageScale=%.1f NpcBlocks=%d%s%s", vehicleDamageScale, npcBlocks, npcPushMethod ? " NpcPushMethod=1" : "",
 			debugKnockbackVariant >= 0 ? " DebugKnockbackVariant on" : "");
-		if (debugTestCar > 0) {
-			LC_LOG("config: DebugTestCar=%d", debugTestCar);
+		if (debugTestCar != 0) {
+			LC_LOG("config: DebugTestCar=%d (%s)", debugTestCar, debugTestCarModel.c_str());
 		}
 		LC_LOG("config: GtaCrimes=%d PuppetPlayerControl=%d PuppetCollision=%d%s", gtaCrimes, puppetPlayerControl, puppetCollision,
 			debugWanted > 0 ? " DebugWanted on" : "");

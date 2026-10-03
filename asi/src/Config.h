@@ -121,6 +121,7 @@ namespace lc
 		// Test hook (not in the default ini): N s into play, park a car with people in it 4 m east of the
 		// player (Combat.cpp TestCarHook); 0 off.
 		int debugTestCar = 0;
+		std::string debugTestCarModel = "admiral";  // its model (e.g. sabre: two doors, pcj: a motorbike)
 		// Minecraft's attacks are crimes in GTA IV: victims fight back or flee, police seeing it (or
 		// any witness of a killing) give the player a wanted level, hurting a cop always does.
 		bool gtaCrimes = true;
