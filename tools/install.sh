@@ -32,6 +32,15 @@ Usage: tools/install.sh [options]
       --force-clean    move *other* existing .asi plugins, plugins/ files and known
                        incompatible DLLs out of the game folder (into the backup)
       --refresh-assets re-download the unpinned FusionFix zips (they track "latest")
+      --radio[=VARIANT] restore the radio songs removed from the Steam release (Tomasak's
+                       Radio Restoration Mod, ~1 GB download, installed into update/).
+                       VARIANT (the mod's own install options; default all):
+                         all            restored songs plus the songs added later
+                         vanilla        the original tracklist only
+                         vanilla-beta   the original tracklist plus unused beta songs
+                         classic        the mod's "classic" set
+                         split-vanilla  separate IV and Episodes tracklists, original songs
+                         split-beta     separate IV and Episodes tracklists, plus beta songs
   -v, --verbose        list every file
   -h, --help           this help
 
@@ -39,7 +48,7 @@ Environment: GTAIV_DIR (folder with GTAIV.exe), PRISM_DIR, JAVA25_HOME, LIBERTYC
 EOF
 }
 
-FULL=0 FUSIONFIX=1 ZOLIKA=1 MINECRAFT=1 DXVK=0 FORCE_CLEAN=0 UNINSTALL=0 REFRESH=0 VERBOSE=0
+FULL=0 FUSIONFIX=1 ZOLIKA=1 MINECRAFT=1 DXVK=0 FORCE_CLEAN=0 UNINSTALL=0 REFRESH=0 VERBOSE=0 RADIO=
 while (( $# )); do
   case $1 in
     -n|--dry-run)      DRY_RUN=1 ;;
@@ -52,6 +61,8 @@ while (( $# )); do
     --dxvk)            DXVK=1 ;;
     --force-clean)     FORCE_CLEAN=1 ;;
     --refresh-assets)  REFRESH=1 ;;
+    --radio)           RADIO=all ;;
+    --radio=*)         RADIO=${1#--radio=} ;;
     -v|--verbose)      VERBOSE=1 ;;
     -h|--help)         usage; exit 0 ;;
     *) usage >&2; die "Unknown option: $1" ;;
@@ -73,6 +84,18 @@ FABRIC_API_JAR=fabric-api-0.161.0+26.3.jar
 FABRIC_API_URL=https://cdn.modrinth.com/data/P7dR8mSH/versions/bNnaTiuM/fabric-api-0.161.0%2B26.3.jar
 FABRIC_API_SUM=sha512:ed6b2586d6fde11fde8472f5a527c51e99b67026e46f94d4bfd85e7e28ce5ee299173ee16ad576ceb51f39f98d30a811086a6deb1a86a524859cc16e12da109d
 MC_VERSION=26.3
+# Tomasak's Radio Restoration Mod (release IV-RR-23-05-2025): a Windows installer around zip
+# archives whose files all live under update/ (loaded by FusionFix's/UAL's update folder), so we
+# unpack it ourselves: data1.dat is the restored audio, one op*.dat picks the tracklist variant.
+RADIO_RAR=Radio.Restoration.Mod.23-05-2025.rar
+RADIO_URL=https://github.com/Tomasak/GTA-Downgraders/releases/download/iv-latest/$RADIO_RAR
+RADIO_SUM=sha256:93a8ee058a3ac5c1731dc7ee9f404ddb58d4ae732f136fd1fe5cfc56b9aa887b
+declare -A RADIO_OPTS=([all]=opALL.dat [vanilla]=opVANILLA.dat [vanilla-beta]=opVANILLABETA.dat
+  [classic]=opCLASSIC.dat [split-vanilla]="opSPLITbase.dat opSPLITVANILLA.dat"
+  [split-beta]="opSPLITbase.dat opSPLITBETA.dat")
+if [[ -n $RADIO && -z ${RADIO_OPTS[$RADIO]:-} ]]; then
+  die "Unknown --radio variant '$RADIO' (all, vanilla, vanilla-beta, classic, split-vanilla, split-beta)"
+fi
 LOADER_VERSION=0.19.5
 LWJGL_VERSION=3.4.3
 JVM_ARGS="--enable-native-access=ALL-UNNAMED -Dlibertycraft.startHidden=true"
@@ -169,6 +192,11 @@ asset() {
 asset BaseAssets.zip "$BASE_URL/BaseAssets.zip" "$BASE_SUM" 1080/GTAIV.exe ZolikaPatch/ZolikaPatch.asi Shared/PlayGTAIV.exe
 (( FULL )) && asset 1080FullFiles.zip "$BASE_URL/1080FullFiles.zip" "$FULL_SUM" GTAIV.exe
 asset GTAIV.EFLC.FusionFixLegacyAddon.zip "$FF_URL/GTAIV.EFLC.FusionFixLegacyAddon.zip" "" xlive.dll plugins/XLivelessAddon.asi
+if [[ -n $RADIO ]]; then
+  (( FUSIONFIX )) || die "--radio needs FusionFix (the mod's files are loaded from update/)"
+  require_tools 7z:7zip
+  asset "$RADIO_RAR" "$RADIO_URL" "$RADIO_SUM"
+fi
 (( FUSIONFIX )) && asset GTAIV.EFLC.FusionFix.zip "$FF_URL/GTAIV.EFLC.FusionFix.zip" "" plugins/GTAIV.EFLC.FusionFix.asi update/update.txt
 
 confirm "Modify $GAME now?" || die "Aborted."
@@ -296,6 +324,35 @@ if (( FUSIONFIX )); then
     (( DXVK )) || dim "d3d9.dll/vulkan.dll not installed (Proton already translates D3D9 via DXVK; use --dxvk to add them)"
   else
     plan "extract plugins/ and update/ from GTAIV.EFLC.FusionFix.zip (after downloading it)"
+  fi
+fi
+
+# --- 6b. radio restoration (optional) ------------------------------------------------------
+if [[ -n $RADIO ]]; then
+  step "Radio restoration ($RADIO)"
+  if need_asset "$RADIO_RAR" && (( ! DRY_RUN )); then
+    rr="$STAGE/rr"; opts=(${RADIO_OPTS[$RADIO]})
+    pick=("Resources/Radio Restorer/data1.dat" "Resources/Radio Restorer/hashes.ini")
+    for o in "${opts[@]}"; do pick+=("Resources/Radio Restorer/$o"); done
+    7z x -y -bso0 -bsp0 -o"$rr" "$LC_CACHE/$RADIO_RAR" "${pick[@]}" >/dev/null || die "could not unpack $RADIO_RAR"
+    # The mod's installer checks each archive's CRC-32 against hashes.ini; so do we.
+    python3 - "$rr/Resources/Radio Restorer" data1.dat "${opts[@]}" <<'PY' || die "radio archives failed their CRC check"
+import os, re, sys, zlib
+d, names = sys.argv[1], sys.argv[2:]
+want = dict(re.findall(r'^(\S+)\s*=\s*([0-9A-Fa-f]{8})', open(os.path.join(d, 'hashes.ini')).read(), re.M))
+for n in names:
+    crc = 0
+    with open(os.path.join(d, n), 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            crc = zlib.crc32(chunk, crc)
+    if '%08X' % crc != want.get(n, '').upper():
+        sys.exit(f'{n}: CRC {crc:08X}, expected {want.get(n)}')
+PY
+    for a in data1.dat "${opts[@]}"; do unzip -qo "$rr/Resources/Radio Restorer/$a" 'update/*' -d "$rr/files"; done
+    install_tree "$rr/files"
+    ok "restored radio installed (update/pc/audio, update/TLAD, update/TBoGT, text)"
+  else
+    plan "unpack $RADIO_RAR and install data1.dat + ${RADIO_OPTS[$RADIO]} into update/"
   fi
 fi
 

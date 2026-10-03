@@ -62,6 +62,10 @@ What `tools/install.sh` does to the game folder (`…/steamapps/common/Grand The
   `dinput8.dll` and no `WINEDLLOVERRIDES` are needed.
 * Installs ZolikaPatch (with the options FusionFix already covers switched off), FusionFix
   (`plugins/`, `update/`) and, once built, `plugins/LibertyCraft.asi`.
+* With `--radio` (optional, ~1 GB download) it also installs Tomasak's
+  [Radio Restoration Mod](https://github.com/Tomasak/GTA-Downgraders/releases/tag/iv-latest), which brings back the
+  songs removed from the Steam release, into `update/`. `--radio=vanilla` keeps only the original tracklist; see
+  `tools/install.sh --help` for the other variants.
 * Backs up every file it replaces to `_libertycraft_backup/` with a manifest;
   `tools/uninstall.sh` (= `install.sh --uninstall`) restores them and deletes what was added.
   Steam → GTA IV → Properties → Installed Files → **Verify integrity of game files** also reverts
