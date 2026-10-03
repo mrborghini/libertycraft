@@ -22,6 +22,10 @@ namespace lc::Game
 		std::atomic<int>  cursorX{ 0 };           // Minecraft's GUI cursor (overlay pixels)
 		std::atomic<int>  cursorY{ 0 };
 		std::atomic<float> sensitivity{ 0.5f };   // Minecraft's mouse sensitivity option
+		// HostDrive: GTA IV drives the player (Minecraft follows), in a vehicle, Niko mode (toggle key).
+		std::atomic<bool> hostDrives{ false };
+		std::atomic<bool> inVehicle{ false };
+		std::atomic<bool> nikoMode{ false };
 	};
 
 	Shared& State();

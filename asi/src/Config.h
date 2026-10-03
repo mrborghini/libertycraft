@@ -42,10 +42,37 @@ namespace lc
 		// runtime by default ("auto"); or e.g. "0,1,2" / "-0,1,2" (leading '-' flips a row's sign).
 		std::string cameraRows = "auto";
 
+		// ---- vehicles and Niko mode (HostDrive.h) ----
+		// While Minecraft drives the player: hand Niko back to GTA IV and enter/steal the nearest
+		// vehicle (GTA's own enter control). In the vehicle GTA drives (and its own F gets out).
+		std::string vehicleKey = "F";
+		// Minecraft mode <-> Niko mode (plain GTA IV, Minecraft's player just follows Niko).
+		std::string toggleKey = "Backslash";
+		// Hide Niko in vehicles in Minecraft mode (Minecraft's player sits there on its mount).
+		bool hideNikoInVehicle = true;
+		bool toggleStartsInMinecraft = true;
+		// Metres from the ped's reported position (in a seat) down to the riding Minecraft player's
+		// feet (Minecraft's rider sits ~0.6 above its feet, hips ~0.75).
+		float vehicleSeatDrop = 0.75f;
+		// The enter press didn't take after a second: "warp" (WARP_CHAR_INTO_CAR, the closest car
+		// within 10 m), "task" (TASK_ENTER_CAR_AS_DRIVER: walks there; IV-SDK warns task natives may
+		// crash) or "none".
+		std::string vehicleEnterFallback = "warp";
+		// Test hooks (not in the default ini): toggle the mode every 10 s; press the vehicle key when
+		// a car is within 12 m while puppeting, and GTA's exit control after 12 s in one.
+		bool debugAutoToggle = false;
+		bool debugAutoVehicle = false;
+
 		static Config& Get();
 		// Loads <asi dir>/LibertyCraft.ini (creating it with defaults if absent). Logs what it got.
 		void Load(const wchar_t* a_asiDir);
 		// menuKey as a DirectInput (set 1) scancode, 0 if unknown.
 		std::uint8_t MenuKeyDik() const;
+		std::uint8_t VehicleKeyDik() const { return KeyDik(vehicleKey); }
+		std::uint8_t ToggleKeyDik() const { return KeyDik(toggleKey); }
+		// A key name -> DirectInput (set 1) scancode, 0 if unknown: a letter, digit, F1-F12, a name
+		// (Backslash, Grave, Tab, Minus, Equals, LBracket, RBracket, Semicolon, Apostrophe, Comma,
+		// Period, Slash, Space, Insert, Delete, Home, End, PageUp, PageDown, Numpad0-9, ...) or hex (0x2B).
+		static std::uint8_t KeyDik(const std::string& a_name);
 	};
 }

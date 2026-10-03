@@ -88,6 +88,17 @@ namespace libertycraft::proto
 		kSkyInGame = 1u << 0,    // a save is loaded and the player exists
 		kSkyMenuOpen = 1u << 1,  // a Skyrim menu owns input; MC should drop held keys
 		kSkyLoading = 1u << 2,   // loading screen / cell transition in progress
+		// LibertyCraft additions (bits only; the layout and kVersion stay SkyCraft's):
+		// The host controls the player (Niko mode, a vehicle, a cutscene, a scripted scene). Minecraft
+		// doesn't simulate its player meanwhile: no physics, no input, no damage; it follows
+		// SkyState pos/yaw every tick and acknowledges teleports as they come. When the bit clears
+		// the host bumps teleportSeq (the usual teleport handshake) and Minecraft resumes.
+		kSkyHostDrives = 1u << 3,
+		// Only together with kSkyHostDrives: the player sits in a vehicle. pos is where the riding
+		// Minecraft player's feet go (the seat), yaw the vehicle's heading. Minecraft puts its player
+		// on a mount (a boat by default) placed so its rider is at pos, every tick, and removes it
+		// when the bit clears.
+		kSkyInVehicle = 1u << 4,
 	};
 
 	// Skyrim's water (lakes, rivers, the sea) around the player, for Minecraft to treat as its own

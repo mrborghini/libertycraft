@@ -1,0 +1,52 @@
+// Vehicles and Niko mode: when GTA IV itself drives the player instead of Minecraft.
+//
+// ToggleKey (Backslash) switches Minecraft mode <-> Niko mode (plain GTA IV: no puppet, no input
+// for Minecraft, GTA's HUD; Minecraft's player follows Niko). VehicleKey (F), taken from Minecraft
+// while puppeting, gives Niko back to GTA IV and presses GTA's own enter-vehicle control, so the game
+// picks the door or carjacks like normal. In a vehicle GTA IV drives (its own F gets out) and
+// Minecraft's player rides a mount at the seat (kSkyInVehicle). The decisions are DriveLogic.h's.
+//
+// Threads: Tick on the game thread (processScriptsEvent, natives allowed), OnKey on the window
+// thread, Pad in processPadEvent.
+#pragma once
+
+#include "Coords.h"
+
+#include <cstdint>
+
+class CPad;  // IV-SDK
+
+namespace lc::HostDrive
+{
+	struct Frame
+	{
+		int   player = 0, ped = 0;
+		bool  exists = false, loading = false, paused = false, dead = false;
+		bool  inCar = false, cutscene = false;
+		bool  puppeting = false;  // before this frame's puppet decision
+		bool  mcInWorld = false;
+		float dt = 0.0f;
+		float heading = 0.0f;  // the ped's heading (GTA degrees)
+	};
+
+	struct Result
+	{
+		const char* blocker = nullptr;  // GTA drives: no puppet (nullptr: Minecraft may)
+		bool        hostDrives = false;
+		bool        inVehicle = false;
+		bool        resync = false;      // GTA just let go: teleport handshake first
+		GtaVec      seatFeet{};          // inVehicle: where the riding Minecraft player's feet go
+		float       heading = 0.0f;      // GTA degrees: the vehicle's (inVehicle) or the ped's
+	};
+
+	// Game::Tick, before the teleport handshake and the puppet decision.
+	Result Tick(const Frame& a_frame);
+	// Game::OnIngameStartup.
+	void OnIngameStartup();
+	// The window procedure, for every key message. True: consumed (the toggle key always; the
+	// vehicle key while puppeting, so Minecraft never sees it).
+	bool OnKey(std::uint32_t a_dik, bool a_down, bool a_repeat);
+	// processPadEvent with the local player's pad, after the game's pad update: presses GTA's
+	// enter / exit controls while an action asks for it.
+	void Pad(CPad* a_pad);
+}

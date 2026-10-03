@@ -47,6 +47,7 @@ unset(_text)
 # SDK-free and compiles on its own.
 set(LC_SDK_UNITY_SOURCES
 	src/Game.cpp
+	src/HostDrive.cpp
 	src/Input.cpp
 	src/Collision.cpp
 	src/Render.cpp
@@ -62,6 +63,7 @@ set(LC_SOURCES
 set(LC_HEADERS
 	src/Log.h src/Config.h src/Link.h src/LinkCore.h src/Coords.h src/Perf.h src/CrashLog.h
 	src/Game.h src/Input.h src/Collision.h src/Render.h src/Overlay.h src/Sdk.h
+	src/HostDrive.h src/DriveLogic.h
 	src/compat/d3dx9.h
 	../protocol/libertycraft_protocol.h
 )

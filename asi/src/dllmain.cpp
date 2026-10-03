@@ -15,6 +15,7 @@
 #include "Render.h"
 
 #include "Game.cpp"
+#include "HostDrive.cpp"
 #include "Input.cpp"
 #include "Collision.cpp"
 #include "Render.cpp"

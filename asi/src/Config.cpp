@@ -41,7 +41,18 @@ namespace lc
 			"ProbeFrom=top\n"
 			"ProbeHeight=3.0\n"
 			"; camera matrix rows right,forward,up: auto, or e.g. 0,1,2 (prefix - flips a row)\n"
-			"CameraRows=auto\n";
+			"CameraRows=auto\n"
+			"; vehicles: this key (taken from Minecraft) enters/steals the nearest vehicle the GTA way; GTA's own F gets out\n"
+			"VehicleKey=F\n"
+			"; switches between Minecraft mode and Niko mode (plain GTA IV)\n"
+			"ToggleKey=Backslash\n"
+			"; hide Niko in vehicles in Minecraft mode (the Minecraft player sits there on its mount)\n"
+			"HideNikoInVehicle=1\n"
+			"ToggleStartsInMinecraft=1\n"
+			"; metres from the seated ped's position down to the riding Minecraft player's feet\n"
+			"VehicleSeatDrop=0.75\n"
+			"; if GTA's enter press didn't take: warp | task | none\n"
+			"VehicleEnterFallback=warp\n";
 
 		std::string Lower(std::string a_s)
 		{
@@ -146,15 +157,50 @@ namespace lc
 		if (auto v = get("probefrom")) probeFrom = Lower(*v) == "feet" ? ProbeFrom::kFeet : ProbeFrom::kTop;
 		if (auto v = get("probeheight")) probeHeight = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("camerarows")) cameraRows = Lower(*v);
+		if (auto v = get("vehiclekey")) vehicleKey = *v;
+		if (auto v = get("togglekey")) toggleKey = *v;
+		if (auto v = get("hidenikoinvehicle")) hideNikoInVehicle = ToBool(*v, hideNikoInVehicle);
+		if (auto v = get("togglestartsinminecraft")) toggleStartsInMinecraft = ToBool(*v, toggleStartsInMinecraft);
+		if (auto v = get("vehicleseatdrop")) vehicleSeatDrop = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("vehicleenterfallback")) vehicleEnterFallback = Lower(*v);
+		if (auto v = get("debugautotoggle")) debugAutoToggle = ToBool(*v, debugAutoToggle);
+		if (auto v = get("debugautovehicle")) debugAutoVehicle = ToBool(*v, debugAutoVehicle);
 
 		LC_LOG("config: Puppet=%d CameraMode=%s FovMode=%s MenuKey=%s (dik 0x%02X) Diagnostics=%d LogPerf=%d FreezePed=%d RootToFeet=%.2f (measure %d) ProbeFrom=%s ProbeHeight=%.1f CameraRows=%s",
 			puppet, cameraMode == CameraMode::kScripted ? "scripted" : "final", fovMode == FovMode::kHorizontal43 ? "horizontal43" : "vertical",
 			menuKey.c_str(), MenuKeyDik(), diagnostics, logPerf, freezePed, rootToFeet, measureRootToFeet, probeFrom == ProbeFrom::kFeet ? "feet" : "top", probeHeight, cameraRows.c_str());
+		LC_LOG("config: VehicleKey=%s (dik 0x%02X) ToggleKey=%s (dik 0x%02X) HideNikoInVehicle=%d ToggleStartsInMinecraft=%d VehicleSeatDrop=%.2f VehicleEnterFallback=%s%s%s",
+			vehicleKey.c_str(), VehicleKeyDik(), toggleKey.c_str(), ToggleKeyDik(), hideNikoInVehicle, toggleStartsInMinecraft, vehicleSeatDrop,
+			vehicleEnterFallback.c_str(), debugAutoToggle ? " DebugAutoToggle=1" : "", debugAutoVehicle ? " DebugAutoVehicle=1" : "");
 	}
 
 	std::uint8_t Config::MenuKeyDik() const
 	{
-		const auto key = Lower(Trim(menuKey));
+		return KeyDik(menuKey);
+	}
+
+	std::uint8_t Config::KeyDik(const std::string& a_name)
+	{
+		const auto key = Lower(Trim(a_name));
+		if (key.size() > 2 && key[0] == '0' && key[1] == 'x') {
+			const long v = std::strtol(key.c_str() + 2, nullptr, 16);
+			return v > 0 && v < 256 ? static_cast<std::uint8_t>(v) : 0;
+		}
+		static const std::unordered_map<std::string, std::uint8_t> kNames = {
+			{ "backslash", 0x2B }, { "\\", 0x2B }, { "grave", 0x29 }, { "`", 0x29 }, { "tilde", 0x29 }, { "tab", 0x0F },
+			{ "minus", 0x0C }, { "-", 0x0C }, { "equals", 0x0D }, { "=", 0x0D }, { "lbracket", 0x1A }, { "[", 0x1A },
+			{ "rbracket", 0x1B }, { "]", 0x1B }, { "semicolon", 0x27 }, { ";", 0x27 }, { "apostrophe", 0x28 }, { "'", 0x28 },
+			{ "comma", 0x33 }, { ",", 0x33 }, { "period", 0x34 }, { ".", 0x34 }, { "slash", 0x35 }, { "/", 0x35 },
+			{ "space", 0x39 }, { "enter", 0x1C }, { "return", 0x1C }, { "backspace", 0x0E }, { "capslock", 0x3A },
+			{ "insert", 0xD2 }, { "delete", 0xD3 }, { "home", 0xC7 }, { "end", 0xCF }, { "pageup", 0xC9 }, { "pagedown", 0xD1 },
+			{ "up", 0xC8 }, { "down", 0xD0 }, { "left", 0xCB }, { "right", 0xCD }, { "lalt", 0x38 }, { "ralt", 0xB8 },
+			{ "lctrl", 0x1D }, { "rctrl", 0x9D }, { "lshift", 0x2A }, { "rshift", 0x36 }, { "numpad0", 0x52 }, { "numpad1", 0x4F },
+			{ "numpad2", 0x50 }, { "numpad3", 0x51 }, { "numpad4", 0x4B }, { "numpad5", 0x4C }, { "numpad6", 0x4D },
+			{ "numpad7", 0x47 }, { "numpad8", 0x48 }, { "numpad9", 0x49 }, { "oem102", 0x56 },
+		};
+		if (const auto it = kNames.find(key); it != kNames.end()) {
+			return it->second;
+		}
 		if (key.size() == 1) {
 			static constexpr const char* kLetters = "abcdefghijklmnopqrstuvwxyz";
 			static constexpr std::uint8_t kLetterDik[26] = { 0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,

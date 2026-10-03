@@ -7,6 +7,7 @@
 
 #include "Config.h"
 #include "Game.h"
+#include "HostDrive.h"
 #include "Link.h"
 #include "Log.h"
 #include "Perf.h"
@@ -144,6 +145,9 @@ namespace lc::Input
 			const bool down = a_msg == WM_KEYDOWN || a_msg == WM_SYSKEYDOWN;
 			const bool repeat = down && ((a_lParam >> 30) & 1);
 			const auto dik = DikFromKeyMessage(a_wParam, a_lParam);
+			if (focused.load(std::memory_order_relaxed) && HostDrive::OnKey(dik, down, repeat)) {
+				return true;  // the toggle key (any mode) or the vehicle key (taken from Minecraft)
+			}
 			if (!Routing()) {
 				return false;
 			}
@@ -390,11 +394,12 @@ namespace lc::Input
 	{
 		Perf::Scope timer(Perf::kPad);
 		const auto& st = Game::State();
-		if (!a_pad || !st.puppeting.load(std::memory_order_relaxed) || st.gtaMenuOpen.load(std::memory_order_relaxed)) {
-			return;
-		}
-		if (a_pad != CPad::GetPad()) {
+		if (!a_pad || a_pad != CPad::GetPad()) {
 			return;  // only the local player's pad
+		}
+		HostDrive::Pad(a_pad);  // GTA's enter/exit controls while a vehicle action presses them
+		if (!st.puppeting.load(std::memory_order_relaxed) || st.gtaMenuOpen.load(std::memory_order_relaxed)) {
+			return;
 		}
 		// GTA reads keyboard and mouse through DirectInput into CPad, so swallowing window messages
 		// isn't enough: clear the controls after the pad update. The pause control stays unless a
