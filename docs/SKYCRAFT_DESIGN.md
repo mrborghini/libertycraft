@@ -1,4 +1,4 @@
-# SkyCraft — Design Doc
+# SkyCraft: Design Doc
 
 > Play Skyrim as the main game while *being* a Minecraft player: real Minecraft movement physics, inventory, items, block placing, and combat, inside the real Skyrim world, able to fight and talk to Skyrim NPCs.
 
@@ -144,7 +144,7 @@ For every Skyrim actor within ~64 blocks, the MC server spawns a `skycraft:actor
 3. **DamageApplier** in Skyrim applies it through the game's own hit pipeline, so the NPC reacts properly: hit reaction and stagger, blood, sounds, aggro, and **crime/assault** if they're a citizen. The exact function will be found with RE (Ghidra is available).
    - Fallback: `DamageActorValue(Health)`, then an assault alarm, then a stagger animation event.
    - Knockback becomes a Havok impulse.
-4. **Damage scaling is an open decision (§13).** A diamond sword does 7, while a Skyrim bandit has 50–300 HP.
+4. **Damage scaling is an open decision (§13).** A diamond sword does 7, while a Skyrim bandit has 50 to 300 HP.
 
 ### 8.3 An NPC hits you
 
@@ -241,7 +241,7 @@ Each phase ends in something you can actually play.
 
 | Risk | Mitigation |
 |---|---|
-| Havok shape extraction (stage C) is hard | Stage A ray-cast field is good enough to ship Phases 1–4 |
+| Havok shape extraction (stage C) is hard | Stage A ray-cast field is good enough to ship Phases 1 to 4 |
 | Hit-pipeline function in Skyrim needs RE | Ghidra plus CommonLib; the `DamageActorValue` fallback always works |
 | GPU interop across GL/Vulkan and D3D11 | CPU fallback path built first |
 | Frame lockstep adds latency or stutter | Timeout plus reuse of the previous frame; measure early in Phase 2 |
