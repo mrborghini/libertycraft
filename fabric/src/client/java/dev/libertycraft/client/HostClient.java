@@ -124,6 +124,14 @@ public final class HostClient {
 			lastPlayer = player;
 			teleportPending = true;
 		}
+		if (HostDriveClient.frame(minecraft, player, sky)) {
+			// GTA IV drives (Niko mode, a vehicle, a cutscene): the player follows it every frame, so
+			// a teleport has nothing to wait for. When GTA IV lets go it sends a fresh one.
+			lastTeleportSeq = sky.teleportSeq;
+			teleportAck = sky.teleportSeq;
+			teleportPending = false;
+			holdPos = null;
+		}
 		if (sky.teleportSeq != lastTeleportSeq) {
 			lastTeleportSeq = sky.teleportSeq;
 			teleportPending = true;
@@ -197,7 +205,10 @@ public final class HostClient {
 		DiscordPresence.tick(minecraft);
 		HostDigClient.tick(minecraft);
 		freezeWhileUnlinked(minecraft);
-		holdUntilReady(minecraft);
+		HostDriveClient.tick(minecraft);
+		if (!HostDriveClient.driving()) {
+			holdUntilReady(minecraft);
+		}
 		publishTick(minecraft);
 	}
 

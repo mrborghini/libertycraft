@@ -9,6 +9,7 @@
 #include "Combat.h"
 #include "Config.h"
 #include "Coords.h"
+#include "HostDrive.h"
 #include "Input.h"
 #include "Link.h"
 #include "Log.h"
@@ -568,6 +569,7 @@ namespace lc::Game
 		LC_LOG("game (re)loading: dropping puppet state");
 		LeavePuppet("the game is loading a save", false);
 		Combat::OnIngameStartup();
+		HostDrive::OnIngameStartup();
 		teleportPending = true;
 		haveLastSet = false;
 		measured = false;
@@ -701,6 +703,32 @@ namespace lc::Game
 		}
 		const McVec feetMc = GtaToMc(feet);
 
+		// ---- who drives: Minecraft, or GTA IV (Niko mode, vehicles, cutscenes; HostDrive.h) -------------
+		HostDrive::Frame driveFrame;
+		driveFrame.player = player;
+		driveFrame.ped = exists ? ped : 0;
+		driveFrame.exists = exists;
+		driveFrame.loading = loading;
+		driveFrame.paused = paused;
+		driveFrame.dead = dead;
+		driveFrame.inCar = inCar;
+		driveFrame.cutscene = cutscene;
+		driveFrame.puppeting = puppeting;
+		driveFrame.mcInWorld = mcInWorld;
+		driveFrame.dt = dt;
+		driveFrame.heading = heading;
+		const HostDrive::Result drive = HostDrive::Tick(driveFrame);
+		if (drive.resync) {
+			LC_LOG("GTA IV let go of the player; teleporting Minecraft to them before it takes over");
+			teleportPending = true;
+		}
+		if (drive.hostDrives) {
+			// Minecraft's player faces where Niko (or the vehicle) does, and picks up from there.
+			yaw = GtaHeadingToMcYaw(drive.heading);
+			pitch = 0.0f;
+			lookInit = true;
+		}
+
 		// World identity: 0 outdoors, else the interior handle (debounced: doorways flicker).
 		if (exists) {
 			int interior = 0;
@@ -779,6 +807,7 @@ namespace lc::Game
 		                      : !exists               ? "no player ped"
 		                      : loading               ? "loading / screen faded"
 		                      : dead                  ? "player dead"
+		                      : drive.blocker         ? drive.blocker
 		                      : inCar                 ? "player in a vehicle"
 		                      : cutscene              ? "cutscene"
 		                      : mc.teleportAck != teleportSeq ? "waiting for Minecraft to acknowledge the teleport"
@@ -843,12 +872,14 @@ namespace lc::Game
 
 		// ---- tell Minecraft where the player is and where they look -----------------------------------
 		proto::SkyState sky{};
-		sky.flags = (inGame ? proto::kSkyInGame : 0u) | (paused ? proto::kSkyMenuOpen : 0u) | (loading ? proto::kSkyLoading : 0u);
+		sky.flags = (inGame ? proto::kSkyInGame : 0u) | (paused ? proto::kSkyMenuOpen : 0u) | (loading ? proto::kSkyLoading : 0u)
+		          | (drive.hostDrives ? proto::kSkyHostDrives : 0u) | (drive.inVehicle ? proto::kSkyInVehicle : 0u);
 		sky.worldId = worldId;
 		sky.collisionEpoch = epoch;
-		sky.posX = feetMc.x;
-		sky.posY = feetMc.y;
-		sky.posZ = feetMc.z;
+		const McVec skyPos = drive.inVehicle ? GtaToMc(drive.seatFeet) : feetMc;  // in a vehicle: the rider's feet
+		sky.posX = skyPos.x;
+		sky.posY = skyPos.y;
+		sky.posZ = skyPos.z;
 		sky.yaw = yaw;
 		sky.pitch = pitch;
 		sky.teleportSeq = teleportSeq;

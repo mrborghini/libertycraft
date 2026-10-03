@@ -206,6 +206,14 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		public boolean loading() {
 			return (this.flags & SKY_LOADING) != 0;
 		}
+
+		public boolean hostDrives() {
+			return (this.flags & SKY_HOST_DRIVES) != 0;
+		}
+
+		public boolean inVehicle() {
+			return (this.flags & (SKY_HOST_DRIVES | SKY_IN_VEHICLE)) == (SKY_HOST_DRIVES | SKY_IN_VEHICLE);
+		}
 	}
 
 	/** GTA IV's water surface around the player (see WaterGrid in the protocol). */

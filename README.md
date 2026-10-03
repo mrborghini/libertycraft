@@ -72,6 +72,21 @@ Recommended Steam launch options (Properties → General): `PROTON_LOG=1 %comman
 the plugin `<gamedir>/LibertyCraft.log`. `tools/dev/run-gta-with-log.sh` starts the game through Proton
 directly with `PROTON_LOG=1`, without touching Steam's launch options.
 
+## Controls
+
+In **Minecraft mode** (the default) you play Minecraft: its keys, mouse, hotbar and inventory work
+as usual (`E` inventory, `T` chat, `F5` third person). GTA IV only keeps a few keys:
+
+| Key | What it does |
+|---|---|
+| `F` | enter or steal the nearest car the GTA way. You drive with GTA's controls and the Minecraft player rides a boat in the seat; `F` again gets out and Minecraft takes over |
+| `\` (Backslash) | switch between Minecraft mode and **Niko mode** (plain GTA IV, e.g. if something misbehaves); the Minecraft player follows Niko and takes over where he stands |
+| `O` | Minecraft's pause / options menu |
+| `Esc`, `F1`–`F12`, `` ` `` | GTA IV's own (pause menu, ...) |
+
+Keys and the boat/horse/minecart mount can be changed in `GTAIV/plugins/LibertyCraft.ini` and
+Minecraft's `config/libertycraft.properties`.
+
 ## Milestones
 
 - [x] **M0** — repo, scripted downgrade (`tools/install.sh`), plugin loads in-game under Proton
@@ -80,7 +95,7 @@ directly with `PROTON_LOG=1`, without touching Steam's launch options.
 - [x] **M3** — Minecraft blocks rendered in Liberty City (lit like Minecraft, hidden behind GTA's buildings) and the Minecraft HUD composited over the game
 - [x] **M4** — collision from GTA IV's real map geometry: streets, stairs, interiors, overpasses, walls; water for swimming
 - [x] **M5** — combat: Minecraft hits damage/ragdoll/kill peds, TNT and creepers make GTA explosions, GTA damage hurts the Minecraft player, death runs GTA's "wasted" flow
-- [ ] **M6** — cars (F to steal one, the Minecraft player rides a boat in it) and a key to switch between Niko and Minecraft *(in progress)*
+- [x] **M6** — cars (F steals one the GTA way, the Minecraft player rides a boat in it) and Backslash to switch between Niko and Minecraft
 
 Known gaps: doors and street furniture (lamp posts, bins, fences) are not solid yet; Minecraft blocks get no
 GTA shadows or fog; peds take double damage from Minecraft explosions.

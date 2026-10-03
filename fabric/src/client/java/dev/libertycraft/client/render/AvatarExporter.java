@@ -142,7 +142,9 @@ final class AvatarExporter implements SubmitNodeCollector {
 		this.atlas = atlas;
 		var player = minecraft.player;
 		Camera camera = minecraft.gameRenderer.mainCamera();
-		if (player == null || !camera.isDetached()) {
+		// Riding GTA IV's vehicle (HostDrive) GTA's own camera looks at the seat: the body shows in
+		// Minecraft's first person too.
+		if (player == null || (!camera.isDetached() && !dev.libertycraft.client.HostDriveClient.riding(player))) {
 			this.sendEmpty(Proto.REN_AVATAR, false);
 			return;
 		}

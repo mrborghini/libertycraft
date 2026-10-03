@@ -83,7 +83,36 @@ public final class LcNet {
 		}
 	}
 
+	/**
+	 * Client -> server, every client tick while GTA IV drives the player and once when it lets go:
+	 * where GTA IV has them (HostDrive.follow). flags: HostDrive.FLAG_DRIVES, FLAG_IN_VEHICLE.
+	 */
+	public record Drive(double x, double y, double z, float yaw, int flags) implements CustomPacketPayload {
+		public static final Type<Drive> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LibertyCraft.MOD_ID, "drive"));
+		public static final StreamCodec<RegistryFriendlyByteBuf, Drive> CODEC = StreamCodec.composite(
+			ByteBufCodecs.DOUBLE, Drive::x,
+			ByteBufCodecs.DOUBLE, Drive::y,
+			ByteBufCodecs.DOUBLE, Drive::z,
+			ByteBufCodecs.FLOAT, Drive::yaw,
+			ByteBufCodecs.VAR_INT, Drive::flags,
+			Drive::new
+		);
+
+		@Override
+		public Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
 	public static void init() {
+		PayloadTypeRegistry.serverboundPlay().register(Drive.TYPE, Drive.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(Drive.TYPE, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (!Double.isFinite(payload.x()) || !Double.isFinite(payload.y()) || !Double.isFinite(payload.z()) || !Float.isFinite(payload.yaw())) {
+				return;
+			}
+			context.server().execute(() -> dev.libertycraft.world.HostDrive.follow(player, payload.x(), payload.y(), payload.z(), payload.yaw(), payload.flags()));
+		});
 		PayloadTypeRegistry.serverboundPlay().register(Hurt.TYPE, Hurt.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(DigOpen.TYPE, DigOpen.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(DigReveal.TYPE, DigReveal.CODEC);

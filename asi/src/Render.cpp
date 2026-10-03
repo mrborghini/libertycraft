@@ -389,11 +389,17 @@ namespace lc::Render
 			const bool menu = st.gtaMenuOpen;
 			const bool puppeting = st.puppeting;
 			const bool screenOpen = st.mcScreenOpen;
+			// HostDrive: in Niko mode GTA IV is played plainly (its own HUD, no Minecraft HUD); while
+			// GTA drives on foot (Niko mode, cutscenes, getting into a car) Niko himself is visible,
+			// so Minecraft's body following him would only overlap him. In a vehicle Niko is hidden
+			// and the body rides its mount at the seat.
+			const bool nikoMode = st.nikoMode;
+			const bool hostDrivesOnFoot = st.hostDrives && !st.inVehicle;
 			if (alive && !menu && ok) {
 				a_f.flags |= render::kFrameDrawWorld;
 			}
 			using OM = Config::OverlayMode;
-			if (alive && haveMc && !menu && a_cfg.overlay != OM::kOff && (puppeting || screenOpen || a_cfg.overlay == OM::kAlways)) {
+			if (alive && haveMc && !menu && !nikoMode && a_cfg.overlay != OM::kOff && (puppeting || screenOpen || a_cfg.overlay == OM::kAlways)) {
 				a_f.flags |= render::kFrameDrawOverlay;
 			}
 			if (puppeting) {
@@ -407,7 +413,7 @@ namespace lc::Render
 			}
 			// The player's body: Minecraft sends it relative to its feet whenever it should be seen
 			// (third person, riding); 0 batches otherwise.
-			if (inWorld) {
+			if (inWorld && !hostDrivesOnFoot) {
 				a_f.flags |= render::kFrameAvatar;
 				a_f.feet[0] = mc.x;
 				a_f.feet[1] = mc.y;

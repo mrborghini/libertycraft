@@ -27,6 +27,7 @@ public final class LibertyCraft implements ModInitializer {
 		HostCombat.init();
 		dev.libertycraft.net.LcNet.init();
 		dev.libertycraft.world.HostDig.init();
+		dev.libertycraft.world.HostDrive.init();
 		ServerLifecycleEvents.SERVER_STARTED.register(LibertyCraft::configureServer);
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
 			giveStarterKit(handler.getPlayer());
