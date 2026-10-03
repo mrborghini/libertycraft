@@ -109,7 +109,7 @@ namespace
 		auto r = Frames(logic, in, 0.2f);
 		CHECK(r.pressFrames > 0 && r.last.pressEnter);
 		in.gettingIn = true;
-		r = Frames(logic, in, 4.0f);  // longer than the give-up time: getting in is progress
+		r = Frames(logic, in, Logic::kGiveUpAfter + 1.0f);  // longer than the give-up time: getting in is progress
 		CHECK(r.failed == 0 && r.fallbacks == 0);
 		CHECK(r.last.hostDrives && !r.last.inVehicle);
 		in.gettingIn = false;
@@ -141,11 +141,11 @@ namespace
 		logic.Step(in);
 		in.vehicleActions = 0;
 		in.puppeting = false;
-		auto r = Frames(logic, in, 1.2f);
+		auto r = Frames(logic, in, Logic::kFallbackAfter + 0.2f);
 		CHECK(r.fallbacks == 1);
-		r = Frames(logic, in, 2.0f);
+		r = Frames(logic, in, Logic::kGiveUpAfter - Logic::kFallbackAfter);
 		CHECK(r.fallbacks == 0);   // only once
-		CHECK(r.failed == 1);      // nothing after 3 s
+		CHECK(r.failed == 1);      // nothing after kGiveUpAfter
 		CHECK(!logic.entering());
 		CHECK(!r.last.hostDrives && r.last.blocker == nullptr);
 		CHECK(r.resyncs == 1);     // Minecraft gets the player back through a teleport

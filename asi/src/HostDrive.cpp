@@ -43,10 +43,17 @@ namespace lc::HostDrive
 		int   hiddenPed = 0;  // the ped we made invisible in a vehicle (0: none)
 		int   seatLoggedFor = 0;
 		float debugToggleT = 0.0f;
-		float debugCooldown = 5.0f;
+		float debugCooldown = 12.0f;  // after a load Niko may still be falling into place
 		float debugInCarT = 0.0f;
 		float exitPressT = 0.0f;
-		int   debugWarpCar = 0;  // DebugAutoVehicle: no car close by, so Niko is put next to this one
+		int   debugCar = 0;  // DebugAutoVehicle: the empty test car it parked next to Niko
+		bool  debugCarRequested = false;
+		float debugIndoorT = 0.0f;  // seconds puppeting indoors / off the ground without a car near
+		int   debugRelocate = 0;    // frames left of moving Niko to the road (puppet off meanwhile)
+		bool  debugRelocated = false;
+		float debugRelocateTo[3]{};
+		// what the pad held for GTA's enter control before Pad touched it (diagnostics)
+		std::atomic<int> padEnterCurrent{ 0 }, padEnterLast{ 0 };
 		bool  sawGettingIn = false;
 		float enterClock = 0.0f;  // seconds since the vehicle key (log)
 
@@ -58,8 +65,9 @@ namespace lc::HostDrive
 
 		// The closest vehicle to the player within a_radius that isn't wrecked (the vehicle pool;
 		// IV-SDK has no GET_CLOSEST_CAR).
-		Car ClosestCar(int a_ped, float a_radius, float a_maxDz = 4.0f)
+		Car ClosestCar(int a_ped, float a_radius, bool a_emptyOnly = false)
 		{
+			constexpr float kMaxDz = 4.0f;
 			Car best;
 			CPool<CVehicle>* pool = CPools::ms_pVehiclePool;
 			if (!pool) {
@@ -77,12 +85,19 @@ namespace lc::HostDrive
 				const auto& p = veh->m_pMatrix->pos;
 				const float dx = p.x - px, dy = p.y - py, dz = p.z - pz;
 				const float d2 = dx * dx + dy * dy + dz * dz;
-				if (d2 >= bestD2 || std::fabs(dz) > a_maxDz) {
+				if (d2 >= bestD2 || std::fabs(dz) > kMaxDz) {
 					continue;
 				}
 				const int handle = static_cast<int>(pool->GetIndex(veh));
 				if (!handle || !S::DOES_VEHICLE_EXIST(handle) || S::IS_CAR_DEAD(handle)) {
 					continue;
+				}
+				if (a_emptyOnly) {
+					int driver = 0;
+					S::GET_DRIVER_OF_CAR(handle, &driver);
+					if (driver) {
+						continue;
+					}
 				}
 				bestD2 = d2;
 				best.handle = handle;
@@ -122,9 +137,11 @@ namespace lc::HostDrive
 				LC_LOG("the enter press didn't take; VehicleEnterFallback=none");
 				return;
 			}
-			const Car car = ClosestCar(a_ped, kFallbackRadius);
+			// A warp needs a free driver's seat; the task pulls the driver out like GTA's own F.
+			const Car car = ClosestCar(a_ped, kFallbackRadius, how != "task");
+			LC_LOG("the enter press didn't take (GTA's enter control read %d, last %d before our press)", padEnterCurrent.load(), padEnterLast.load());
 			if (!car.handle) {
-				LC_LOG("the enter press didn't take and no vehicle is within %.0f m", kFallbackRadius);
+				LC_LOG("no %svehicle is within %.0f m", how != "task" ? "empty " : "", kFallbackRadius);
 				return;
 			}
 			if (how == "task") {
@@ -175,6 +192,8 @@ namespace lc::HostDrive
 			return;
 		}
 		if (pressEnter.load(std::memory_order_relaxed)) {
+			padEnterCurrent.store(a_pad->m_aValues[INPUT_ENTER].m_nCurrentValue, std::memory_order_relaxed);
+			padEnterLast.store(a_pad->m_aValues[INPUT_ENTER].m_nLastValue, std::memory_order_relaxed);
 			a_pad->m_aValues[INPUT_ENTER].m_nCurrentValue = 255;
 		}
 		if (pressExit.load(std::memory_order_relaxed)) {
@@ -228,18 +247,52 @@ namespace lc::HostDrive
 			debugCooldown -= a_f.dt;
 			debugInCarT = a_f.inCar ? debugInCarT + a_f.dt : 0.0f;
 			if (debugCooldown <= 0.0f && a_f.puppeting && !a_f.inCar && !logic.entering()) {
-				Car car = ClosestCar(a_f.ped, kDebugCarRadius);
-				debugWarpCar = 0;
-				if (!car.handle && (car = ClosestCar(a_f.ped, 150.0f, 30.0f)).handle) {
-					debugWarpCar = car.handle;  // walked over there in no time
-				}
-				if (car.handle) {
-					LC_LOG("DebugAutoVehicle: vehicle %d is %.1f m away%s; pressing the vehicle key", car.handle, car.distance,
-						debugWarpCar ? " (putting Niko next to it first)" : "");
+				// Traffic drives off and has drivers: park an empty car of our own next to Niko first
+				// (once he stands on something: right after a load he may still be falling into place).
+				float aboveGround = 99.0f;
+				S::GET_CHAR_HEIGHT_ABOVE_GROUND(a_f.ped, &aboveGround);
+				int interior = 0;
+				S::GET_INTERIOR_FROM_CHAR(a_f.ped, &interior);
+				if (const Car car = ClosestCar(a_f.ped, kDebugCarRadius); car.handle) {
+					LC_LOG("DebugAutoVehicle: vehicle %d is %.1f m away; pressing the vehicle key", car.handle, car.distance);
 					++in.vehicleActions;
 					debugCooldown = kDebugCooldown;
+				} else if (aboveGround > 2.0f || interior != 0) {
+					// Indoors or up somewhere (a save can start in Roman's flat): out to the street.
+					debugCooldown = 1.0f;
+					if ((debugIndoorT += 1.0f) >= 6.0f && !debugRelocate) {
+						float x = 0, y = 0, z = 0, nx = 0, ny = 0, nz = 0;
+						S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
+						if (S::GET_CLOSEST_CAR_NODE(x, y, z, &nx, &ny, &nz)) {
+							debugRelocate = 3;
+							debugRelocateTo[0] = nx, debugRelocateTo[1] = ny, debugRelocateTo[2] = nz + 1.0f;
+							debugIndoorT = 0.0f;
+							LC_LOG("DebugAutoVehicle: indoors/above ground (interior %d, %.1f m up): moving Niko to the road at %.1f %.1f %.1f", interior,
+								aboveGround, nx, ny, nz);
+						}
+					}
 				} else {
-					debugCooldown = 2.0f;
+					debugIndoorT = 0.0f;
+					if (debugCar && !debugCarRequested && S::DOES_VEHICLE_EXIST(debugCar)) {
+						S::MARK_CAR_AS_NO_LONGER_NEEDED(&debugCar);  // left behind somewhere
+					}
+					const unsigned int model = S::GET_HASH_KEY("admiral");
+					if (!debugCarRequested) {
+						debugCarRequested = true;
+						CStreaming::ScriptRequestModel(static_cast<std::int32_t>(model));
+						LC_LOG("DebugAutoVehicle: requesting a test car model");
+					}
+					if (S::HAS_MODEL_LOADED(model)) {
+						float x = 0, y = 0, z = 0;
+						S::GET_OFFSET_FROM_CHAR_IN_WORLD_COORDS(a_f.ped, 2.5f, 2.5f, 0.0f, &x, &y, &z);
+						S::CREATE_CAR(model, x, y, z, &debugCar, true);
+						S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
+						debugCarRequested = false;
+						LC_LOG("DebugAutoVehicle: test car %d parked at %.1f %.1f %.1f", debugCar, x, y, z);
+						debugCooldown = 1.5f;
+					} else {
+						debugCooldown = 0.25f;
+					}
 				}
 			}
 			if (debugCooldown <= 0.0f && a_f.inCar && debugInCarT >= kDebugExitAfter) {
@@ -271,24 +324,6 @@ namespace lc::HostDrive
 			LC_LOG("Niko is in a vehicle (%.2f s after the key)", enterClock);
 		}
 		enterClock += a_f.dt;
-		if (debugWarpCar && logic.entering() && !a_f.puppeting && a_f.exists) {
-			// DebugAutoVehicle: Niko is free now; stand him 3 m from the car on our side of it.
-			if (S::DOES_VEHICLE_EXIST(debugWarpCar)) {
-				float cx = 0, cy = 0, cz = 0, px = 0, py = 0, pz = 0;
-				S::GET_CAR_COORDINATES(debugWarpCar, &cx, &cy, &cz);
-				S::GET_CHAR_COORDINATES(a_f.ped, &px, &py, &pz);
-				float dx = px - cx, dy = py - cy;
-				const float len = std::sqrt(dx * dx + dy * dy);
-				dx = len > 0.1f ? dx / len : 1.0f;
-				dy = len > 0.1f ? dy / len : 0.0f;
-				S::SET_CHAR_COORDINATES(a_f.ped, cx + dx * 3.0f, cy + dy * 3.0f, cz);
-				LC_LOG("DebugAutoVehicle: Niko put next to vehicle %d at %.1f %.1f %.1f", debugWarpCar, cx + dx * 3.0f, cy + dy * 3.0f, cz);
-			}
-			debugWarpCar = 0;
-		}
-		if (!logic.entering()) {
-			debugWarpCar = 0;
-		}
 		if (logic.entering() && in.gettingIn && !sawGettingIn) {
 			LC_LOG("Niko is getting into a vehicle (%.2f s after the key)", enterClock);
 		}
@@ -311,24 +346,48 @@ namespace lc::HostDrive
 		r.inVehicle = out.inVehicle;
 		r.resync = out.resync;
 		r.heading = a_f.heading;
+		if (debugRelocate > 0 && !out.hostDrives && a_f.exists) {
+			// DebugAutoVehicle's move to the road: off puppet for a frame, move, then the usual resync.
+			if (!a_f.puppeting && !debugRelocated) {
+				S::SET_CHAR_COORDINATES(a_f.ped, debugRelocateTo[0], debugRelocateTo[1], debugRelocateTo[2]);
+				debugRelocated = true;
+			}
+			if (--debugRelocate > 0) {
+				r.blocker = "DebugAutoVehicle: moving Niko to the road";
+				r.hostDrives = true;
+			} else {
+				r.resync = true;
+				debugRelocated = false;
+			}
+		}
 		if (out.inVehicle) {
 			int veh = 0;
 			S::GET_CAR_CHAR_IS_USING(a_f.ped, &veh);
+			// GET_CHAR_COORDINATES gives the vehicle's origin for a ped inside one; the ped's own matrix
+			// sits in its seat (the driver's is left of and in front of the middle).
 			float px = 0, py = 0, pz = 0;
 			S::GET_CHAR_COORDINATES(a_f.ped, &px, &py, &pz);
+			float sx = px, sy = py, sz = pz;
+			CPed* pedObj = FindPlayerPed();
+			if (pedObj && pedObj->m_pMatrix) {
+				const auto& m = pedObj->m_pMatrix->pos;
+				if (std::fabs(m.x - px) < 3.0f && std::fabs(m.y - py) < 3.0f && std::fabs(m.z - pz) < 3.0f) {
+					sx = m.x, sy = m.y, sz = m.z;
+				}
+			}
 			if (veh && S::DOES_VEHICLE_EXIST(veh)) {
 				S::GET_CAR_HEADING(veh, &r.heading);
 				if (seatLoggedFor != veh) {
 					seatLoggedFor = veh;
-					float cx = 0, cy = 0, cz = 0, ground = 0;
-					S::GET_CAR_COORDINATES(veh, &cx, &cy, &cz);
+					float ground = 0;
 					S::GET_GROUND_Z_FOR_3D_COORD(px, py, pz, &ground);
-					LC_LOG("in vehicle %d: ped at %.2f %.2f %.2f, car at %.2f %.2f %.2f (heading %.1f), ground %.2f: ped is %.2f m above the car origin, "
-						   "%.2f m above the ground; the rider's feet go %.2f m below the ped (VehicleSeatDrop)",
-						veh, px, py, pz, cx, cy, cz, r.heading, ground, pz - cz, pz - ground, Cfg().vehicleSeatDrop);
+					LC_LOG("in vehicle %d (heading %.1f): origin %.2f %.2f %.2f, seat (ped matrix) %.2f %.2f %.2f = %.2f m off the origin, %.2f m above "
+						   "the ground %.2f; the rider's feet go %.2f m below the seat (VehicleSeatDrop)",
+						veh, r.heading, px, py, pz, sx, sy, sz, std::sqrt((sx - px) * (sx - px) + (sy - py) * (sy - py) + (sz - pz) * (sz - pz)), sz - ground,
+						ground, Cfg().vehicleSeatDrop);
 				}
 			}
-			r.seatFeet = { px, py, pz - Cfg().vehicleSeatDrop };
+			r.seatFeet = { sx, sy, sz - Cfg().vehicleSeatDrop };
 		} else {
 			seatLoggedFor = 0;
 		}

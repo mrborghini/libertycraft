@@ -54,12 +54,13 @@ namespace lc
 		// Metres from the ped's reported position (in a seat) down to the riding Minecraft player's
 		// feet (Minecraft's rider sits ~0.6 above its feet, hips ~0.75).
 		float vehicleSeatDrop = 0.75f;
-		// The enter press didn't take after a second: "warp" (WARP_CHAR_INTO_CAR, the closest car
-		// within 10 m), "task" (TASK_ENTER_CAR_AS_DRIVER: walks there; IV-SDK warns task natives may
-		// crash) or "none".
+		// The enter press didn't take within 2 s: "warp" (WARP_CHAR_INTO_CAR, the closest empty car
+		// within 10 m), "task" (TASK_ENTER_CAR_AS_DRIVER, any car: walks there and pulls the driver
+		// out; IV-SDK warns task natives may crash) or "none".
 		std::string vehicleEnterFallback = "warp";
 		// Test hooks (not in the default ini): toggle the mode every 10 s; press the vehicle key when
-		// a car is within 12 m while puppeting, and GTA's exit control after 12 s in one.
+		// a car is within 12 m while puppeting (else park an empty test car next to Niko, after moving
+		// him to the nearest road if he's indoors), and GTA's exit control after 12 s in one.
 		bool debugAutoToggle = false;
 		bool debugAutoVehicle = false;
 

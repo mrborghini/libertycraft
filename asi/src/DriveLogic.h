@@ -45,8 +45,8 @@ namespace lc::drive
 	{
 	public:
 		static constexpr float kPressSeconds = 0.3f;   // how long the enter control is held
-		static constexpr float kFallbackAfter = 1.0f;  // no "getting in" by then: other means
-		static constexpr float kGiveUpAfter = 3.0f;    // still on foot by then: back to Minecraft
+		static constexpr float kFallbackAfter = 2.0f;  // no "getting in" by then (GTA walks to the door first): other means
+		static constexpr float kGiveUpAfter = 4.0f;    // still on foot by then: back to Minecraft
 		static constexpr float kExitSettle = 0.5f;     // on foot this long after a car before Minecraft takes over
 
 		explicit Logic(bool a_startInMinecraft = true) :

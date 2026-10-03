@@ -41,7 +41,8 @@ IV-SDK quirks handled by the build:
 
 ## Tests (Linux)
 
-The ring/seqlock core (`src/LinkCore.h`) and the coordinate helpers (`src/Coords.h`) are portable:
+The ring/seqlock core (`src/LinkCore.h`), the coordinate helpers (`src/Coords.h`) and the
+vehicle / Niko-mode state machine (`src/DriveLogic.h`) are portable:
 
     cmake -S asi/tests -B asi/build/tests && cmake --build asi/build/tests && ctest --test-dir asi/build/tests
 
@@ -60,6 +61,7 @@ with `--demo-section` writes an atlas + a few cubes into the render ring.
 | `Link.*`, `LinkCore.h` | the shared mapping: transport, seqlocks, rings, overlay swap, heartbeat thread |
 | `Game.*` | per frame: SkyState, McState, teleport handshake, mouse look, puppet mode, camera |
 | `Input.*` | window subclass, raw mouse, DIK -> SDL3 scancodes, CPad zeroing |
+| `HostDrive.*`, `DriveLogic.h` | vehicles and Niko mode: who drives the player (Minecraft or GTA IV) |
 | `Collision.*` | v1 ground heightfield -> kColTris / kColRegion (region scheduler from SkyCraft) |
 | `Render.*`, `Overlay.*` | stubs: drain the render ring, acquire overlay frames, count them |
 | `Coords.h` | GTA <-> MC coordinates, heading <-> yaw, camera basis |
@@ -115,6 +117,37 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `ProbeFrom` | `top` | collision heightfield probe: `top` (1000 m: buildings are solid to the roof) or `feet` |
 | `ProbeHeight` | `3.0` | with `ProbeFrom=feet`: start the probe this far above the feet |
 | `CameraRows` | `auto` | `auto` or e.g. `0,1,2` / `-0,1,2` (right, forward, up as CMatrix rows; `-` flips) |
+| `VehicleKey` | `F` | while Minecraft drives: GTA enters/steals the nearest vehicle (see Vehicles and Niko mode) |
+| `ToggleKey` | `Backslash` | Minecraft mode <-> Niko mode. Key names: a letter, digit, F1-F12, `Backslash`, `Grave`, `Tab`, `Minus`, `Equals`, `LBracket`, `RBracket`, `Semicolon`, `Apostrophe`, `Comma`, `Period`, `Slash`, `Space`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `Numpad0`-`9`, ... or a DIK code like `0x2B` |
+| `HideNikoInVehicle` | `1` | hide Niko in vehicles in Minecraft mode (Minecraft's player rides its mount there) |
+| `ToggleStartsInMinecraft` | `1` | start in Minecraft mode (0: Niko mode) |
+| `VehicleSeatDrop` | `0.75` | metres from the seated ped's position down to the riding Minecraft player's feet |
+| `VehicleEnterFallback` | `warp` | GTA's enter press didn't take within 2 s: `warp` (`WARP_CHAR_INTO_CAR`, closest car within 10 m), `task` (`TASK_ENTER_CAR_AS_DRIVER`), `none` |
+| `DebugAutoToggle` | `0` | test hook (not in the default ini): toggle the mode every 10 s |
+| `DebugAutoVehicle` | `0` | test hook: press the vehicle key when a car is within 12 m (else park an empty test car next to Niko first; indoors, move him to the nearest road), and GTA's exit control after 12 s in a car |
+
+## Vehicles and Niko mode
+
+GTA IV takes the player back from Minecraft (`kSkyHostDrives`: Minecraft follows `SkyState`
+pos/yaw with no physics, input or damage) when:
+
+- **Niko mode** (`ToggleKey`, Backslash): plain GTA IV. No puppet, no input for Minecraft, GTA's
+  HUD and mouse; Minecraft's player follows Niko. The toggle key works in both modes (it is
+  never forwarded) and shows a short on-screen note. Back in Minecraft mode the teleport
+  handshake runs at Niko's spot, then puppet mode.
+- **`VehicleKey`** (F) while puppeting (never forwarded to Minecraft): puppet mode lets go and
+  `processPadEvent` holds GTA's own `INPUT_ENTER` for 0.3 s, so the game picks the door or
+  carjacks as usual. No "getting in" after 2 s: `VehicleEnterFallback`. No vehicle after 4 s:
+  back to Minecraft.
+- **in a vehicle** (`IS_CHAR_IN_ANY_CAR`, however Niko got there: the key, a mission script, a
+  cutscene): GTA drives, its own F gets out. `SkyState` also carries `kSkyInVehicle`, pos = the
+  riding player's feet (ped position - `VehicleSeatDrop`), yaw = the vehicle heading; Minecraft
+  puts its player on a mount there (a boat by default). Niko is hidden (`HideNikoInVehicle`).
+  On foot again for 0.5 s: the teleport handshake, then puppet mode.
+- getting into a vehicle (`IS_CHAR_GETTING_IN_TO_A_CAR`, e.g. a mission script) and cutscenes.
+
+`Game::State()` exposes `hostDrives`, `inVehicle` and `nikoMode` for the renderer and overlay.
+The decisions are `DriveLogic.h` (pure, tested by `asi/tests/drive_test.cpp`).
 
 ## Input while puppeting
 
