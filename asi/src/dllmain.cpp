@@ -21,6 +21,8 @@
 #include "Render.cpp"
 #include "Overlay.cpp"
 #include "Combat.cpp"
+#include "NpcBlocks.cpp"
+#include "Doors.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

@@ -47,6 +47,10 @@ namespace lc::HostDrive
 	// vehicle key while puppeting, so Minecraft never sees it).
 	bool OnKey(std::uint32_t a_dik, bool a_down, bool a_repeat);
 	// processPadEvent with the local player's pad, after the game's pad update: presses GTA's
-	// enter / exit controls while an action asks for it.
+	// enter / exit controls while an action asks for it. (GTA hands the player's ped its pad only
+	// while player control is on: during puppet mode this isn't called.)
 	void Pad(CPad* a_pad);
+	// Game::Tick while puppeting, with the feet Minecraft wants: the DebugWalkThroughCar test hook
+	// may move them. Returns how to place the ped: 0 as configured, 1 the native, 2 the direct move.
+	int DebugPuppetTarget(GtaVec& a_feet);
 }

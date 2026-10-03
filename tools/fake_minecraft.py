@@ -14,12 +14,24 @@ the render ring.
                                     [--third-person] [--demo-section [--demo-avatar]] [--link PATH] [-v]
                                     [--actors] [--hit-nearest-actor DMG] [--explode-ahead [EVERY]]
                                     [--die-after S] [--combat-delay S] [--combat-interval S]
+                                    [--walk-to X Y Z [--walk-via X Y Z ...] [--walk-pause S]
+                                     [--walk-speed B] [--walk-delay S] [--walk-back S]]
+
+Walking (Stream P, doors and street furniture): --walk-to moves the player in straight lines (no
+collision) from the first teleport point through the --walk-via points to X Y Z, standing
+--walk-pause s at each via point. A teleport that lands within 3 blocks of the walker (a world
+change on the way) keeps it on its path.
 
 Combat (Stream X): --actors prints the host's ActorTable every 2 s; --hit-nearest-actor sends
 kEvHitActor (DMG Minecraft damage, sword, base knockback) to the living actor nearest the player
 every --combat-interval s; --explode-ahead sends a TNT kEvExplosion 6 blocks in front of the player
 (once, or every EVERY s); --die-after sends kEvPlayerDied. They start --combat-delay s after the
 first teleport acknowledgement.
+
+NPCs vs blocks and vehicles (Stream Q2): --wall-ring R puts a square ring of stone blocks R blocks out
+around the player (as meshes and kRenSolids; it moves along when the player is teleported far), which
+GTA IV's peds and traffic should not get through; --hit-kind vehicle aims --hit-nearest-actor at the
+nearest vehicle piece, and --hit-projectile makes the hits arrows (they also reach the people inside).
 
 Byte layout: protocol/libertycraft_protocol.h (SkyCraft v11 layout). Stdlib only.
 """
@@ -456,6 +468,40 @@ def demo_load(bridge, feet, count):
           f"{fx >> 4},{sy},{fz >> 4}")
 
 
+REN_SOLIDS = 10
+ACTOR_VEHICLE = 1 << 4
+HIT_PROJECTILE = 1 << 1
+
+
+def wall_ring(bridge, feet, radius, height, drop=1):
+    """Stream Q2's NPC test: a square ring of stone blocks (radius blocks out from the feet, height high,
+    from drop blocks below the feet's block row: the fake doesn't fall, so after a warp its feet can hang
+    a metre above the street) as section meshes (so it shows) and kRenSolids bitsets (so GTA IV's
+    peds and vehicles collide with it). Any road through the middle crosses it twice."""
+    w, h, pixels = demo_atlas()
+    bridge.write_render(1, struct.pack("<II", w, h) + pixels)
+    fx, fy, fz = (math.floor(c) for c in feet)
+    fy -= drop
+    cells = set()
+    for i in range(-radius, radius + 1):
+        for x, z in ((fx + i, fz - radius), (fx + i, fz + radius), (fx - radius, fz + i), (fx + radius, fz + i)):
+            for dy in range(height):
+                cells.add((x, fy + dy, z))
+    sections = {}
+    for bx, by, bz in cells:
+        sections.setdefault((bx >> 4, by >> 4, bz >> 4), []).append((bx, by, bz))
+    for (sx, sy, sz), blocks in sections.items():
+        verts = b"".join(cube_vertices(bx - sx * 16, by - sy * 16, bz - sz * 16, (TILE_STONE,) * 3) for bx, by, bz in blocks)
+        bridge.write_render(2, struct.pack("<iiiI", sx, sy, sz, len(verts) // 32) + verts)
+        bits = bytearray(512)
+        for bx, by, bz in blocks:
+            bit = (bx - sx * 16) + 16 * (bz - sz * 16) + 256 * (by - sy * 16)
+            bits[bit >> 3] |= 1 << (bit & 7)
+        bridge.write_render(REN_SOLIDS, struct.pack("<iiiI", sx, sy, sz, len(blocks)) + bytes(bits))
+    print(f"wall ring: {len(cells)} blocks ({2 * radius + 1}x{2 * radius + 1}, {height} high) in {len(sections)} sections around MC block "
+          f"{fx},{fy},{fz}, sent as meshes + kRenSolids")
+
+
 def combat_step(bridge, args, sky, t, t0, st):
     """The combat flags, once per loop. st holds next_hit / next_blast / next_actors / died_sent."""
     px, py, pz, yaw = sky[4], sky[5], sky[6], sky[7]
@@ -465,18 +511,26 @@ def combat_step(bridge, args, sky, t, t0, st):
         st["next_actors"] = t + 2.0
         near = sorted(actors, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
         desc = ", ".join(f"{r[9]} {r[0]:08X} {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f}m hp{r[8]:.2f}{' DEAD' if r[1] & ACTOR_DEAD else ''}"
-                         for r in near[:4])
-        print(f"actors: {len(actors)} ({sum(1 for r in actors if r[1] & ACTOR_DEAD)} dead); nearest: {desc}")
+                         f"{f' {r[6]:.1f}x{r[7]:.1f}' if r[1] & ACTOR_VEHICLE else ''}" for r in near[:4])
+        vehicles = len({r[0] & ~3 for r in actors if r[1] & ACTOR_VEHICLE})
+        print(f"actors: {len(actors)} ({sum(1 for r in actors if r[1] & ACTOR_DEAD)} dead; {vehicles} vehicles in "
+              f"{sum(1 for r in actors if r[1] & ACTOR_VEHICLE)} pieces); nearest: {desc}")
     if args.hit_nearest_actor > 0 and actors and t >= st["next_hit"]:
         st["next_hit"] = t + args.combat_interval
         alive = [r for r in actors if not r[1] & ACTOR_DEAD]
+        if args.hit_kind != "any":
+            alive = [r for r in alive if bool(r[1] & ACTOR_VEHICLE) == (args.hit_kind == "vehicle")]
         if alive:
             r = min(alive, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
             dx, dz = r[2] - px, r[4] - pz
             n = math.hypot(dx, dz) or 1.0
-            bridge.push_event(EV_HIT_ACTOR, r[0], args.hit_nearest_actor, dx / n, dz / n, 0.4, 0, 1)
+            # The push is the way Minecraft's knockback moves the victim: away from the player.
+            st["hits"] = st.get("hits", 0) + 1
+            arrow = args.hit_projectile or (args.hit_projectile_every > 0 and st["hits"] % args.hit_projectile_every == 0)
+            flags, weapon = (HIT_PROJECTILE, 5) if arrow else (0, 1)
+            bridge.push_event(EV_HIT_ACTOR, r[0], args.hit_nearest_actor, dx / n, dz / n, 0.4, flags, weapon)
             print(f"combat: hit {r[9]} {r[0]:08X} at {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f} blocks (health {r[8]:.2f}) "
-                  f"for {args.hit_nearest_actor}")
+                  f"for {args.hit_nearest_actor}{' (projectile)' if arrow else ''}, push MC {dx / n:.2f} {dz / n:.2f}")
     if args.explode_ahead is not None and t >= st["next_blast"] and st["next_blast"] >= 0:
         st["next_blast"] = t + args.explode_ahead if args.explode_ahead > 0 else -1.0
         r = math.radians(yaw)
@@ -495,6 +549,15 @@ def main():
     ap.add_argument("--seconds", type=float, default=0, help="run time, 0 = until Ctrl+C")
     ap.add_argument("--circle", type=float, default=0.0, help="walk a circle of this radius (blocks) around the teleport point")
     ap.add_argument("--no-ack", action="store_true", help="never acknowledge teleports (the host must not start puppeting)")
+    ap.add_argument("--walk-to", nargs=3, type=float, metavar=("X", "Y", "Z"), default=None,
+                    help="walk in a straight line (no collision) from the first teleport point to this MC position")
+    ap.add_argument("--walk-via", nargs=3, type=float, metavar=("X", "Y", "Z"), action="append", default=[],
+                    help="--walk-to: pass through this MC position first (repeatable, in order)")
+    ap.add_argument("--walk-pause", type=float, default=0.0, metavar="S", help="--walk-to: stand S s at every --walk-via point")
+    ap.add_argument("--walk-speed", type=float, default=1.5, help="--walk-to speed in blocks/s (default %(default)s)")
+    ap.add_argument("--walk-delay", type=float, default=5.0, help="--walk-to starts this many s after the first teleport ack")
+    ap.add_argument("--walk-back", type=float, default=-1.0, metavar="S",
+                    help="--walk-to: wait S s at the target, then walk back to the start (default: stay)")
     ap.add_argument("--screen", action="store_true", help="report a Minecraft screen open (cursor + text input)")
     ap.add_argument("--third-person", action="store_true", help="report F5 third-person camera, 4 blocks back")
     ap.add_argument("--demo-section", action="store_true",
@@ -514,6 +577,15 @@ def main():
     ap.add_argument("--die-after", type=float, default=0.0, metavar="S", help="send kEvPlayerDied S s after combat starts")
     ap.add_argument("--combat-delay", type=float, default=10.0, metavar="S", help="combat flags start S s after the first teleport ack")
     ap.add_argument("--combat-interval", type=float, default=2.0, metavar="S", help="seconds between --hit-nearest-actor hits")
+    ap.add_argument("--hit-kind", choices=("ped", "vehicle", "any"), default="ped",
+                    help="--hit-nearest-actor hits the nearest ped (default), vehicle piece or either")
+    ap.add_argument("--hit-projectile", action="store_true", help="--hit-nearest-actor hits like an arrow (kHitProjectile) instead of a sword")
+    ap.add_argument("--hit-projectile-every", type=int, default=0, metavar="N", help="--hit-nearest-actor: every Nth hit is an arrow")
+    ap.add_argument("--wall-ring", type=int, default=0, metavar="R",
+                    help="a square ring of stone blocks R blocks out from the first teleport point (meshes + kRenSolids): "
+                         "GTA IV's peds and vehicles should not get through it")
+    ap.add_argument("--wall-height", type=int, default=3, metavar="H", help="--wall-ring height in blocks (default %(default)s)")
+    ap.add_argument("--wall-drop", type=int, default=1, metavar="D", help="--wall-ring starts D blocks below the feet's row (default %(default)s)")
     args = ap.parse_args()
 
     bridge = Bridge(args.link)
@@ -542,6 +614,7 @@ def main():
     last_host_pid = host_pid
     stats = dict(clears=0, regions=0, blocks=0, tri_msgs=0, tris=0, pads=0, bytes=0, last="", last_tri="")
     combat_t0 = None  # when combat flags start (first teleport ack + --combat-delay)
+    walk_from, walk_t0 = None, None  # --walk-to: start point and start time
     combat_state = dict(next_hit=0.0, next_blast=0.0, next_actors=0.0, died_sent=False)
     try:
         while args.seconds <= 0 or time.monotonic() - start < args.seconds:
@@ -557,13 +630,25 @@ def main():
             if sky:
                 _, flags, world, epoch, x, y, z, yaw, pitch, tp, vw, vh, hour = sky
                 if tp != ack and not args.no_ack and (flags & 1):
-                    origin = (x, y, z)
-                    pos = cur = prev = origin
+                    if walk_from and cur and math.dist((x, y, z), cur) < 3.0:
+                        pass  # walking: a resync (world change on the way) keeps us on the path
+                    else:
+                        origin = (x, y, z)
+                        pos = cur = prev = origin
+                    if args.walk_to and walk_from is None:
+                        walk_from, walk_t0 = origin, time.monotonic() + args.walk_delay
+                        print(f"walk to MC {args.walk_to[0]:.2f} {args.walk_to[1]:.2f} {args.walk_to[2]:.2f} in {args.walk_delay:.0f} s")
                     ack = tp
                     print(f"teleport #{tp} acknowledged: MC {x:.2f} {y:.2f} {z:.2f} (world {world}, epoch {epoch})")
                     if args.demo_on_teleport and demo_done and math.dist((x, y, z), demo_feet) > 8.0:
                         bridge.write_render(3, b"")  # kRenClearAll
                         demo_done = False  # rebuilt below, around the new position
+                ring_at = getattr(bridge, "ring_at", None)
+                if args.wall_ring > 0 and origin and (flags & 1) and (ring_at is None or math.dist(origin, ring_at) > 8.0):
+                    if ring_at is not None:
+                        bridge.write_render(3, b"")  # kRenClearAll: the player was moved (a warp); the ring follows
+                    bridge.ring_at = origin
+                    wall_ring(bridge, origin, args.wall_ring, args.wall_height, args.wall_drop)
                 if args.demo_section and not demo_done and (flags & 1):
                     if args.demo_load > 0:
                         demo_load(bridge, (x, y, z), args.demo_load)
@@ -581,7 +666,32 @@ def main():
                 next_tick = t + 0.05 if t - next_tick > 0.1 else next_tick + 0.05
                 prev = cur
                 walk_o = walk
-                if args.circle > 0:
+                if walk_from and t >= walk_t0:
+                    path = [walk_from] + [tuple(v) for v in args.walk_via] + [tuple(args.walk_to)]
+                    length = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
+                    raw = (t - walk_t0) * args.walk_speed  # blocks walked (standing time excluded below)
+                    if args.walk_back >= 0 and raw > length + args.walk_back * args.walk_speed:
+                        raw = max(0.0, 2 * length + args.walk_back * args.walk_speed - raw)
+                    # --walk-pause: stand at each via point; that time doesn't count as travel
+                    travel, left = 0.0, raw
+                    for i, (a, b) in enumerate(zip(path, path[1:])):
+                        step = min(left, math.dist(a, b))
+                        travel += step
+                        left -= step
+                        if left <= 0 or i == len(path) - 2:
+                            break
+                        left = max(0.0, left - args.walk_pause * args.walk_speed)
+                    travel = min(travel, length)
+                    cur = path[-1]
+                    for a, b in zip(path, path[1:]):
+                        leg = math.dist(a, b)
+                        if travel <= leg:
+                            f = travel / leg if leg > 1e-6 else 1.0
+                            cur = tuple(p + (q - p) * f for p, q in zip(a, b))
+                            break
+                        travel -= leg
+                    walk += math.dist(prev, cur) * 0.6
+                elif args.circle > 0:
                     ang = (t - start) * 0.5  # rad/s
                     cur = (origin[0] + args.circle * math.cos(ang), origin[1], origin[2] + args.circle * math.sin(ang))
                     walk += math.dist(prev, cur) * 0.6

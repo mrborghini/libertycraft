@@ -15,6 +15,7 @@
     "LevelRendererMixin",
     "MinecraftDigMixin",
     "MinecraftMixin",
+    "MinecraftUseMixin",
     "RenderSetupAccessor",
     "RenderTypeAccessor",
     "ScreenMixin",

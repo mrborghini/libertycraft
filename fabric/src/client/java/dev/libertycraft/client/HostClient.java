@@ -141,6 +141,7 @@ public final class HostClient {
 			teleportAck = sky.teleportSeq;
 			teleportPending = false;
 			holdPos = new Vec3(sky.x, sky.y, sky.z);
+			holdSince = 0;
 		}
 
 		// Look direction is driven by GTA IV (zero-latency camera); MC uses it for everything else.
@@ -286,6 +287,7 @@ public final class HostClient {
 				holdPos = player.position();
 			}
 			teleportPending = true;
+			holdSince = 0; // the timeouts below count time in game only
 		}
 		if (holdPos == null) {
 			holdSince = 0;
@@ -295,11 +297,22 @@ public final class HostClient {
 			holdSince = System.currentTimeMillis();
 		}
 		int bx = (int) Math.floor(holdPos.x), by = (int) Math.floor(holdPos.y), bz = (int) Math.floor(holdPos.z);
-		boolean known = HostCollision.isKnown(bx, by - 1, bz) && HostCollision.isKnown(bx, by, bz)
+		// GTA IV announces a new collision epoch (world change, reload) in the same SkyState as the
+		// teleport, but its kColClear and the new regions come later through the collision ring:
+		// until they have, what we hold is the old world's (seen: released at once on the old
+		// regions, then the clear took the floor away and the player fell through it).
+		boolean current = sky.collisionEpoch == 0 || HostCollision.epoch() == sky.collisionEpoch;
+		boolean known = current && HostCollision.isKnown(bx, by - 1, bz) && HostCollision.isKnown(bx, by, bz)
 			&& HostCollision.isKnown(bx, by - HostCollision.REGION_SIZE, bz);
-		// Release once there is actual ground below (or after a timeout, e.g. when mid-air on purpose).
-		boolean ready = known && (HostCollision.hasSolidBelow(bx, by, bz, 12) || System.currentTimeMillis() - holdSince > 6000);
+		long held = System.currentTimeMillis() - holdSince;
+		// Release once there is actual ground below (or after a timeout, e.g. when mid-air on purpose;
+		// or, as a last resort, when the regions never come).
+		boolean ready = (known && (HostCollision.hasSolidBelow(bx, by, bz, 12) || held > 6000)) || held > 30000;
 		if (ready && sky.inGame() && !sky.loading()) {
+			if (!known) {
+				LibertyCraft.LOG.warn("[LibertyCraft] GTA IV's collision under the player never arrived (epoch {} of {}); releasing them anyway",
+					HostCollision.epoch(), sky.collisionEpoch);
+			}
 			// GTA IV's feet can sit a fraction of a voxel inside our ground layer. Minecraft's
 			// collision never pushes you out of a shape, so you'd drop through: lift out first.
 			Vec3 safe = liftOutOfGeometry(player, holdPos);

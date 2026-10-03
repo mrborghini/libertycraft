@@ -124,6 +124,11 @@ public final class HostCollision {
 		}
 	}
 
+	/** The collision epoch the regions we hold belong to (-1 before the first message). */
+	public static int epoch() {
+		return epoch;
+	}
+
 	/** True once GTA IV has sent the region containing this block (even if it was empty). */
 	public static boolean isKnown(int x, int y, int z) {
 		return KNOWN_REGIONS.contains(regionKey(Math.floorDiv(x, REGION_SIZE), Math.floorDiv(y, REGION_SIZE), Math.floorDiv(z, REGION_SIZE)));

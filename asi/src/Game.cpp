@@ -9,6 +9,7 @@
 #include "Combat.h"
 #include "Config.h"
 #include "Coords.h"
+#include "Doors.h"
 #include "HostDrive.h"
 #include "Input.h"
 #include "Link.h"
@@ -19,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 
 namespace lc::Game
@@ -104,6 +106,8 @@ namespace lc::Game
 		Rows rowsCandidate;
 		int  rowsVotes = 0;
 		bool rowsConfigured = false;
+		bool rowsPinned = false;   // CameraRows=auto: the known-good rows, discovery only cross-checks them
+		bool rowsChecked = false;
 
 		// Minecraft's 20 Hz ticks, interpolated on our clock exactly like SkyCraft (see Interpolate).
 		struct TickRec
@@ -364,6 +368,8 @@ namespace lc::Game
 				Cfg().cameraMode == Config::CameraMode::kScripted ? "scripted" : "final", rootToFeet);
 		}
 
+		void SettleOnGround(int a_ped);
+
 		void LeavePuppet(const char* a_reason, bool a_restore = true)
 		{
 			if (!puppeting) {
@@ -374,6 +380,7 @@ namespace lc::Game
 			camPose.valid = false;
 			if (a_restore) {
 				if (puppetPed && S::DOES_CHAR_EXIST(puppetPed)) {
+					SettleOnGround(puppetPed);
 					S::FREEZE_CHAR_POSITION(puppetPed, false);
 					S::SET_CHAR_COLLISION(puppetPed, true);
 					S::SET_CHAR_INVINCIBLE(puppetPed, false);
@@ -391,6 +398,93 @@ namespace lc::Game
 			puppetPed = 0;
 			haveLastSet = false;
 			LC_LOG("puppet OFF: %s", a_reason);
+		}
+
+		// ---- placing the puppeted ped ----------------------------------------------------------------------
+		// Every SET_CHAR_COORDINATES* native ends in CTheScripts::ClearSpaceForMissionEntity (1.0.8.0:
+		// 0x8B1390, called from the natives' common body at 0x8B2BF0): each ambient vehicle and ped
+		// whose bounds touch the player's at the destination is deleted. Puppet mode places the ped
+		// every frame, so every car and pedestrian the player walked into vanished. The common body
+		// moves an on-foot ped with one virtual call (vtable +0x7C: const position*, float -10, bool
+		// "keep tasks" = injured), then clears the space (SET_CHAR_COORDINATES_NO_OFFSET also warps
+		// the player's group along). PuppetMove=direct makes just that call. The code bytes are checked
+		// once; another game version, or a ped in a vehicle or injured, falls back to the native.
+		int    directMove = -1;  // -1 not checked yet, 0 unavailable, 1 available
+		double moveDriftMax = 0.0;  // stats: how far the ped was from where it was put last frame
+		bool   haveMoveCheck = false;
+		float  moveCheck[3]{};
+
+		bool DirectMoveAvailable()
+		{
+			if (directMove < 0) {
+				directMove = 0;
+				if (plugin::gameVer == plugin::VERSION_1080) {
+					// mov edx,[esi]; mov edx,[edx+7Ch]; push eax; push ecx (the move), then push esi; call 0x8B1390 (the clearing)
+					static constexpr std::uint8_t kMove[] = { 0x8B, 0x16, 0x8B, 0x52, 0x7C, 0x50, 0x51 };
+					const auto*                   base = reinterpret_cast<const std::uint8_t*>(AddressSetter::gBaseAddress);
+					std::int32_t                  rel = 0;
+					std::memcpy(&rel, base + 0x4B2D7E, sizeof rel);
+					directMove = std::memcmp(base + 0x4B2D2F, kMove, sizeof kMove) == 0 && base[0x4B2D7C] == 0x56 && base[0x4B2D7D] == 0xE8 &&
+					                     rel == 0x4B1390 - 0x4B2D82
+					                 ? 1
+					                 : 0;
+				}
+				if (Cfg().puppetMove == "native") {
+					LC_LOG("puppet move: SET_CHAR_COORDINATES_NO_OFFSET (PuppetMove=native: deletes the cars and peds the player walks into)");
+				} else if (directMove) {
+					LC_LOG("puppet move: direct (the natives' own move, vtable +0x7C, without their clearing of the destination)");
+				} else {
+					LC_LOG("puppet move: WARNING: the natives' move isn't where 1.0.8.0 has it; using SET_CHAR_COORDINATES_NO_OFFSET (it deletes the cars and "
+						   "peds the player walks into)");
+				}
+			}
+			return directMove == 1;
+		}
+
+		// Puts the ped's root at a_x a_y a_z. a_native: SET_CHAR_COORDINATES_NO_OFFSET regardless.
+		void MovePed(int a_ped, float a_x, float a_y, float a_z, bool a_native)
+		{
+			CPed* obj = !a_native && DirectMoveAvailable() ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(a_ped)) : nullptr;
+			if (!obj || obj->m_bInjured || obj->m_nPedFlags2.bInCar) {
+				S::SET_CHAR_COORDINATES_NO_OFFSET(a_ped, a_x, a_y, a_z);
+				return;
+			}
+			alignas(16) float pos[4] = { a_x, a_y, a_z, 0.0f };  // the native passes a 16-byte aligned vector
+			using SetPosition = void(__thiscall*)(CPed*, float*, float, bool);
+			void* const fn = (*reinterpret_cast<void***>(obj))[0x7C / 4];
+			static void* loggedFn = nullptr;
+			if (fn != loggedFn) {
+				loggedFn = fn;
+				LC_LOG("puppet move: ped %d (vtable %p) moves through %p", a_ped, *reinterpret_cast<void**>(obj), fn);
+			}
+			reinterpret_cast<SetPosition>(fn)(obj, pos, -10.0f, false);
+		}
+
+		// Puppet mode lets go: GTA's physics takes the ped back. Minecraft's feet are often a few cm
+		// above where GTA's physics rests the ped (its collision is GTA's ground sampled into
+		// triangles, kerbs and camber differ), so the ped dropped them and spent a second or more
+		// "landing": GTA counts it as not standing and its on-foot task ignores the enter-vehicle
+		// press meanwhile (the vehicle key's press was lost; a second F then worked). A small gap
+		// is closed here: the root goes 2 cm below its resting height above the ground (GTA counts
+		// the ped as standing at once and its physics lifts it the 2 cm). A larger gap is a real
+		// jump or fall: left to GTA.
+		void SettleOnGround(int a_ped)
+		{
+			if (S::IS_CHAR_IN_ANY_CAR(a_ped) || S::IS_CHAR_DEAD(a_ped)) {
+				return;
+			}
+			float x = 0, y = 0, z = 0, ground = 0;
+			S::GET_CHAR_COORDINATES(a_ped, &x, &y, &z);
+			S::GET_GROUND_Z_FOR_3D_COORD(x, y, z, &ground);
+			if (ground == 0.0f) {
+				return;  // nothing found below
+			}
+			const float rest = (measured ? rootToFeet : 1.0f) - 0.02f;
+			const float gap = z - ground - rest;
+			if (gap > 0.01f && gap < 0.3f) {  // (a kerb is ~0.15 m; Minecraft slabs and stair steps, 0.5, stay)
+				MovePed(a_ped, x, y, ground + rest, false);
+				LC_LOG("puppet OFF: the ped was %.2f m above its resting height; set down onto the ground (z %.2f)", gap, ground);
+			}
 		}
 
 		// ---- root -> feet ---------------------------------------------------------------------------------
@@ -504,7 +598,13 @@ namespace lc::Game
 				rowsCandidate = cand;
 				rowsVotes = 1;
 			}
-			if (rowsVotes >= 60) {
+			if (rowsVotes >= 60 && rowsPinned) {
+				rowsChecked = true;
+				LC_LOG("camera rows check: the game's on-foot camera %s the pinned rows (right, forward, up = CMatrix rows %s%d,%s%d,%s%d)%s",
+					rowsCandidate == rows ? "agrees with" : "DISAGREES with", rowsCandidate.sign[0] < 0 ? "-" : "", rowsCandidate.idx[0],
+					rowsCandidate.sign[1] < 0 ? "-" : "", rowsCandidate.idx[1], rowsCandidate.sign[2] < 0 ? "-" : "", rowsCandidate.idx[2],
+					rowsCandidate == rows ? "" : "; keeping the pinned ones (CameraRows=discover adopts what the game says)");
+			} else if (rowsVotes >= 60) {
 				rows = rowsCandidate;
 				static const char* kNames[3] = { "right", "up", "at" };
 				LC_LOG("camera rows discovered: camera right = %s%s, forward = %s%s, up = %s%s (CMatrix rows; |dot to player| %.2f). Pin with CameraRows=%s%d,%s%d,%s%d",
@@ -534,18 +634,20 @@ namespace lc::Game
 				secs, stats.frames / secs, stats.skyWrites / secs, teleportSeq, mc.teleportAck, stats.mcReads, stats.mcReadFails,
 				static_cast<unsigned long long>(mc.frameCounter), mc.flags, puppeting, a_haveMc,
 				static_cast<unsigned long long>(Link::Get().McHeartbeatAgeMs() == UINT64_MAX ? 0 : Link::Get().McHeartbeatAgeMs()));
-			LC_LOG("stats %.0fs: input keys %u buttons %u scroll %u text %u cursor %u raw-mouse %u releaseAll %u openMenu %u dropped %u pad-zeroed %u; events %u; camera writes %u",
-				secs, in.keys, in.buttons, in.scrolls, in.chars, in.cursors, in.rawMouse, in.releaseAll, in.openMenu, in.dropped, in.padZeroed, stats.events,
+			LC_LOG("stats %.0fs: input keys %u buttons %u scroll %u text %u cursor %u raw-mouse %u (retaken %u) releaseAll %u openMenu %u dropped %u pad-zeroed %u; events %u; camera writes %u",
+				secs, in.keys, in.buttons, in.scrolls, in.chars, in.cursors, in.rawMouse, in.rawRetaken, in.releaseAll, in.openMenu, in.dropped, in.padZeroed, stats.events,
 				stats.cameraWrites);
 			LC_LOG("stats %.0fs: collision regions %u (tris %u, blocks %u), columns probed %u (not loaded %u, collision requests %u), clears %u, queued %u, "
 				   "ring waits %u dropped %u, ring pending %llu KiB",
 				secs, col.regions, col.tris, col.blocks, col.columns, col.columnFailures, col.collisionRequests, col.clears, col.queued, col.ringWaits,
 				col.dropped, static_cast<unsigned long long>(col.ringPending >> 10));
 			if (motion.frames) {
-				LC_LOG("stats %.0fs: motion %u frames, %u MC ticks, %u late frames, frame avg %.1f ms max %.1f ms, render delay %.1f ms, tick stamp error avg %.2f ms",
+				LC_LOG("stats %.0fs: motion %u frames, %u MC ticks, %u late frames, frame avg %.1f ms max %.1f ms, render delay %.1f ms, tick stamp error avg %.2f ms, "
+					   "ped off its spot by up to %.3f m",
 					secs, motion.frames, motion.ticks, motion.lateFrames, motion.frameMsSum / motion.frames, motion.frameMsMax, renderDelayMs,
-					motion.stampSamples ? motion.stampErrMs / motion.stampSamples : 0.0);
+					motion.stampSamples ? motion.stampErrMs / motion.stampSamples : 0.0, moveDriftMax);
 			}
+			moveDriftMax = 0.0;
 			stats = {};
 			motion = {};
 		}
@@ -600,6 +702,7 @@ namespace lc::Game
 		const auto  qpcNow = Qpc();
 		const float dt = std::clamp(static_cast<float>(double(qpcNow - lastQpc) / QpcPerMs() / 1000.0), 0.0f, 0.1f);
 		lastQpc = qpcNow;
+		Input::Tick(dt);
 		if (!measured) {
 			rootToFeet = Cfg().rootToFeet;
 		}
@@ -830,9 +933,18 @@ namespace lc::Game
 
 		if (puppeting) {
 			const Pose pose = Interpolate();
-			const GtaVec target = McToGta(pose.feet);
+			GtaVec    target = McToGta(pose.feet);
+			const int moveTest = HostDrive::DebugPuppetTarget(target);  // DebugWalkThroughCar: 1 native, 2 direct
 			if (!paused) {
-				S::SET_CHAR_COORDINATES_NO_OFFSET(ped, static_cast<float>(target.x), static_cast<float>(target.y), static_cast<float>(target.z + rootToFeet));
+				const float px = static_cast<float>(target.x), py = static_cast<float>(target.y), pz = static_cast<float>(target.z + rootToFeet);
+				if (CPed* obj = FindPlayerPed(); obj && obj->m_pMatrix && haveMoveCheck) {
+					const auto&  m = obj->m_pMatrix->pos;
+					const double dx = m.x - moveCheck[0], dy = m.y - moveCheck[1], dz = m.z - moveCheck[2];
+					moveDriftMax = std::max(moveDriftMax, std::sqrt(dx * dx + dy * dy + dz * dz));
+				}
+				MovePed(ped, px, py, pz, moveTest == 1 || (moveTest == 0 && Cfg().puppetMove == "native"));
+				moveCheck[0] = px, moveCheck[1] = py, moveCheck[2] = pz;
+				haveMoveCheck = true;
 				S::SET_CHAR_HEADING(ped, McYawToGtaHeading(yaw));
 				if (!Cfg().freezePed) {
 					S::SET_CHAR_VELOCITY(ped, 0.0f, 0.0f, 0.0f);
@@ -868,6 +980,21 @@ namespace lc::Game
 			camPose.valid = false;
 			tickHistory.clear();
 			lastFrameQpc = 0;
+			haveMoveCheck = false;
+		}
+
+		// ---- GTA's doors swing open for the Minecraft player (Doors.h) ------------------------------------
+		{
+			const GtaVec at = puppeting && haveLastSet ? lastSetFeet : feet;
+			Doors::Frame df;
+			df.ped = exists ? ped : 0;
+			df.loading = loading;
+			df.puppeting = puppeting && !paused;
+			df.feet[0] = static_cast<float>(at.x);
+			df.feet[1] = static_cast<float>(at.y);
+			df.feet[2] = static_cast<float>(at.z);
+			df.dt = dt;
+			Doors::Tick(df);
 		}
 
 		// ---- tell Minecraft where the player is and where they look -----------------------------------
@@ -935,7 +1062,16 @@ namespace lc::Game
 		auto* m = reinterpret_cast<float*>(&cam->m_mMatrix);  // 4 rows of 4 floats: right, up, at, pos
 		if (!rowsConfigured) {
 			rowsConfigured = true;
-			if (Cfg().cameraRows != "auto") {
+			if (Cfg().cameraRows == "auto") {
+				// Right, forward, up are CMatrix rows right, up, at (0, 1, 2): every session on 1.0.8.0
+				// discovers exactly these. Pinned so the very first puppet frames never use rows that
+				// are still being discovered (or were discovered from a transition camera).
+				rows = Rows{};
+				rows.known = true;
+				rowsPinned = true;
+			} else if (Cfg().cameraRows == "discover") {
+				LC_LOG("camera rows: discovering them from the game's on-foot camera (CameraRows=discover)");
+			} else {
 				Rows parsed;
 				if (ParseRows(Cfg().cameraRows, parsed)) {
 					rows = parsed;
@@ -945,7 +1081,8 @@ namespace lc::Game
 				}
 			}
 		}
-		if (puppeting && camPose.valid && Cfg().cameraMode == Config::CameraMode::kFinal) {
+		if (puppeting && camPose.valid && Cfg().cameraMode == Config::CameraMode::kFinal &&
+			std::isfinite(camPose.pos[0] + camPose.pos[1] + camPose.pos[2] + camPose.yaw + camPose.pitch)) {
 			const GtaBasis b = LookBasis(camPose.yaw, camPose.pitch);
 			const float*   axes[3] = { b.right, b.forward, b.up };
 			for (int k = 0; k < 3; ++k) {
@@ -961,7 +1098,7 @@ namespace lc::Game
 			++stats.cameraWrites;
 			return;
 		}
-		if (!rows.known && !puppeting) {
+		if ((!rows.known || (rowsPinned && !rowsChecked)) && !puppeting) {
 			DiscoverRows(m);
 		}
 		if (Cfg().diagnostics) {

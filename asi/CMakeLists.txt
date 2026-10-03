@@ -53,6 +53,8 @@ set(LC_SDK_UNITY_SOURCES
 	src/Render.cpp
 	src/Overlay.cpp
 	src/Combat.cpp
+	src/NpcBlocks.cpp
+	src/Doors.cpp
 )
 set(LC_SOURCES
 	src/dllmain.cpp
@@ -65,9 +67,9 @@ set(LC_SOURCES
 set(LC_HEADERS
 	src/Log.h src/Config.h src/Link.h src/LinkCore.h src/Coords.h src/Perf.h src/CrashLog.h
 	src/Game.h src/Input.h src/Collision.h src/Render.h src/Overlay.h src/Sdk.h
-	src/Combat.h src/combat/CombatMath.h
+	src/Combat.h src/combat/CombatMath.h src/NpcBlocks.h src/combat/BlockPush.h
 	src/render/Frame.h src/render/RenderMath.h src/render/Shaders.h src/render/D3D9Util.h src/render/World.h
-	src/HostDrive.h src/DriveLogic.h
+	src/HostDrive.h src/DriveLogic.h src/Doors.h
 	src/compat/d3dx9.h
 	../protocol/libertycraft_protocol.h
 )

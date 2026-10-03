@@ -26,7 +26,8 @@
 
 namespace lc::col
 {
-	// Static map collision only: no peds, vehicles or (movable) objects such as doors and bins.
+	// Static map collision only: no peds, vehicles or (movable) objects such as doors and bins
+	// (those: CastObjectMc, collision/Objects.h).
 	inline constexpr std::uint32_t kLosFlags = STATIC_COLLISION | BUILDINGS;
 	// 0: no see-through / shoot-through exemptions (glass and fences count as solid).
 	inline constexpr std::uint32_t kLosSeeShoot = 0;
@@ -38,13 +39,88 @@ namespace lc::col
 	inline RayCounters rayCounters;  // game thread only
 
 	// Raw probe in GTA space.
-	inline bool CastGta(const float a_from[3], const float a_to[3], tLineOfSightResults& a_res)
+	inline bool CastGta(const float a_from[3], const float a_to[3], tLineOfSightResults& a_res, std::uint32_t a_flags = kLosFlags)
 	{
 		CVector from{ a_from[0], a_from[1], a_from[2] };
 		CVector to{ a_to[0], a_to[1], a_to[2] };
 		std::memset(&a_res, 0, sizeof(a_res));
 		++rayCounters.rays;
-		return CWorld::ProcessLineOfSight(&from, &to, nullptr, &a_res, kLosFlags, 1, 0, kLosSeeShoot, 4);
+		return CWorld::ProcessLineOfSight(&from, &to, nullptr, &a_res, a_flags, 1, 0, kLosSeeShoot, 4);
+	}
+
+	// A hit (GTA space, from -> to) as a Minecraft-space Hit; junk (see the header) gets a NaN position.
+	inline void HitToMc(const float a_from[3], const float a_to[3], const tLineOfSightResults& a_res, Hit& a_out)
+	{
+		const float* p = &a_res.m_vEndPosition.x;
+		const float* n = &a_res.m_vUnk.x;
+		const float  dx = a_to[0] - a_from[0], dy = a_to[1] - a_from[1], dz = a_to[2] - a_from[2];
+		const float  len = std::sqrt(dx * dx + dy * dy + dz * dz);
+		const float  px = p[0] - a_from[0], py = p[1] - a_from[1], pz = p[2] - a_from[2];
+		const float  dist = std::sqrt(px * px + py * py + pz * pz);
+		if (!std::isfinite(p[0] + p[1] + p[2] + n[0] + n[1] + n[2]) || std::fabs(a_res.m_fUnk1 * len - dist) > 0.05f + 0.001f * len) {
+			++rayCounters.inconsistent;
+			const float nan = std::numeric_limits<float>::quiet_NaN();
+			a_out.pos[0] = a_out.pos[1] = a_out.pos[2] = nan;
+			a_out.n[0] = a_out.n[1] = 0.0f;
+			a_out.n[2] = 1.0f;
+			return;
+		}
+		// gta (x, y, z) -> mc (x, z, -y)
+		a_out.pos[0] = p[0];
+		a_out.pos[1] = p[2];
+		a_out.pos[2] = -p[1];
+		a_out.n[0] = n[0];
+		a_out.n[1] = n[2];
+		a_out.n[2] = -n[1];
+	}
+
+	// Object probes (collision/Objects.h), counted apart from the map's.
+	struct ObjectRayCounters
+	{
+		std::uint32_t rays = 0, hits = 0, target = 0, other = 0, unknown = 0;
+	};
+	inline ObjectRayCounters objectRays;  // game thread only
+
+	// One-sided probe in Minecraft space against OBJECTS only, reporting hits on a_entity alone:
+	// anything else in the way (a neighbouring prop, a door) is skipped. A hit whose entity can't
+	// be told (no physics instance) counts as the target.
+	inline bool CastObjectMc(const float a_from[3], const float a_to[3], const void* a_entity, Hit& a_out)
+	{
+		float       from[3] = { a_from[0], -a_from[2], a_from[1] };
+		const float to[3] = { a_to[0], -a_to[2], a_to[1] };
+		for (int pass = 0; pass < 4; ++pass) {
+			tLineOfSightResults res;
+			++objectRays.rays;
+			--rayCounters.rays;  // not a map probe
+			if (!CastGta(from, to, res, OBJECTS)) {
+				return false;
+			}
+			++objectRays.hits;
+			const rage::phInst* inst = res.m_pInst;
+			const void*         ent = inst ? static_cast<const void*>(inst->m_pEntity) : nullptr;
+			if (ent == a_entity || !ent) {
+				++(ent ? objectRays.target : objectRays.unknown);
+				HitToMc(from, to, res, a_out);
+				return true;
+			}
+			++objectRays.other;
+			// skip past it
+			const float* p = &res.m_vEndPosition.x;
+			const float  dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+			const float  len = std::sqrt(dx * dx + dy * dy + dz * dz);
+			const float  t = (p[0] - from[0]) * dx + (p[1] - from[1]) * dy + (p[2] - from[2]) * dz;
+			if (!std::isfinite(t) || len < 1e-4f) {
+				return false;
+			}
+			const float along = t / len + 0.02f;
+			if (along >= len) {
+				return false;
+			}
+			for (int k = 0; k < 3; ++k) {
+				from[k] += (k == 0 ? dx : k == 1 ? dy : dz) / len * along;
+			}
+		}
+		return false;
 	}
 
 	// One-sided probe in Minecraft space (Geometry.h's ray callback).
@@ -58,27 +134,7 @@ namespace lc::col
 			return false;
 		}
 		++rayCounters.hits;
-		const float* p = &res.m_vEndPosition.x;
-		const float* n = &res.m_vUnk.x;
-		const float  dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
-		const float  len = std::sqrt(dx * dx + dy * dy + dz * dz);
-		const float  px = p[0] - from[0], py = p[1] - from[1], pz = p[2] - from[2];
-		const float  dist = std::sqrt(px * px + py * py + pz * pz);
-		if (!std::isfinite(p[0] + p[1] + p[2] + n[0] + n[1] + n[2]) || std::fabs(res.m_fUnk1 * len - dist) > 0.05f + 0.001f * len) {
-			++rayCounters.inconsistent;
-			const float nan = std::numeric_limits<float>::quiet_NaN();
-			a_out.pos[0] = a_out.pos[1] = a_out.pos[2] = nan;
-			a_out.n[0] = a_out.n[1] = 0.0f;
-			a_out.n[2] = 1.0f;
-			return true;
-		}
-		// gta (x, y, z) -> mc (x, z, -y)
-		a_out.pos[0] = p[0];
-		a_out.pos[1] = p[2];
-		a_out.pos[2] = -p[1];
-		a_out.n[0] = n[0];
-		a_out.n[1] = n[2];
-		a_out.n[2] = -n[1];
+		HitToMc(from, to, res, a_out);
 		return true;
 	}
 }

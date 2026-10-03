@@ -10,10 +10,12 @@
 #pragma once
 
 #include "render/Frame.h"
+#include "render/Lighting.h"
 
 #include <cstdint>
 
 struct IDirect3DDevice9;
+struct IDirect3DBaseTexture9;
 
 namespace lc::render
 {
@@ -21,6 +23,7 @@ namespace lc::render
 	{
 		std::uint32_t width = 0, height = 0;  // the bound render target
 		bool          depthTest = false;      // the bound depth buffer matches it: test against it
+		IDirect3DBaseTexture9* adaptedLum = nullptr;  // GTA's adapted luminance (1x1), for LightingParams::grade.w
 	};
 
 	struct WorldStats
@@ -48,8 +51,11 @@ namespace lc::render
 		// Every frame, drawn or not: applies pending render-ring messages (uploads), so Minecraft
 		// never stalls on a full ring.
 		void Drain(IDirect3DDevice9* a_device);
-		// Draws into the bound render target. The caller saves/restores device state.
-		void Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_frame, const TargetInfo& a_target);
+		// Draws into the bound render target. The caller saves/restores device state. a_light: GTA's
+		// lighting for this frame (sunDir.w 0: Minecraft's own). a_mountFrom (kFrameMountShift):
+		// where Minecraft's scene has the rider's feet; the mount around them moves to a_frame.feet.
+		void Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_frame, const TargetInfo& a_target, const LightingParams& a_light,
+			const double* a_mountFrom);
 
 		WorldStats TakeStats();
 

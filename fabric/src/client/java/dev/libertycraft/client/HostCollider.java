@@ -31,8 +31,10 @@ public final class HostCollider {
 			return move;
 		}
 		// The triangle pass (snapping down a slope, pushing out of a wall) can move the player into a
-		// Minecraft block placed on the terrain; collide that result with Minecraft blocks again.
-		return Entity.collideBoundingBox(player, new Vec3(r[0], r[1], r[2]), box, player.level(), List.of());
+		// Minecraft block placed on the terrain, or a GTA IV ped's or car's stand-in; collide that
+		// result with those again.
+		Vec3 smooth = new Vec3(r[0], r[1], r[2]);
+		return Entity.collideBoundingBox(player, smooth, box, player.level(), player.level().getEntityCollisions(player, box.expandTowards(smooth)));
 	}
 
 	/** Highest GTA IV surface at or below {@code maxAbove} over the feet at (x, y, z), or NaN. */

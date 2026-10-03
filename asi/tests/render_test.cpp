@@ -1,6 +1,7 @@
 // Linux unit test for render/RenderMath.h: camera matrices, frustum culling, lighting terms,
 // atlas mipmaps, section quad compression and the per-frame entity geometry.
 #include "Coords.h"
+#include "render/Lighting.h"
 #include "render/RenderMath.h"
 
 #include <cmath>
@@ -260,6 +261,196 @@ static void TestAxes()
 	CHECK(g.x == 1.0 && g.y == -3.0 && g.z == 2.0);
 }
 
+// GTA IV's midday EXTRASUNNY-like values (timecycle colour x multiplier) and its tone mapping as
+// read in game (1.0.8.0 + FusionFix, noon).
+static LightingInputs Noon()
+{
+	LightingInputs in;
+	const float dir[3] = { 0.3f, -0.2f, -0.933f };
+	const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+	for (int i = 0; i < 3; ++i) {
+		in.sun.dir[i] = dir[i] / len;
+	}
+	const float col[4] = { 0.89f, 0.67f, 0.39f, 14.75f }, a0[4] = { 3.4f, 4.1f, 6.25f, 0 }, a1[4] = { 5.117f, 3.073f, -2.35f, 0 };  // as read in game
+	const float fog[4] = { 73.0f, 1500.0f, 0.0f, 0.0f }, fc[4] = { 2.0f, 2.4f, 3.0f, 0 }, fn[4] = { 1.0f, 1.2f, 1.5f, 0 }, fx[4] = { 0.83f, 1.19f, 16.0f, 128.0f };
+	std::memcpy(in.sun.colour, col, 16);
+	std::memcpy(in.sun.amb0, a0, 16);
+	std::memcpy(in.sun.amb1, a1, 16);
+	std::memcpy(in.fog.params, fog, 16);
+	std::memcpy(in.fog.colour, fc, 16);
+	std::memcpy(in.fog.colourN, fn, 16);
+	std::memcpy(in.fog.depthFx, fx, 16);
+	in.tone.exposure = 1.972f;
+	const float tmp[4] = { 0.9846f, 0.6986f, 0.5145f, 1 }, dsg[4] = { 0.7f, 1, 1.059f, 1 }, cc[4] = { 0.494f, 0.494f, 0.494f, 1 }, cs[4] = { 0, 0, 0, 1000 };
+	std::memcpy(in.tone.tmp, tmp, 16);
+	std::memcpy(in.tone.dsg, dsg, 16);
+	std::memcpy(in.tone.cc, cc, 16);
+	std::memcpy(in.tone.cs, cs, 16);
+	in.sunOk = SunValid(in.sun);
+	in.fogOk = FogValid(in.fog);
+	in.depthFxOk = DepthFxValid(in.fog);
+	in.toneOk = ToneValid(in.tone);
+	in.adaptedTexture = true;
+	return in;
+}
+
+static void TestGtaLighting()
+{
+	LightingInputs in = Noon();
+	CHECK(in.sunOk && in.fogOk && in.depthFxOk && in.toneOk);
+
+	// Garbage (an unrelated pass's registers, all zero) is refused.
+	GtaSun zero;
+	CHECK(!SunValid(zero));
+	CHECK(!FogValid(GtaFog{}) && !ToneValid(GtaTone{}));
+	GtaSun bad = in.sun;
+	bad.dir[0] = 5.0f;
+	CHECK(!SunValid(bad));
+	bad = in.sun;
+	bad.amb0[1] = std::nanf("");
+	CHECK(!SunValid(bad));
+	// gLightAmbient1 is Amb1 minus Amb0: negative channels are fine, a negative down-face ambient isn't.
+	CHECK(in.sun.amb1[2] < 0.0f && SunValid(in.sun));
+	bad = in.sun;
+	bad.amb1[2] = -7.0f;
+	CHECK(!SunValid(bad));
+	GtaFog badFog = in.fog;
+	badFog.params[1] = badFog.params[0];
+	CHECK(!FogValid(badFog));
+
+	// The tone mapping variant is found by its TexelSize register (c76 in the full variant).
+	float regs[32][4]{};
+	auto  set = [&](unsigned a_reg, std::initializer_list<float> a_v) { std::copy(a_v.begin(), a_v.end(), regs[a_reg - 64]); };
+	set(66, { 1.972f, 0, 0, 0 });
+	set(76, { 1.0f / 1920, 1.0f / 1080, 0, 0 });
+	set(81, { 0.9846f, 0.6986f, 0.5145f, 1 });
+	set(82, { 0.7f, 1, 1.059f, 1 });
+	set(83, { 0.494f, 0.494f, 0.494f, 1 });
+	set(84, { 0, 0, 0, 1000 });
+	GtaTone tone;
+	CHECK(FindTone(regs, 1.0f / 1920, 1.0f / 1080, tone) == 81);
+	NEAR(tone.exposure, 1.972f, 1e-6);
+	NEAR(tone.tmp[1], 0.6986f, 1e-6);
+	NEAR(tone.cc[2], 0.494f, 1e-6);
+	CHECK(FindTone(regs, 1.0f / 1280, 1.0f / 720, tone) == 0);  // another target size: not this
+	float plain[32][4]{};
+	std::memcpy(plain[66 - 64], regs[66 - 64], 16);
+	std::copy_n(regs[76 - 64], 4, plain[72 - 64]);  // the plainest variant: TexelSize c72, ToneMapParams c73
+	std::copy_n(regs[81 - 64], 16, plain[73 - 64]);
+	CHECK(FindTone(plain, 1.0f / 1920, 1.0f / 1080, tone) == 73);
+
+	// The shader parameters: towards the sun, HDR light, GTA's tone mapping.
+	ExposureTuning t;
+	LightingParams p = MakeLighting(in, t);
+	CHECK(p.sunDir[3] == 1.0f && p.fogColor[3] == 1.0f && p.grade[3] == 1.0f);
+	NEAR(p.sunDir[2], -in.sun.dir[2], 1e-6);
+	NEAR(p.sun[0], in.sun.colour[0] * in.sun.colour[3], 1e-5);
+	NEAR(p.tone[0], 1.972f * 0.6986f, 1e-5);
+	NEAR(p.grade[1], 2.0f * 0.494f, 1e-6);
+	// Without GTA's sun the shader keeps Minecraft's lighting.
+	LightingInputs none = in;
+	none.sunOk = false;
+	CHECK(MakeLighting(none, t).sunDir[3] == 0.0f);
+	// Without the tone mapping: the stand-in adapted luminance (a floor at night).
+	LightingInputs stand = in;
+	stand.adaptedTexture = false;
+	LightingParams ps = MakeLighting(stand, t);
+	CHECK(ps.grade[3] == 0.0f);
+	NEAR(ps.tone[3], ReferenceLight(in.sun) / t.key, 1e-4);
+	GtaSun night = in.sun;
+	night.colour[3] = 1.0f;
+	for (int i = 0; i < 3; ++i) {
+		night.amb0[i] *= 0.3f;
+		night.amb1[i] *= 0.3f;
+	}
+	CHECK(ReferenceLight(night) < t.floor);
+	NEAR(StandInAdaptedLuminance(night, t), t.floor / t.key, 1e-4);
+
+	// A sunlit top face in the open beats a side facing away from the sun; a roofed-over top (no
+	// sky light) gets no sun and less ambient.
+	const float up[3] = { 0, 0, 1 }, none3[3] = { 0, 0, 0 };
+	float       away[3] = { -0.3f, 0.2f, 0 };
+	const float al = std::sqrt(away[0] * away[0] + away[1] * away[1]);
+	away[0] /= al;
+	away[1] /= al;
+	float top[3], side[3], roofed[3], unknown[3];
+	LightFace(p, up, 1.0f, top);
+	LightFace(p, away, 1.0f, side);
+	LightFace(p, up, 0.0f, roofed);
+	LightFace(p, none3, 1.0f, unknown);
+	CHECK(Luminance(side) < Luminance(top));
+	CHECK(Luminance(roofed) < 0.35f * Luminance(top));
+	CHECK(Luminance(unknown) > Luminance(roofed));
+
+	// Tone mapping: linear in the exposure, darker with a brighter adapted luminance, saturation
+	// pulls colours to grey, RenderExposure scales the result.
+	const float grey[3] = { 0.5f, 0.5f, 0.5f }, red[3] = { 1.0f, 0.2f, 0.2f };
+	float       o1[3], o2[3], o3[3];
+	ToneMap(p, 1.0f, grey, o1);
+	ToneMap(p, 2.0f, grey, o2);
+	CHECK(o2[0] < o1[0] && o2[0] > 0.0f);
+	// grey: x = 0.5 * 1.972 * 0.6986 = 0.6888, + bloom (0.6888 - 0.9846 < 0: none), * 2 * 0.494, * 0.6888^0.059
+	NEAR(o1[0], 0.6888f * 0.988f * std::pow(0.6888f, 0.059f), 1e-3);
+	// brighter than the bloom threshold: x + (x - 0.9846) * 0.5145 / 4
+	const float bright[3] = { 1.0f, 1.0f, 1.0f };
+	float       ob[3];
+	ToneMap(p, 1.0f, bright, ob);
+	const float xb = 1.3776f + (1.3776f - 0.9846f) * 0.5145f / 4.0f;
+	NEAR(ob[0], xb * 0.988f * std::pow(xb > 1.0f ? 1.0f : xb, 0.059f), 1e-3);
+	ToneMap(p, 3.0f, red, o3);
+	CHECK(o3[1] > 0.0f && o3[0] / o3[1] < red[0] / red[1]);  // less saturated (0.7)
+	LightingParams twice = p;
+	twice.misc[0] = 2.0f;
+	float o4[3];
+	ToneMap(twice, 1.0f, grey, o4);
+	NEAR(o4[0], 2.0f * o1[0], 1e-5);
+
+	// Fog: nothing in front of the start (w = 0), all of it past the end, the colour ramps near to far.
+	float ramp = -1.0f;
+	NEAR(FogAmount(p, 50.0f, &ramp), 0.0f, 1e-6);
+	NEAR(ramp, 0.0f, 1e-6);
+	NEAR(FogAmount(p, 2000.0f, &ramp), 1.0f, 1e-6);
+	NEAR(ramp, 1.0f, 1e-6);
+	NEAR(FogAmount(p, 0.5f * (73.0f + 1500.0f)), 0.5f, 1e-4);
+	LightingParams nearW = p;
+	nearW.fog[3] = 1.0f;  // all near-ramp: full at the start distance
+	NEAR(FogAmount(nearW, 73.0f), 1.0f, 1e-6);
+	LightingParams off = p;
+	off.fogColor[3] = 0.0f;
+	NEAR(FogAmount(off, 5000.0f), 0.0f, 1e-6);
+}
+
+static Vertex V(float x, float y, float z)
+{
+	Vertex v{};
+	v.x = x;
+	v.y = y;
+	v.z = z;
+	return v;
+}
+
+static void TestMountSplit()
+{
+	// A boat-sized triangle pair at the rider's feet and a cow 6 blocks away, in two texture batches.
+	std::vector<proto::RenBatch> batches = { { 7, 0, 6, 0 }, { 9, 6, 3, 1 } };
+	const double                 origin[3] = { 100.0, 64.0, 200.0 }, feet[3] = { 101.5, 64.2, 200.5 };
+	std::vector<Vertex>          verts = {
+        V(1.0f, 0.0f, 0.0f), V(2.0f, 0.0f, 0.0f), V(1.5f, 0.5f, 1.0f),   // boat (around the feet)
+        V(7.0f, 0.0f, 0.0f), V(8.0f, 0.0f, 0.0f), V(7.5f, 1.0f, 0.0f),   // cow
+        V(1.2f, 0.8f, 0.4f), V(1.8f, 0.8f, 0.4f), V(1.5f, 1.4f, 0.6f),   // the rider's paddle (blended batch)
+	};
+	std::vector<proto::RenBatch> restB, mountB;
+	std::vector<Vertex>          rest, mount;
+	SplitMount(batches, verts, origin, feet, restB, rest, mountB, mount);
+	CHECK(mount.size() == 6 && rest.size() == 3);
+	CHECK(mountB.size() == 2 && restB.size() == 1);
+	CHECK(mountB[0].texture == 7 && mountB[0].first == 0 && mountB[0].count == 3 && mountB[0].flags == 0);
+	CHECK(mountB[1].texture == 9 && mountB[1].first == 3 && mountB[1].count == 3 && mountB[1].flags == 1);
+	CHECK(restB[0].texture == 7 && restB[0].first == 0 && restB[0].count == 3);
+	CHECK(rest[0].x == 7.0f);
+	CHECK(InMountBox(0.0f, 0.0f, 0.0f) && !InMountBox(3.0f, 0.0f, 0.0f) && !InMountBox(0.0f, 3.0f, 0.0f));
+}
+
 int main()
 {
 	TestSectionKey();
@@ -271,6 +462,8 @@ int main()
 	TestEntities();
 	TestOverlayRect();
 	TestAxes();
+	TestGtaLighting();
+	TestMountSplit();
 	if (failures) {
 		std::fprintf(stderr, "render_test: %d failure(s)\n", failures);
 		return 1;

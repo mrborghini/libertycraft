@@ -35,6 +35,10 @@ import org.jspecify.annotations.Nullable;
  * applies it to the real actor (scaled by level) and makes it fight back. GTA IV's hits on the player
  * come back as Minecraft damage from the attacker's stand-in, so armor, shields, knockback, hurt
  * sounds and death all work the Minecraft way.
+ *
+ * <p>GTA IV's vehicles come as a few records along their length ({@link Proto#ACTOR_VEHICLE}); hits on
+ * any of a vehicle's pieces in a tick go to GTA IV as one hit on the piece that took the most. Every
+ * stand-in is solid ({@link ProxyPush}).
  */
 public final class HostCombat {
 	public static final ResourceKey<EntityType<?>> HOST_ACTOR_KEY =
@@ -83,22 +87,69 @@ public final class HostCombat {
 		if (Link.readActors(ACTORS)) {
 			sync(level);
 		}
-		// Hits land during the tick (melee, sweeps, arrows, fire); send one combined hit per actor.
+		// Hits land during the tick (melee, sweeps, arrows, fire); send one combined hit per actor, and
+		// one per vehicle (a sweep or a blast catches several of its pieces at once).
+		VEHICLE_HITS.clear();
 		for (HostActorEntity proxy : PROXIES.values()) {
 			float[] hit = proxy.takeHit();
-			if (hit != null && (hit[0] > 0.0F || hit[3] > 0.0F)) {
-				Link.pushEvent(
-					Proto.EV_HIT_ACTOR, proxy.formId(), hit[0], hit[1], hit[2], hit[3], Float.floatToRawIntBits(hit[4]), Float.floatToRawIntBits(hit[5])
-				);
-				LibertyCraft.LOG.info("[LibertyCraft] hit {} for {} (knockback {})", proxy.getName().getString(), hit[0], hit[3]);
+			if (hit == null || !(hit[0] > 0.0F || hit[3] > 0.0F)) {
+				continue;
 			}
+			if (proxy.isHostVehicle()) {
+				int vehicle = proxy.formId() & ~3;
+				VehicleHit merged = VEHICLE_HITS.get(vehicle);
+				if (merged == null) {
+					VEHICLE_HITS.put(vehicle, new VehicleHit(proxy, hit));
+				} else {
+					merged.add(proxy, hit);
+				}
+				continue;
+			}
+			sendHit(proxy, hit);
+		}
+		for (VehicleHit v : VEHICLE_HITS.values()) {
+			sendHit(v.piece, v.hit);
+		}
+	}
+
+	private static void sendHit(HostActorEntity proxy, float[] hit) {
+		Link.pushEvent(Proto.EV_HIT_ACTOR, proxy.formId(), hit[0], hit[1], hit[2], hit[3], Float.floatToRawIntBits(hit[4]), Float.floatToRawIntBits(hit[5]));
+		LibertyCraft.LOG.info("[LibertyCraft] hit {} for {} (knockback {})", proxy.getName().getString(), hit[0], hit[3]);
+	}
+
+	private static final Map<Integer, VehicleHit> VEHICLE_HITS = new HashMap<>();
+
+	/** A tick's hits on one vehicle's pieces: the biggest one's damage and piece, every flag, the strongest push. */
+	private static final class VehicleHit {
+		HostActorEntity piece;
+		final float[] hit;
+
+		VehicleHit(HostActorEntity piece, float[] hit) {
+			this.piece = piece;
+			this.hit = hit.clone();
+		}
+
+		void add(HostActorEntity other, float[] h) {
+			int flags = Float.floatToRawIntBits(this.hit[4]) | Float.floatToRawIntBits(h[4]);
+			if (h[0] > this.hit[0]) {
+				this.piece = other;
+				this.hit[0] = h[0];
+				this.hit[5] = h[5];
+			}
+			if (h[3] > this.hit[3]) {
+				this.hit[1] = h[1];
+				this.hit[2] = h[2];
+				this.hit[3] = h[3];
+			}
+			this.hit[4] = Float.intBitsToFloat(flags);
 		}
 	}
 
 	private static void sync(ServerLevel level) {
 		Map<Integer, Link.Actor> live = new HashMap<>();
 		for (Link.Actor a : ACTORS) {
-			if (!a.dead()) {
+			// A dead ped is a ragdoll on the ground (walked over, not hit); a wreck still stands there.
+			if (!a.dead() || (a.flags() & Proto.ACTOR_VEHICLE) != 0) {
 				live.put(a.formId(), a);
 			}
 		}
@@ -116,6 +167,7 @@ public final class HostCombat {
 			if (proxy == null) {
 				proxy = new HostActorEntity(HOST_ACTOR, level);
 				proxy.setFormId(a.formId());
+				proxy.setHostFlags(a.flags());
 				proxy.setSize(a.width(), a.height());
 				proxy.snapTo(a.x(), a.y(), a.z(), a.yaw(), 0.0F);
 				if (!a.name().isEmpty()) {
@@ -127,11 +179,14 @@ public final class HostCombat {
 				PROXIES.put(a.formId(), proxy);
 				continue;
 			}
+			double ox = proxy.getX(), oz = proxy.getZ();
+			proxy.setHostFlags(a.flags());
 			proxy.setSize(a.width(), a.height());
 			proxy.setPos(a.x(), a.y(), a.z());
 			proxy.setYRot(a.yaw());
 			proxy.setYHeadRot(a.yaw());
 			stepOnTriggers(level, proxy);
+			ProxyPush.shoveMobs(level, proxy, a.x() - ox, a.z() - oz);
 		}
 		if (PROXIES.size() != before && (PROXIES.size() % 5 == 0 || PROXIES.size() < 5)) {
 			LibertyCraft.LOG.info("[LibertyCraft] {} GTA IV actors mirrored as hittable stand-ins", PROXIES.size());

@@ -246,7 +246,20 @@ namespace libertycraft::proto
 		kActorDead = 1u << 1,
 		kActorEssential = 1u << 2,
 		kActorInCombat = 1u << 3,
+		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): the record is one
+		// piece of a GTA IV vehicle, not a ped. A vehicle is long and an ActorRecord is an upright box,
+		// so it goes out as up to 4 records along its length (kActorVehicleSegments), each one an
+		// upright box centred on its piece of the vehicle's axis: width = the vehicle's width (or more,
+		// so the pieces touch), height = the vehicle's height, (x, y, z) = the bottom centre. Their
+		// formId is kActorVehicleTag | (vehicle script handle << 2) | piece (0 at the front). Minecraft
+		// makes them hittable and solid like the ped records; a kEvHitActor on any piece hits the
+		// vehicle (projectile hits also reach the people inside it). Peds sitting in a vehicle get no
+		// record of their own.
+		kActorVehicle = 1u << 4,
 	};
+
+	inline constexpr std::uint32_t kActorVehicleTag = 0x56000000u;  // 'V'
+	inline constexpr std::uint32_t kActorVehicleSegments = 4;      // at most, per vehicle
 
 	struct ActorRecord
 	{
@@ -295,6 +308,9 @@ namespace libertycraft::proto
 		kHitProjectile = 1u << 1,
 		kHitSweep = 1u << 2,
 		kHitFire = 1u << 3,
+		// LibertyCraft addition: the hit came from an explosion (Minecraft's blast hurt the stand-in;
+		// the host's own blast from kEvExplosion already hits the real thing).
+		kHitExplosion = 1u << 4,
 	};
 
 	// What landed a kEvHitActor (Skyrim plays that weapon class's impact effect and sounds).

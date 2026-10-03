@@ -12,6 +12,16 @@
 // (not streamed in yet) is retried, not sent empty. The 3x3 columns around the player are
 // re-checked every second with a few probes and re-probed when they changed (late streaming).
 // Also writes the water grid (collision/Water.h).
+//
+// Street furniture (lamp posts, bins, benches...: GTA objects, not map collision) comes from a
+// second pass over the 5x5 columns around the player (collision/Objects.h): every 8 frames the
+// object pool is scanned; each object worth colliding with (not a door, not tiny, not attached or
+// a vehicle part) is probed once, with OBJECTS-only probes that skip everything but it, once it
+// has kept still for two scans, and becomes oriented boxes. A column's objects go into its
+// regions' kColTris / kColRegion with the map's; when they change (an object streamed in or out,
+// was knocked over, the player stands inside one) the regions they touch are sent again. Objects
+// that moved are not solid until they keep still and have been probed again. Object probes share
+// the 2.5 ms a frame (0.8 ms of it is theirs while columns are busy) and are logged separately.
 #pragma once
 
 #include "Coords.h"

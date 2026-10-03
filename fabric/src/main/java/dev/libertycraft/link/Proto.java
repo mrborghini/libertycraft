@@ -60,6 +60,13 @@ public final class Proto {
 	public static final int ACTOR_DEAD = 1 << 1;
 	public static final int ACTOR_ESSENTIAL = 1 << 2;
 	public static final int ACTOR_IN_COMBAT = 1 << 3;
+	/**
+	 * LibertyCraft: the record is one piece of a GTA IV vehicle (up to {@link #ACTOR_VEHICLE_SEGMENTS}
+	 * along its length), formId = {@link #ACTOR_VEHICLE_TAG} | (vehicle handle << 2) | piece.
+	 */
+	public static final int ACTOR_VEHICLE = 1 << 4;
+	public static final int ACTOR_VEHICLE_TAG = 0x56000000;
+	public static final int ACTOR_VEHICLE_SEGMENTS = 4;
 
 	// Event ring (relative to OFF_EVENT_RING)
 	public static final int EVENT_RING_ENTRIES = 512;
@@ -82,6 +89,8 @@ public final class Proto {
 	public static final int HIT_PROJECTILE = 1 << 1;
 	public static final int HIT_SWEEP = 1 << 2;
 	public static final int HIT_FIRE = 1 << 3;
+	/** LibertyCraft: an explosion hurt the stand-in (the host's own blast already hits the real thing). */
+	public static final int HIT_EXPLOSION = 1 << 4;
 	public static final int WEAPON_UNARMED = 0;
 	public static final int WEAPON_BLADE = 1;
 	public static final int WEAPON_AXE = 2;

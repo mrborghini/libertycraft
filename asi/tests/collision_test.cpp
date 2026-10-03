@@ -3,6 +3,7 @@
 // the ray are hit). Scenes: an awning over a street next to a building (the in-game regression:
 // no pillar under the awning), a room inside a building, an overpass, stairs.
 #include "collision/Geometry.h"
+#include "collision/Objects.h"
 
 #include <cmath>
 #include <cstdio>
@@ -407,12 +408,291 @@ static void TestStairs()
 	}
 }
 
+
+// ---- objects (collision/Objects.h) ---------------------------------------------------------------
+
+// A box in an object's local frame added to the scene, faces out.
+static void LocalBox(Scene& a_s, const ObjectBox& a_b, const float* lo, const float* hi)
+{
+	auto corner = [&](int c, float* out) {
+		const float l[3] = { (c & 1) ? hi[0] : lo[0], (c & 2) ? hi[1] : lo[1], (c & 4) ? hi[2] : lo[2] };
+		LocalToMc(a_b, l, out);
+	};
+	float p[8][3];
+	for (int c = 0; c < 8; ++c) {
+		corner(c, p[c]);
+	}
+	// faces as corner index quads (bit 0 x, bit 1 y, bit 2 z) with their local outward axis
+	const int   faces[6][4] = { { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 } };
+	const int   axis[6] = { 0, 0, 1, 1, 2, 2 };
+	const float sign[6] = { -1, 1, -1, 1, -1, 1 };
+	for (int f = 0; f < 6; ++f) {
+		float n[3];
+		for (int k = 0; k < 3; ++k) {
+			n[k] = a_b.axes[axis[f]][k] * sign[f];
+		}
+		a_s.Quad(p[faces[f][0]], p[faces[f][1]], p[faces[f][2]], p[faces[f][3]], n);
+	}
+}
+
+// GTA pose: heading a_deg (about z), at GTA (x, y, z).
+static ObjectBox Pose(float a_deg, float gx, float gy, float gz, const float* lo, const float* hi)
+{
+	const float h = a_deg * 3.14159265f / 180.0f;
+	const float right[3] = { std::cos(h), std::sin(h), 0.0f }, up[3] = { -std::sin(h), std::cos(h), 0.0f }, at[3] = { 0, 0, 1 }, pos[3] = { gx, gy, gz };
+	return MakeObjectBox(right, up, at, pos, lo, hi);
+}
+
+static void ProbeObject(Scene& a_scene, const ObjectBox& a_b, std::vector<OBox>& a_boxes, std::vector<Tri>& a_tris, ObjectProbe** a_keep = nullptr)
+{
+	static std::unique_ptr<ObjectProbe> probe;
+	probe = std::make_unique<ObjectProbe>(a_b);
+	int budget = 0;
+	while (!probe->Run([&](const float* f, const float* t, Hit& h) { return a_scene.Cast(f, t, h); }, [&] { return ++budget % 40 == 0; })) {
+	}
+	probe->Boxes(a_boxes);
+	a_tris.clear();
+	BoxTris(a_boxes, a_tris);
+	std::printf("  object: %d cells of %.3f, %u rays (%u hits, %u bad, %u unpaired), %zu boxes, %zu tris\n", probe->Cells(), probe->Step(), probe->rays,
+		probe->hits, probe->bad, probe->unpaired, a_boxes.size(), a_tris.size());
+	if (a_keep) {
+		*a_keep = probe.get();
+	}
+}
+
+// Solid voxels in an MC box from a triangle list spanning the given regions.
+static int TriVoxelsIn(const std::vector<Tri>& a_tris, const float* lo, const float* hi)
+{
+	int                          n = 0;
+	std::vector<Tri>             rt;
+	std::vector<proto::ColBlock> blocks;
+	for (int rx = int(std::floor(lo[0] / 8)); rx <= int(std::floor(hi[0] / 8)); ++rx) {
+		for (int ry = int(std::floor(lo[1] / 8)); ry <= int(std::floor(hi[1] / 8)); ++ry) {
+			for (int rz = int(std::floor(lo[2] / 8)); rz <= int(std::floor(hi[2] / 8)); ++rz) {
+				RegionTris(a_tris, rx, ry, rz, rt);
+				Voxelize(rt, rx, ry, rz, blocks);
+				for (const auto& blk : blocks) {
+					for (int sy = 0; sy < 8; ++sy) {
+						for (int bit = 0; bit < 64; ++bit) {
+							if (!((blk.bits[sy] >> bit) & 1)) {
+								continue;
+							}
+							const float x = blk.x + ((bit & 7) + 0.5f) / 8.0f, y = blk.y + (sy + 0.5f) / 8.0f, z = blk.z + ((bit >> 3) + 0.5f) / 8.0f;
+							if (x > lo[0] && x < hi[0] && y > lo[1] && y < hi[1] && z > lo[2] && z < hi[2]) {
+								++n;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return n;
+}
+
+static void TestSpans()
+{
+	std::puts("spans from events");
+	std::vector<Span> out;
+	auto ev = [](float y, bool top) {
+		Event e{};
+		e.y = y;
+		e.top = top;
+		return e;
+	};
+	// a backrest resting on a seat: top 0.9, top 0.45 (seat), underside 0.45 (backrest), underside 0.4 (seat)
+	std::vector<Event> bench = { ev(0.9f, true), ev(0.45f, true), ev(0.45f, false), ev(0.4f, false) };
+	CHECK(SpansFromEvents(bench, 0.0f, out) == 0);
+	CHECK(out.size() == 1 && std::fabs(out[0].lo - 0.4f) < 1e-4f && std::fabs(out[0].hi - 0.9f) < 1e-4f);
+	// a lamp arm over free space, then the post's foot: two spans
+	std::vector<Event> arm = { ev(6.0f, true), ev(5.7f, false), ev(1.0f, true) };
+	SpansFromEvents(arm, 0.0f, out);
+	CHECK(out.size() == 2 && std::fabs(out[0].lo - 5.7f) < 1e-4f && std::fabs(out[1].hi - 1.0f) < 1e-4f && std::fabs(out[1].lo) < 1e-4f);
+	// an underside with nothing above it is ignored
+	std::vector<Event> odd = { ev(2.0f, false) };
+	CHECK(SpansFromEvents(odd, 0.0f, out) == 1 && out.empty());
+}
+
+static void TestClassify()
+{
+	std::puts("object classes");
+	const float doorLo[3] = { 0.0f, -0.04f, 0.0f }, doorHi[3] = { 0.95f, 0.04f, 2.2f };
+	CHECK(Classify(Pose(37.0f, 10, 20, 5, doorLo, doorHi)) == ObjClass::kDoor);
+	CHECK(DoorMeasure(Pose(0.0f, 0, 0, 0, doorLo, doorHi)).hingeAtEdge);
+	// the same door lying flat (knocked off its hinges): not a door any more
+	{
+		const float right[3] = { 1, 0, 0 }, up[3] = { 0, 0, 1 }, at[3] = { 0, -1, 0 }, pos[3] = { 0, 0, 0 };
+		CHECK(Classify(MakeObjectBox(right, up, at, pos, doorLo, doorHi)) == ObjClass::kSolid);
+	}
+	const float binLo[3] = { -0.3f, -0.3f, 0.0f }, binHi[3] = { 0.3f, 0.3f, 1.0f };
+	CHECK(Classify(Pose(10.0f, 0, 0, 0, binLo, binHi)) == ObjClass::kSolid);
+	const float canLo[3] = { -0.04f, -0.04f, 0.0f }, canHi[3] = { 0.04f, 0.04f, 0.12f };
+	CHECK(Classify(Pose(0.0f, 0, 0, 0, canLo, canHi)) == ObjClass::kTiny);
+	const float postLo[3] = { -0.15f, -2.5f, 0.0f }, postHi[3] = { 0.15f, 0.15f, 7.0f };  // lamp post with an arm: too tall for a door
+	CHECK(Classify(Pose(0.0f, 0, 0, 0, postLo, postHi)) == ObjClass::kSolid);
+	const float bigLo[3] = { -30, -30, 0 }, bigHi[3] = { 30, 30, 5 };
+	CHECK(Classify(Pose(0.0f, 0, 0, 0, bigLo, bigHi)) == ObjClass::kHuge);
+	const float nanLo[3] = { 0, 0, std::nanf("") }, nanHi[3] = { 1, 1, 1 };
+	CHECK(Classify(Pose(0.0f, 0, 0, 0, nanLo, nanHi)) == ObjClass::kBadBounds);
+}
+
+// A lamp post with an arm, turned 30 degrees: the post is solid, under the arm is free, the arm
+// itself is solid (and a ceiling seen from below), the voxels follow.
+static void TestLampPost()
+{
+	std::puts("lamp post (object probe)");
+	const float lo[3] = { -0.15f, -2.6f, 0.0f }, hi[3] = { 0.15f, 0.15f, 6.2f };
+	const ObjectBox b = Pose(30.0f, 12.3f, -45.6f, 10.0f, lo, hi);  // GTA (12.3, -45.6, 10): MC (12.3, 10, 45.6)
+	Scene s;
+	const float postLo[3] = { -0.1f, -0.1f, 0.0f }, postHi[3] = { 0.1f, 0.1f, 6.0f };
+	const float armLo[3] = { -0.06f, -2.5f, 5.8f }, armHi[3] = { 0.06f, 0.0f, 6.0f };
+	const float headLo[3] = { -0.15f, -2.6f, 5.6f }, headHi[3] = { 0.15f, -2.2f, 5.8f };
+	LocalBox(s, b, postLo, postHi);
+	LocalBox(s, b, armLo, armHi);
+	LocalBox(s, b, headLo, headHi);
+	std::vector<OBox> boxes;
+	std::vector<Tri>  tris;
+	ProbeObject(s, b, boxes, tris);
+	CHECK(!boxes.empty() && boxes.size() <= 12);
+	auto local = [&](float lx, float ly, float lz, float* out) {
+		const float l[3] = { lx, ly, lz };
+		LocalToMc(b, l, out);
+	};
+	// the post: solid at knee height
+	float p[3];
+	local(0.0f, 0.0f, 0.5f, p);
+	bool post = false, underArm = false, arm = false;
+	for (const auto& bx : boxes) {
+		post |= OBoxNear(bx, p[0], p[1], p[1] + 0.1f, p[2], 0.0f);
+	}
+	CHECK(post);
+	// under the arm's middle at head height: free
+	local(0.0f, -1.2f, 2.0f, p);
+	for (const auto& bx : boxes) {
+		underArm |= OBoxNear(bx, p[0], p[1], p[1] + 0.1f, p[2], 0.0f);
+	}
+	CHECK(!underArm);
+	local(0.0f, -1.2f, 5.9f, p);
+	for (const auto& bx : boxes) {
+		arm |= OBoxNear(bx, p[0], p[1] - 0.02f, p[1] + 0.02f, p[2], 0.0f);
+	}
+	CHECK(arm);
+	// a ceiling under the arm, none at the post's foot
+	{
+		float a[3];
+		local(0.0f, -1.2f, 5.75f, a);
+		const float clo[3] = { a[0] - 0.3f, a[1] - 0.2f, a[2] - 0.3f }, chi[3] = { a[0] + 0.3f, a[1] + 0.2f, a[2] + 0.3f };
+		CHECK(TrisIn(tris, clo, chi, kCeiling) > 0);
+		local(0.0f, 0.0f, 0.0f, a);
+		const float flo[3] = { a[0] - 0.4f, a[1] - 0.1f, a[2] - 0.4f }, fhi[3] = { a[0] + 0.4f, a[1] + 0.1f, a[2] + 0.4f };
+		CHECK(TrisIn(tris, flo, fhi, kCeiling) == 0);
+	}
+	// walls around the post at body height, facing out
+	{
+		local(0.0f, 0.0f, 1.0f, p);
+		const float wlo[3] = { p[0] - 0.4f, p[1] - 0.1f, p[2] - 0.4f }, whi[3] = { p[0] + 0.4f, p[1] + 0.1f, p[2] + 0.4f };
+		CHECK(TrisIn(tris, wlo, whi, kWall) >= 8);
+	}
+	// voxels: the post's column is solid, the space under the arm is not
+	{
+		local(0.0f, 0.0f, 1.0f, p);
+		const float vlo[3] = { p[0] - 0.2f, p[1] - 0.5f, p[2] - 0.2f }, vhi[3] = { p[0] + 0.2f, p[1] + 0.5f, p[2] + 0.2f };
+		CHECK(TriVoxelsIn(tris, vlo, vhi) > 0);
+		local(0.0f, -1.2f, 2.5f, p);
+		const float flo[3] = { p[0] - 0.3f, p[1] - 1.5f, p[2] - 0.3f }, fhi[3] = { p[0] + 0.3f, p[1] + 1.5f, p[2] + 0.3f };
+		CHECK(TriVoxelsIn(tris, flo, fhi) == 0);
+	}
+	// stability: probing again gives the same shape
+	std::vector<OBox> again;
+	std::vector<Tri>  tris2;
+	ProbeObject(s, b, again, tris2);
+	CHECK(TrisHash(tris) == TrisHash(tris2));
+}
+
+// A bench (seat with a backrest on it) and a round bin side by side: the bench's seat is one
+// walkable top with the backrest on it; probing the bench must not pick up the bin (the ray
+// callback only reports the target, as Rays.h does with entities).
+static void TestBenchAndBin()
+{
+	std::puts("bench (object probe)");
+	const float lo[3] = { -1.0f, -0.35f, 0.0f }, hi[3] = { 1.0f, 0.35f, 0.95f };
+	const ObjectBox b = Pose(-75.0f, 3.0f, 4.0f, 2.0f, lo, hi);
+	Scene s;
+	const float seatLo[3] = { -1.0f, -0.3f, 0.4f }, seatHi[3] = { 1.0f, 0.3f, 0.45f };
+	const float backLo[3] = { -1.0f, 0.2f, 0.45f }, backHi[3] = { 1.0f, 0.3f, 0.9f };
+	const float legLo[3] = { -0.9f, -0.25f, 0.0f }, legHi[3] = { -0.8f, 0.25f, 0.4f };
+	const float leg2Lo[3] = { 0.8f, -0.25f, 0.0f }, leg2Hi[3] = { 0.9f, 0.25f, 0.4f };
+	LocalBox(s, b, seatLo, seatHi);
+	LocalBox(s, b, backLo, backHi);
+	LocalBox(s, b, legLo, legHi);
+	LocalBox(s, b, leg2Lo, leg2Hi);
+	std::vector<OBox> boxes;
+	std::vector<Tri>  tris;
+	ProbeObject(s, b, boxes, tris);
+	float p[3];
+	auto  local = [&](float lx, float ly, float lz) {
+		const float l[3] = { lx, ly, lz };
+		LocalToMc(b, l, p);
+	};
+	auto solidAt = [&](float lx, float ly, float lz) {
+		local(lx, ly, lz);
+		for (const auto& bx : boxes) {
+			if (OBoxNear(bx, p[0], p[1] - 0.01f, p[1] + 0.01f, p[2], 0.0f)) {
+				return true;
+			}
+		}
+		return false;
+	};
+	CHECK(solidAt(0.0f, 0.0f, 0.42f));    // seat
+	CHECK(!solidAt(0.0f, 0.0f, 0.2f));    // under the seat, between the legs
+	CHECK(solidAt(-0.85f, 0.0f, 0.2f));   // a leg
+	CHECK(solidAt(0.0f, 0.25f, 0.7f));    // backrest
+	CHECK(!solidAt(0.0f, -0.1f, 0.7f));   // above the seat in front of the backrest
+	// the seat is a walkable floor at 0.45 above the object's origin
+	local(0.0f, -0.1f, 0.45f);
+	CHECK(std::fabs(FloorAt(tris, p[0], p[2], 10.0f) - p[1]) < 0.06f);
+}
+
+// Doors and things that aren't: a door-shaped board isn't probed at all (Classify), and a
+// knocked-over bin (lying on its side) gets probed in its new pose.
+static void TestTiltedBin()
+{
+	std::puts("bin on its side (object probe)");
+	const float lo[3] = { -0.3f, -0.3f, 0.0f }, hi[3] = { 0.3f, 0.3f, 1.0f };
+	// lying along GTA +x: local z (up) points along +x
+	const float right[3] = { 0, 0, -1 }, up[3] = { 0, 1, 0 }, at[3] = { 1, 0, 0 }, pos[3] = { 5.0f, 5.0f, 0.3f };
+	const ObjectBox b = MakeObjectBox(right, up, at, pos, lo, hi);
+	CHECK(Classify(b) == ObjClass::kSolid);
+	Scene s;
+	LocalBox(s, b, lo, hi);
+	std::vector<OBox> boxes;
+	std::vector<Tri>  tris;
+	ProbeObject(s, b, boxes, tris);
+	// lying: about 0.6 tall, 1 long
+	float ylo = 1e9f, yhi = -1e9f, xlo = 1e9f, xhi = -1e9f;
+	for (const auto& t : tris) {
+		float tl[3], th[3];
+		TriBounds(t, tl, th);
+		ylo = std::min(ylo, tl[1]);
+		yhi = std::max(yhi, th[1]);
+		xlo = std::min(xlo, tl[0]);
+		xhi = std::max(xhi, th[0]);
+	}
+	CHECK(std::fabs(ylo - 0.0f) < 0.08f && std::fabs(yhi - 0.6f) < 0.08f);
+	CHECK(std::fabs((xhi - xlo) - 1.0f) < 0.2f);
+}
+
 int main()
 {
 	TestAwningAndBuilding();
 	TestRoomInBuilding();
 	TestOverpass();
 	TestStairs();
+	TestSpans();
+	TestClassify();
+	TestLampPost();
+	TestBenchAndBin();
+	TestTiltedBin();
 	if (failures) {
 		std::fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

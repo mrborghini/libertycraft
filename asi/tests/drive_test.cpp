@@ -38,7 +38,8 @@ namespace
 	struct Run
 	{
 		Output last;
-		int    pressFrames = 0, fallbacks = 0, failed = 0, resyncs = 0;
+		int    pressFrames = 0, fallbacks = 0, failed = 0, resyncs = 0, taps = 0, edges = 0, accepted = 0;
+		bool   wasPressed = false;
 	};
 	Run Frames(Logic& a_logic, Input a_in, float a_seconds)
 	{
@@ -46,11 +47,28 @@ namespace
 		for (float t = 0.0f; t < a_seconds; t += a_in.dt) {
 			r.last = a_logic.Step(a_in);
 			r.pressFrames += r.last.pressEnter;
+			r.edges += r.last.pressEnter && !r.wasPressed;  // what GTA sees: a press edge
+			r.wasPressed = r.last.pressEnter;
+			r.taps += r.last.tapStarted > 0;
+			r.accepted += r.last.accepted;
 			r.fallbacks += r.last.fallbackEnter;
 			r.failed += r.last.enterFailed;
 			r.resyncs += r.last.resync;
 		}
 		return r;
+	}
+
+	// The vehicle key while puppeting; returns the input for the frames after it (puppet let go,
+	// GTA reading the player's pad again).
+	Input PressVehicleKey(Logic& a_logic)
+	{
+		auto in = OnFoot(true);
+		in.vehicleActions = 1;
+		a_logic.Step(in);
+		in.vehicleActions = 0;
+		in.puppeting = false;
+		in.controlReady = true;
+		return in;
 	}
 
 	void TestDefaultMinecraftMode()
@@ -105,9 +123,14 @@ namespace
 		CHECK(!out.pressEnter);                           // ...but our pad zeroing is still on this frame
 		in.vehicleActions = 0;
 		in.puppeting = false;
-		// GTA takes the press: Niko walks to the door.
+		in.controlReady = true;
+		// GTA takes the first tap: Niko walks to the door.
 		auto r = Frames(logic, in, 0.2f);
-		CHECK(r.pressFrames > 0 && r.last.pressEnter);
+		CHECK(r.taps == 1 && r.edges == 1 && !r.last.pressEnter);
+		in.moving = true;
+		r = Frames(logic, in, 1.0f);
+		CHECK(r.accepted == 1 && r.taps == 0 && r.pressFrames == 0);  // no more taps once Niko is on his way
+		in.moving = false;
 		in.gettingIn = true;
 		r = Frames(logic, in, Logic::kGiveUpAfter + 1.0f);  // longer than the give-up time: getting in is progress
 		CHECK(r.failed == 0 && r.fallbacks == 0);
@@ -119,18 +142,85 @@ namespace
 		CHECK(out.hostDrives && out.inVehicle && !out.resync);
 	}
 
-	void TestPressHeldBriefly()
+	void TestTapsRepeatUntilGtaReacts()
 	{
 		Logic logic(true);
-		auto  in = OnFoot(true);
-		in.vehicleActions = 1;
-		logic.Step(in);
-		in.vehicleActions = 0;
-		in.puppeting = false;
-		const auto r = Frames(logic, in, 0.9f);
-		const int  expected = static_cast<int>(Logic::kPressSeconds / kDt);
-		CHECK(r.pressFrames >= expected - 1 && r.pressFrames <= expected + 1);
-		CHECK(!r.last.pressEnter);
+		auto  in = PressVehicleKey(logic);
+		// GTA ignores the taps: kMaxTaps separate press edges, each held about kTapSeconds.
+		auto r = Frames(logic, in, Logic::kFallbackAfter - 0.1f);
+		CHECK(r.taps == Logic::kMaxTaps && r.edges == Logic::kMaxTaps);
+		const int perTap = static_cast<int>(Logic::kTapSeconds / kDt + 0.5f);
+		CHECK(r.pressFrames >= Logic::kMaxTaps * (perTap - 1) && r.pressFrames <= Logic::kMaxTaps * (perTap + 1));
+		CHECK(r.accepted == 0 && r.fallbacks == 0);
+		r = Frames(logic, in, 0.2f);
+		CHECK(r.fallbacks == 1 && r.taps == 0);
+	}
+
+	void TestWalkToDoorSkipsFallbackUntilStalled()
+	{
+		Logic logic(true);
+		auto  in = PressVehicleKey(logic);
+		auto  r = Frames(logic, in, 0.2f);
+		CHECK(r.taps == 1);
+		in.moving = true;  // GTA walks Niko to a far door: past the fallback and give-up times
+		r = Frames(logic, in, Logic::kGiveUpAfter + 1.0f);
+		CHECK(r.accepted == 1 && r.fallbacks == 0 && r.failed == 0 && r.taps == 0 && logic.entering());
+		in.moving = false;  // GTA gave up on the door
+		r = Frames(logic, in, Logic::kStalledAfter + 0.1f);
+		CHECK(r.fallbacks == 1 && r.failed == 0);  // the other means get a second
+		r = Frames(logic, in, 1.0f);
+		CHECK(r.failed == 1 && !logic.entering());
+	}
+
+	void TestTapsWaitForControl()
+	{
+		Logic logic(true);
+		auto  in = PressVehicleKey(logic);
+		in.controlReady = false;  // GTA still reads the empty pad (player control not back yet)
+		auto r = Frames(logic, in, 0.5f);
+		CHECK(r.pressFrames == 0 && r.taps == 0);
+		in.controlReady = true;
+		const int readyFrames = static_cast<int>(Logic::kTapDelay / kDt + 0.999f);  // the first tap's frame
+		for (int k = 1; k < readyFrames; ++k) {
+			CHECK(logic.Step(in).tapStarted == 0);
+		}
+		const auto out = logic.Step(in);
+		CHECK(out.tapStarted == 1 && out.pressEnter);
+	}
+
+	void TestShortTapAtLowFrameRate()
+	{
+		Logic logic(true);
+		auto  in = PressVehicleKey(logic);
+		in.dt = 0.2f;  // 5 fps: one frame is longer than a tap, the press still lasts kTapFrames frames
+		auto out = logic.Step(in);
+		CHECK(out.tapStarted == 1 && out.pressEnter);
+		out = logic.Step(in);
+		CHECK(out.pressEnter && out.tapStarted == 0);
+		// The next tap is due right away at 5 fps, but GTA needs released frames between taps.
+		for (int k = 0; k < Logic::kTapFrames; ++k) {
+			CHECK(!logic.Step(in).pressEnter);
+		}
+		out = logic.Step(in);
+		CHECK(out.tapStarted == 2 && out.pressEnter);
+	}
+
+	void TestNoTapsWhilePaused()
+	{
+		Logic logic(true);
+		auto  in = PressVehicleKey(logic);
+		in.paused = true;
+		const auto r = Frames(logic, in, 1.0f);
+		CHECK(r.pressFrames == 0);
+	}
+
+	void TestMovingBeforeAnyTapIsNotAcceptance()
+	{
+		Logic logic(true);
+		auto  in = PressVehicleKey(logic);
+		in.moving = true;  // e.g. still sliding when puppet mode let go: not GTA taking a press
+		const auto r = Frames(logic, in, 0.3f);
+		CHECK(r.taps >= 1);
 	}
 
 	void TestEnterFallbackThenGiveUp()
@@ -141,6 +231,7 @@ namespace
 		logic.Step(in);
 		in.vehicleActions = 0;
 		in.puppeting = false;
+		in.controlReady = true;
 		auto r = Frames(logic, in, Logic::kFallbackAfter + 0.2f);
 		CHECK(r.fallbacks == 1);
 		r = Frames(logic, in, Logic::kGiveUpAfter - Logic::kFallbackAfter);
@@ -254,7 +345,12 @@ int main()
 	TestToggle();
 	TestStartsInNikoMode();
 	TestVehicleKeyEntersCar();
-	TestPressHeldBriefly();
+	TestTapsRepeatUntilGtaReacts();
+	TestTapsWaitForControl();
+	TestWalkToDoorSkipsFallbackUntilStalled();
+	TestShortTapAtLowFrameRate();
+	TestNoTapsWhilePaused();
+	TestMovingBeforeAnyTapIsNotAcceptance();
 	TestEnterFallbackThenGiveUp();
 	TestVehicleKeyIgnoredInNikoModeOrInCar();
 	TestScriptPutsPlayerInCar();

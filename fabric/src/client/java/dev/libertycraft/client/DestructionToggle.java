@@ -70,7 +70,8 @@ public final class DestructionToggle {
 			LibertyCraft.LOG.warn("[LibertyCraft] couldn't read {}", file(), e);
 			return;
 		}
-		HostDig.destruction = !"false".equalsIgnoreCase(props.getProperty(KEY, "true").trim());
+		// Off unless asked for: GTA IV still draws the ground a hole was dug into (HostDig.destruction).
+		HostDig.destruction = "true".equalsIgnoreCase(props.getProperty(KEY, "false").trim());
 	}
 
 	/** Rewrites only its own line, keeping the file's comments and other settings (join=). */
@@ -87,7 +88,7 @@ public final class DestructionToggle {
 				}
 			}
 			if (!found) {
-				lines.add("# Mining and explosions dig into Liberty City (the pause menu's \"GTA IV destruction\" button).");
+				lines.add("# Mining and explosions dig into Liberty City (the pause menu's \"GTA IV destruction\" button; off by default).");
 				lines.add(line);
 			}
 			Files.createDirectories(file.getParent());

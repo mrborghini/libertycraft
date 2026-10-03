@@ -209,11 +209,13 @@ public final class HostDig {
 
 	/**
 	 * Whether Minecraft digs into GTA IV at all: the pause menu's "GTA IV destruction" button, saved
-	 * in config/libertycraft.properties. Off, mining GTA IV's surfaces and explosions leave it alone (and
-	 * breaking blocks in old holes digs no further); holes already dug stay. In a friend's world it's
-	 * the host's setting that counts (their server does the digging).
+	 * in config/libertycraft.properties. Off (the default: GTA IV keeps drawing its own ground, so a
+	 * hole dug into it can't be seen and the player just sinks into the street), mining GTA IV's
+	 * surfaces does nothing and explosions leave it alone (and breaking blocks in old holes digs no
+	 * further); holes already dug stay. In a friend's world it's the host's setting that counts
+	 * (their server does the digging).
 	 */
-	public static volatile boolean destruction = true;
+	public static volatile boolean destruction = false;
 
 	/** Marks a cell dug out of GTA IV's geometry (in that host world). Returns false if it was already. */
 	public static boolean markDug(ServerLevel level, int world, BlockPos pos) {

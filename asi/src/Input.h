@@ -22,6 +22,11 @@ namespace lc::Input
 	void Uninstall(bool a_quiet = false);
 	// Raw mouse registration follows puppet mode (taken while puppeting, restored after).
 	void SetCapture(bool a_capture);
+	// Every frame from Game::Tick (game thread). While captured, takes the raw mouse back when
+	// something else registered it: Wine's DirectInput re-registers it for its own window whenever
+	// GTA IV (re)acquires its mouse, e.g. after alt-tab, which left mouse look dead. Also runs the
+	// DebugFocusCycle test hook.
+	void Tick(float a_dt);
 	// processPadEvent: while puppeting, zero every control except the pause menu's.
 	void Pad(CPad* a_pad);
 	// Mouse-look counts accumulated since the last call (raw mouse units).
@@ -31,7 +36,7 @@ namespace lc::Input
 
 	struct Counters
 	{
-		std::uint32_t keys, buttons, scrolls, chars, cursors, rawMouse, releaseAll, openMenu, dropped, padZeroed;
+		std::uint32_t keys, buttons, scrolls, chars, cursors, rawMouse, releaseAll, openMenu, dropped, padZeroed, rawRetaken;
 	};
 	// Counts since the last call.
 	Counters TakeCounters();

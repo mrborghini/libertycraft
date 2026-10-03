@@ -18,7 +18,10 @@ public abstract class ItemMixin {
 		at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;clip(Lnet/minecraft/world/level/ClipContext;)Lnet/minecraft/world/phys/BlockHitResult;")
 	)
 	private static BlockHitResult libertycraft$povHost(Level level, ClipContext context, Operation<BlockHitResult> original) {
-		// These items act on hitPos.relative(face), so report the cell the surface is in.
-		return HostClip.refine(context.getFrom(), context.getTo(), original.call(level, context), HostClip.Use.PROJECTILE);
+		// These items act on hitPos.relative(face): report the cell behind the one a block placed there
+		// would go into, so a bucket pours into that cell (sitting on the ground like a placed block
+		// does) instead of a block higher where the ground is low in its cell.
+		BlockHitResult hit = HostClip.refine(context.getFrom(), context.getTo(), original.call(level, context), HostClip.Use.PICK);
+		return hit instanceof HostClip.HostHitResult ? HostClip.behindFace(hit, false) : hit;
 	}
 }

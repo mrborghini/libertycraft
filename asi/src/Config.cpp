@@ -40,7 +40,7 @@ namespace lc
 			"; collision heightfield probe: top (from 1000 m: buildings are solid to the roof) | feet (from ProbeHeight m above the feet)\n"
 			"ProbeFrom=top\n"
 			"ProbeHeight=3.0\n"
-			"; camera matrix rows right,forward,up: auto, or e.g. 0,1,2 (prefix - flips a row)\n"
+			"; camera matrix rows right,forward,up: auto (0,1,2, checked against the game), discover, or e.g. 0,1,2 (a leading '-' flips a row)\n"
 			"CameraRows=auto\n"
 			"; draw Minecraft's blocks and HUD in GTA's frame (0: drain the render ring only)\n"
 			"Render=1\n"
@@ -52,6 +52,10 @@ namespace lc
 			"RenderExposure=1.0\n"
 			"; Minecraft's HUD: auto (puppeting or a Minecraft screen open) | always | off\n"
 			"Overlay=auto\n"
+			"; blocks lit by GTA IV's sun, ambient and fog (gta) or Minecraft's own light levels (minecraft)\n"
+			"RenderLighting=gta\n"
+			"; colour saturation of the GTA-lit blocks when GTA's tone mapping can't be read (else GTA's own)\n"
+			"RenderSaturation=0.8\n"
 			"; combat: Minecraft hits/explosions/death reach GTA IV, GTA damage to the puppeted player reaches Minecraft\n"
 			"Combat=1\n"
 			"; Minecraft damage x this = GTA health off a ped; GTA damage to the player / this = Minecraft damage\n"
@@ -62,6 +66,10 @@ namespace lc
 			"ExplosionRadiusScale=1.0\n"
 			"; a Minecraft hit knocks the ped over (ragdoll)\n"
 			"RagdollOnHit=1\n"
+			"; Minecraft damage x this = GTA body/engine health off a vehicle (1000 each)\n"
+			"VehicleDamageScale=15\n"
+			"; Minecraft blocks are solid for GTA IV's peds and vehicles\n"
+			"NpcBlocks=1\n"
 			"; vehicles: this key (taken from Minecraft) enters/steals the nearest vehicle the GTA way; GTA's own F gets out\n"
 			"VehicleKey=F\n"
 			"; switches between Minecraft mode and Niko mode (plain GTA IV)\n"
@@ -191,6 +199,17 @@ namespace lc
 			const auto o = Lower(*v);
 			overlay = o == "always" ? OverlayMode::kAlways : o == "off" ? OverlayMode::kOff : OverlayMode::kAuto;
 		}
+		if (auto v = get("renderlighting")) renderLighting = Lower(*v) == "minecraft" ? RenderLighting::kMinecraft : RenderLighting::kGta;
+		if (auto v = get("rendersaturation")) renderSaturation = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("renderexposurekey")) renderExposureKey = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("renderexposurefloor")) renderExposureFloor = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugtimeofday")) debugTimeOfDay = *v;
+		if (auto v = get("debugweather")) debugWeather = *v;
+		if (auto v = get("debugstepseconds")) debugStepSeconds = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debuglightingab")) debugLightingAB = ToBool(*v, debugLightingAB);
+		if (auto v = get("debuglighting")) debugLighting = ToBool(*v, debugLighting);
+		if (auto v = get("debugvehiclespeed")) debugVehicleSpeed = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugseatab")) debugSeatAB = ToBool(*v, debugSeatAB);
 		if (auto v = get("combat")) combat = ToBool(*v, combat);
 		if (auto v = get("peddamagescale")) pedDamageScale = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("playerdamagescale")) playerDamageScale = static_cast<float>(std::atof(v->c_str()));
@@ -199,6 +218,10 @@ namespace lc
 		if (auto v = get("ragdollonhit")) ragdollOnHit = ToBool(*v, ragdollOnHit);
 		if (auto v = get("combatselftest")) combatSelfTest = ToBool(*v, combatSelfTest);
 		if (auto v = get("debugwarpoutdoors")) debugWarpOutdoors = ToBool(*v, debugWarpOutdoors);
+		if (auto v = get("vehicledamagescale")) vehicleDamageScale = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("npcblocks")) npcBlocks = ToBool(*v, npcBlocks);
+		if (auto v = get("npcpushmethod")) npcPushMethod = std::atoi(v->c_str());
+		if (auto v = get("debugknockbackvariant")) debugKnockbackVariant = std::atoi(v->c_str());
 		if (auto v = get("vehiclekey")) vehicleKey = *v;
 		if (auto v = get("togglekey")) toggleKey = *v;
 		if (auto v = get("hidenikoinvehicle")) hideNikoInVehicle = ToBool(*v, hideNikoInVehicle);
@@ -207,6 +230,11 @@ namespace lc
 		if (auto v = get("vehicleenterfallback")) vehicleEnterFallback = Lower(*v);
 		if (auto v = get("debugautotoggle")) debugAutoToggle = ToBool(*v, debugAutoToggle);
 		if (auto v = get("debugautovehicle")) debugAutoVehicle = ToBool(*v, debugAutoVehicle);
+		if (auto v = get("puppetmove")) puppetMove = Lower(*v) == "native" ? "native" : "direct";
+		if (auto v = get("debugwalkthroughcar")) debugWalkThroughCar = ToBool(*v, debugWalkThroughCar);
+		if (auto v = get("debugvehicledriver")) debugVehicleDriver = ToBool(*v, debugVehicleDriver);
+		if (auto v = get("debugfocuscycle")) debugFocusCycle = ToBool(*v, debugFocusCycle);
+		if (auto v = get("debuginjectenterkey")) debugInjectEnterKey = ToBool(*v, debugInjectEnterKey);
 
 		LC_LOG("config: Puppet=%d CameraMode=%s FovMode=%s MenuKey=%s (dik 0x%02X) Diagnostics=%d LogPerf=%d FreezePed=%d RootToFeet=%.2f (measure %d) ProbeFrom=%s ProbeHeight=%.1f CameraRows=%s",
 			puppet, cameraMode == CameraMode::kScripted ? "scripted" : "final", fovMode == FovMode::kHorizontal43 ? "horizontal43" : "vertical",
@@ -216,12 +244,22 @@ namespace lc
 		static constexpr const char* kOverlayModes[] = { "auto", "always", "off" };
 		LC_LOG("config: Render=%d RenderCamera=%s RenderDepth=%s RenderExposure=%.2f Overlay=%s", render, kRenderCameras[static_cast<int>(renderCamera)],
 			kRenderDepths[static_cast<int>(renderDepth)], renderExposure, kOverlayModes[static_cast<int>(overlay)]);
+		LC_LOG("config: RenderLighting=%s RenderSaturation=%.2f (exposure key %.2f floor %.1f)%s%s%s%s", renderLighting == RenderLighting::kGta ? "gta" : "minecraft",
+			renderSaturation, renderExposureKey, renderExposureFloor, debugTimeOfDay.empty() ? "" : (" DebugTimeOfDay=" + debugTimeOfDay).c_str(),
+			debugWeather.empty() ? "" : (" DebugWeather=" + debugWeather).c_str(), debugLightingAB ? " DebugLightingAB=1" : "", debugLighting ? " DebugLighting=1" : "");
+		if (debugVehicleSpeed > 0.0f) {
+			LC_LOG("config: DebugVehicleSpeed=%.1f%s", debugVehicleSpeed, debugSeatAB ? " DebugSeatAB=1" : "");
+		}
 		LC_LOG("config: Combat=%d PedDamageScale=%.1f PlayerDamageScale=%.1f ExplosionType=%d ExplosionRadiusScale=%.2f RagdollOnHit=%d%s%s", combat,
 			pedDamageScale, playerDamageScale, explosionType, explosionRadiusScale, ragdollOnHit, combatSelfTest ? " CombatSelfTest=1" : "",
 			debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
+		LC_LOG("config: VehicleDamageScale=%.1f NpcBlocks=%d%s%s", vehicleDamageScale, npcBlocks, npcPushMethod ? " NpcPushMethod=1" : "",
+			debugKnockbackVariant >= 0 ? " DebugKnockbackVariant on" : "");
 		LC_LOG("config: VehicleKey=%s (dik 0x%02X) ToggleKey=%s (dik 0x%02X) HideNikoInVehicle=%d ToggleStartsInMinecraft=%d VehicleSeatDrop=%.2f VehicleEnterFallback=%s%s%s",
 			vehicleKey.c_str(), VehicleKeyDik(), toggleKey.c_str(), ToggleKeyDik(), hideNikoInVehicle, toggleStartsInMinecraft, vehicleSeatDrop,
 			vehicleEnterFallback.c_str(), debugAutoToggle ? " DebugAutoToggle=1" : "", debugAutoVehicle ? " DebugAutoVehicle=1" : "");
+		LC_LOG("config: PuppetMove=%s%s%s%s%s", puppetMove.c_str(), debugWalkThroughCar ? " DebugWalkThroughCar=1" : "",
+			debugVehicleDriver ? " DebugVehicleDriver=1" : "", debugFocusCycle ? " DebugFocusCycle=1" : "", debugInjectEnterKey ? " DebugInjectEnterKey=1" : "");
 	}
 
 	std::uint8_t Config::MenuKeyDik() const

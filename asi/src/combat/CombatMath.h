@@ -1,6 +1,7 @@
 // Combat rules that don't need the game (SDK-free, unit-tested on Linux by tests/combat_test.cpp):
-// actor ids, Minecraft <-> GTA IV damage scaling, which GTA IV weapon types become which Minecraft
-// hurt, health fractions, the knockback direction, and the pacing of hurt events.
+// actor ids (peds and vehicle pieces), Minecraft <-> GTA IV damage scaling, which GTA IV weapon types
+// become which Minecraft hurt, health fractions, the knockback direction, vehicle damage, and the
+// pacing of hurt events.
 #pragma once
 
 #include "libertycraft_protocol.h"
@@ -30,6 +31,50 @@ namespace lc::combat
 		}
 		a_handle = a_id & kActorIdHandleMask;
 		return true;
+	}
+
+	// Vehicles go out as up to proto::kActorVehicleSegments records along their length (see
+	// proto::kActorVehicle): formId = 'V' tag | (vehicle script handle << 2) | piece. Vehicle handles
+	// are (pool slot << 8) | generation, far below 2^22.
+	inline constexpr std::uint32_t kVehicleIdHandleMask = 0x003FFFFFu;
+
+	inline std::uint32_t VehicleActorId(std::uint32_t a_handle, std::uint32_t a_piece)
+	{
+		return proto::kActorVehicleTag | ((a_handle & kVehicleIdHandleMask) << 2) | (a_piece & 3u);
+	}
+
+	inline bool VehicleFromActorId(std::uint32_t a_id, std::uint32_t& a_handle, std::uint32_t& a_piece)
+	{
+		if ((a_id & 0xFF000000u) != proto::kActorVehicleTag) {
+			return false;
+		}
+		a_handle = (a_id >> 2) & kVehicleIdHandleMask;
+		a_piece = a_id & 3u;
+		return true;
+	}
+
+	// How a vehicle of a_length x a_width metres (seen from above) is cut into upright boxes along its
+	// axis: a_count pieces of equal length, piece i centred a_offset[i] metres ahead of the vehicle's
+	// centre (0 is the front piece), each box a_boxWidth wide (at least the vehicle's width, and at
+	// least a piece's length, so the boxes still touch when the vehicle stands diagonally).
+	struct VehicleLayout
+	{
+		std::uint32_t count = 1;
+		float         offset[proto::kActorVehicleSegments]{};
+		float         boxWidth = 0.0f;
+	};
+
+	inline VehicleLayout VehicleSegments(float a_length, float a_width)
+	{
+		VehicleLayout l;
+		const float length = std::max(a_length, 0.5f), width = std::max(a_width, 0.5f);
+		l.count = static_cast<std::uint32_t>(std::clamp(static_cast<int>(std::ceil(length / width - 0.05f)), 1, static_cast<int>(proto::kActorVehicleSegments)));
+		const float piece = length / static_cast<float>(l.count);
+		for (std::uint32_t i = 0; i < l.count; ++i) {
+			l.offset[i] = length * 0.5f - piece * (static_cast<float>(i) + 0.5f);
+		}
+		l.boxWidth = std::max(width, piece);
+		return l;
 	}
 
 	// ---- GTA IV weapon types (Scripting::eWeapon; CPhysical::m_nLastDamageWeapon) ---------------
@@ -149,6 +194,28 @@ namespace lc::combat
 		return true;
 	}
 
+	// APPLY_FORCE_TO_PED's direction, if it is taken in the ped's own frame (x right, y forward): a
+	// GTA world direction (a_gx, a_gy) for a ped facing a_headingDeg (GTA heading: 0 = north,
+	// counter-clockwise; forward = (-sin h, cos h), right = (cos h, sin h)).
+	inline void WorldToPedLocal(float a_gx, float a_gy, float a_headingDeg, float& a_lx, float& a_ly)
+	{
+		const float h = a_headingDeg * 3.14159265358979f / 180.0f;
+		const float s = std::sin(h), c = std::cos(h);
+		a_lx = a_gx * c + a_gy * s;   // . right
+		a_ly = -a_gx * s + a_gy * c;  // . forward
+	}
+
+	// Angle (degrees, 0 to 180) between two horizontal directions; 180 if either is zero.
+	inline float AngleBetween(float a_x0, float a_y0, float a_x1, float a_y1)
+	{
+		const float l0 = std::sqrt(a_x0 * a_x0 + a_y0 * a_y0), l1 = std::sqrt(a_x1 * a_x1 + a_y1 * a_y1);
+		if (!(l0 > 1e-6f) || !(l1 > 1e-6f)) {
+			return 180.0f;
+		}
+		const float c = std::clamp((a_x0 * a_x1 + a_y0 * a_y1) / (l0 * l1), -1.0f, 1.0f);
+		return std::acos(c) * 180.0f / 3.14159265358979f;
+	}
+
 	// How long a hit knocks a ped over: Minecraft's base knockback (0.4) ~0.8 s, a sprint hit or a
 	// Knockback enchantment longer, a critical at least 1.2 s. 0: no knockback, no ragdoll.
 	inline int RagdollMs(float a_strength, bool a_critical)
@@ -161,6 +228,27 @@ namespace lc::combat
 			ms = std::max(ms, 1200);
 		}
 		return std::clamp(ms, 500, 3000);
+	}
+
+	// ---- vehicles -------------------------------------------------------------------------------
+	// Minecraft damage on a vehicle -> GTA IV body/engine health points (cars have 1000 of each; the
+	// engine burns below 0 and the car blows up soon after).
+	inline float VehicleDamageFromMc(float a_mcDamage, float a_scale)
+	{
+		if (!(a_mcDamage > 0.0f) || !(a_scale > 0.0f)) {
+			return 0.0f;
+		}
+		return std::min(a_mcDamage * a_scale, 100000.0f);
+	}
+
+	// Which window a hit on piece a_piece of a_count breaks (SMASH_CAR_WINDOW: 0 front left,
+	// 1 front right, 2 rear left, 3 rear right): the front half of the vehicle breaks a front window,
+	// on the side the hit came from. a_pushRight: the knockback pushes toward the vehicle's right
+	// (the attacker stands on its left).
+	inline int WindowForHit(std::uint32_t a_piece, std::uint32_t a_count, bool a_pushRight)
+	{
+		const bool front = a_count <= 1 || static_cast<float>(a_piece) + 0.5f <= static_cast<float>(a_count) * 0.5f;
+		return (front ? 0 : 2) + (a_pushRight ? 0 : 1);
 	}
 
 	// ---- explosions -----------------------------------------------------------------------------

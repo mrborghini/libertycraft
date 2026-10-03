@@ -4,7 +4,13 @@ Creates the shared bridge file, streams a flat floor + a staircase of collision,
 (punch an NPC, build, shoot, drop and pick up an item), prints Minecraft's reported player state,
 and saves the overlay frame to a PNG.
 
-    python3 tools/fake_host.py [--link PATH] [--drive] [seconds] [out.png] [atlas.png]
+    python3 tools/fake_host.py [--link PATH] [--drive | --npc] [seconds] [out.png] [atlas.png]
+
+--npc scripts Stream Q2's checks instead: a car (three vehicle pieces, kActorVehicle) and a ped stand
+next to the player; it punches the car and shoots it with the bow (one kEvHitActor per hit, on a vehicle
+id, the arrow flagged as a projectile), walks into the ped (its stand-in must stop the player), drives the
+car through the player (it must shove the player along), then lights the floor with flint and steel
+(the fire must land on the floor: kRenLights shows it). Prints a PASS/FAIL line per check.
 
 --drive scripts "GTA IV drives the player" instead (kSkyHostDrives / kSkyInVehicle): Niko mode on
 foot (Minecraft follows a walking target), a vehicle (Minecraft rides its mount - boat, horse, ... per
@@ -91,6 +97,8 @@ class Link:
         self.events = []
         self.sections = 0
         self.atlas = None
+        self.lights = []  # (x, y, z, level, when) from kRenLights
+        self.hits = []    # (form, damage, push x, push z, flags) of kEvHitActor
 
     def heartbeat(self):
         struct.pack_into("<Q", self.m, 0x10, tick())
@@ -103,6 +111,8 @@ class Link:
             typ, form, a, b, c, d, flags = struct.unpack_from("<IIffffI", self.m, OFF_EVENTS + 0x80 + (tail % 512) * 32)
             print(f"  event from Minecraft: type={typ} form={form:08X} damage={a:.2f} push=({b:.2f},{c:.2f})x{d:.2f} flags={flags:#x}")
             self.events.append(typ)
+            if typ == 1:
+                self.hits.append((form, a, b, c, flags))
             tail += 1
         struct.pack_into("<Q", self.m, OFF_EVENTS + 0x40, tail)
 
@@ -138,6 +148,11 @@ class Link:
                         print(f"    v{k}: pos ({x:.2f},{y:.2f},{z:.2f}) uv ({u:.4f},{v:.4f}) rgba ({r},{g},{b},{a}) light {light:#x} flags {flags}{texel}")
             elif typ == 3:
                 print("  render: clear all")
+            elif typ == 8:
+                sx, sy, sz, count = struct.unpack_from("<iiiI", self.m, base + 0x88 + pos)
+                for k in range(count):
+                    lx, ly, lz, level = struct.unpack_from("<4B", self.m, base + 0x98 + pos + k * 8)
+                    self.lights.append((sx * 16 + lx, sy * 16 + ly, sz * 16 + lz, level, time.time()))
             tail += (8 + n + 7) & ~7
         struct.pack_into("<Q", self.m, base + 0x40, tail)
 
@@ -370,6 +385,149 @@ class DriveScenario:
         print(f"drive summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
 
 
+ACTOR_VEHICLE = 1 << 4
+VEHICLE_TAG = 0x56000000
+HIT_PROJECTILE = 1 << 1
+
+
+class NpcScenario:
+    """Stream Q2: GTA IV's vehicles and peds as solid, hittable stand-ins; fire on GTA IV ground."""
+    CAR = 0x1234  # vehicle handle
+    PED = 0x4C000777
+
+    def __init__(self, spawn):
+        self.spawn = spawn
+        self.car = (spawn[0] + 3.0, spawn[2], "z")  # centre x, z and the axis it lies along
+        self.car_speed = 0.0
+        self.results = []
+        self.marks = {}
+        self.yaw, self.pitch = -90.0, 20.0  # at the car's side, below its roof
+
+    def car_records(self):
+        cx, cz, axis = self.car
+        recs = []
+        for piece, off in enumerate((1.6, 0.0, -1.6)):
+            x, z = (cx, cz + off) if axis == "z" else (cx + off, cz)
+            recs.append(struct.pack("<IIfffffffHH24s", VEHICLE_TAG | (self.CAR << 2) | piece, ACTOR_VEHICLE, x, FLOOR_Y, z, 0.0, 1.9, 1.5, 1.0, 0, 0,
+                                    b"ADMIRAL"))
+        return recs
+
+    def write_actors(self, link):
+        recs = self.car_records()
+        recs.append(struct.pack("<IIfffffffHH24s", self.PED, 0, self.spawn[0], FLOOR_Y, self.spawn[2] + 4.5, 0.0, 0.6, 1.8, 1.0, 0, 0, b"Civilian"))
+        struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2 + 1)
+        struct.pack_into("<I", link.m, OFF_ACTORS + 4, len(recs))
+        link.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64 * len(recs)] = b"".join(recs)
+        link.actor_seq += 1
+        struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2)
+
+    def once(self, t, at, name):
+        if t >= at and name not in self.marks:
+            self.marks[name] = t
+            return True
+        return False
+
+    def check(self, name, ok, detail):
+        self.results.append(ok)
+        print(f"  {'PASS' if ok else 'FAIL'} {name}: {detail}")
+
+    def command(self, link, t, at, text):
+        """Types a chat command: T, the text, Enter."""
+        if self.once(t, at, f"T{at}"):
+            link.push_input(1, 23, 1)
+        if self.once(t, at + 0.1, f"Tup{at}"):
+            link.push_input(1, 23, 0)
+        if self.once(t, at + 0.5, f"text{at}"):
+            for ch in text:
+                link.push_input(5, 0, ord(ch))
+        if self.once(t, at + 0.9, f"enter{at}"):
+            link.push_input(1, 40, 1)
+        if self.once(t, at + 1.0, f"enterup{at}"):
+            link.push_input(1, 40, 0)
+
+    def key(self, link, t, at, code):
+        if self.once(t, at, f"k{code}@{at}"):
+            link.push_input(1, code, 1)
+        if self.once(t, at + 0.1, f"k{code}up@{at}"):
+            link.push_input(1, code, 0)
+
+    def click(self, link, t, at, button, hold=0.1):
+        if self.once(t, at, f"b{button}@{at}"):
+            link.push_input(2, button, 1)
+        if self.once(t, at + hold, f"b{button}up@{at}"):
+            link.push_input(2, button, 0)
+
+    def step(self, link, t, mc, dt):
+        """True once every check ran."""
+        sx, sy, sz = self.spawn
+        # Kit: a bow in slot 3, arrows, flint and steel in slot 9 (the tests' own copy of the dev world).
+        self.command(link, t, 0.3, "/item replace entity @s hotbar.2 with minecraft:bow")
+        self.command(link, t, 1.5, "/give @s minecraft:arrow 16")
+        self.command(link, t, 2.7, "/item replace entity @s hotbar.8 with minecraft:flint_and_steel")
+        self.key(link, t, 3.9, 30)  # '1': whatever is in slot 1 (a fist will do)
+        # Melee: two clicks at the car's middle piece straight ahead (the first may only grab the mouse).
+        self.click(link, t, 4.5, 1)
+        self.click(link, t, 5.2, 1)
+        if self.once(t, 6.1, "melee"):
+            hits = [h for h in link.hits if (h[0] & 0xFF000000) == VEHICLE_TAG]
+            ok = len(hits) >= 1 and all((h[0] >> 2) & 0x3FFFFF == self.CAR and h[2] > 0.9 and not h[4] & HIT_PROJECTILE for h in hits)
+            self.check("melee on a vehicle", ok, f"{len(hits)} vehicle hit event(s): {[(f'{h[0]:08X}', round(h[1], 2), round(h[2], 2), round(h[3], 2), h[4]) for h in hits]}"
+                       " (want one per hit, on the car, pushed +x away from the player)")
+            self.marks["hits_before_bow"] = len(link.hits)
+        # Bow (slot 3) into the car.
+        self.key(link, t, 6.2, 32)
+        self.click(link, t, 6.7, 3, hold=1.3)
+        if self.once(t, 9.0, "arrow"):
+            hits = [h for h in link.hits[self.marks["hits_before_bow"]:] if (h[0] & 0xFF000000) == VEHICLE_TAG]
+            ok = len(hits) >= 1 and all(h[4] & HIT_PROJECTILE for h in hits)
+            self.check("arrow into a vehicle", ok, f"{len(hits)} vehicle hit event(s), flags {[h[4] for h in hits]} (want the projectile flag)")
+        # Walk south into the ped standing 4.5 blocks away.
+        if t >= 9.1:
+            self.yaw, self.pitch = 0.0, 0.0
+        if self.once(t, 9.3, "w"):
+            link.push_input(1, 26, 1)
+        if self.once(t, 11.5, "wup"):
+            link.push_input(1, 26, 0)
+        if self.once(t, 12.0, "walk"):
+            z = mc["pos"][2]
+            want = sz + 4.5 - 0.6
+            self.check("a ped's stand-in is solid", sz + 1.0 < z <= want + 0.05, f"walked from z {sz:.2f} to {z:.3f} (the ped's box starts at {want + 0.3:.2f};"
+                       f" the player stops at {want:.2f})")
+            self.marks["pos_before_car"] = mc["pos"]
+        # Drive the car (now lying along x) through the player toward -x at 8 blocks/s.
+        if self.once(t, 12.2, "car_place"):
+            p = mc["pos"]
+            self.car = (p[0] + 6.0, p[2], "x")
+            self.car_speed = 8.0
+        if 12.2 <= t < 13.7 and self.car_speed:
+            cx, cz, axis = self.car
+            self.car = (max(cx - self.car_speed * dt, sx - 6.0), cz, axis)
+        if self.once(t, 14.2, "shove"):
+            before, x = self.marks["pos_before_car"], mc["pos"][0]
+            cx = self.car[0]
+            ok = x < before[0] - 2.0 and x <= cx - 2.4 - 0.3 + 0.05
+            self.check("a moving car shoves the player", ok, f"player x {before[0]:.2f} -> {x:.2f}, the car's front end stopped at {cx - 2.4:.2f}"
+                       " (want the player pushed ahead of it, out of its box)")
+            self.car = (sx + 30.0, sz, "z")  # out of the way
+        # Flint and steel (slot 9) on the floor in front.
+        self.key(link, t, 14.4, 38)
+        if t >= 14.6:
+            self.pitch = 60.0
+        if self.once(t, 15.1, "lights_mark"):
+            self.marks["lights_before"] = len(link.lights)
+        self.click(link, t, 15.2, 3)
+        if self.once(t, 17.0, "fire"):
+            p = mc["pos"]
+            fires = [l for l in link.lights[self.marks["lights_before"]:] if l[3] >= 15 and abs(l[0] + 0.5 - p[0]) < 3 and abs(l[2] + 0.5 - p[2]) < 3]
+            ok = any(l[1] == FLOOR_Y for l in fires)
+            self.check("flint and steel lights GTA IV ground", ok, f"light-15 blocks near the player since the click: {[l[:4] for l in fires]}"
+                       f" (want one at y {FLOOR_Y}, on the floor)")
+        if t >= 17.5:
+            print(f"npc summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
+            return True
+        return False
+
+
 def main():
     args = sys.argv[1:]
     path = BRIDGE
@@ -381,6 +539,10 @@ def main():
     if "--drive" in args:
         args.remove("--drive")
         drive = True
+    npc = None
+    if "--npc" in args:
+        args.remove("--npc")
+        npc = True
     seconds = float(args[0]) if len(args) > 0 else 90
     out = args[1] if len(args) > 1 else "overlay.png"
     atlas_out = args[2] if len(args) > 2 else None
@@ -400,7 +562,10 @@ def main():
     tseq = int(time.time()) % 100000 + 2  # new teleport every run
     if drive:
         drive = DriveScenario(spawn, tseq)
+    if npc:
+        npc = NpcScenario(spawn)
     mc = link.read_mc()
+    last_t = None
     while time.time() - start < seconds:
         link.heartbeat()
         sky_flags, sky_pos, sky_yaw, sky_pitch = 1, spawn, yaw, pitch
@@ -412,6 +577,13 @@ def main():
             if t > drive.BACK + 4.0:
                 drive.report(mc)
                 break
+        if npc and script_t0 is not None:
+            t = time.time() - script_t0
+            npc.write_actors(link)
+            if npc.step(link, t, mc, t - last_t if last_t is not None else 0.0):
+                break
+            last_t = t
+            sky_yaw, sky_pitch = npc.yaw, npc.pitch
         link.write_sky(sky_flags, sky_pos, sky_yaw, sky_pitch, tseq, epoch)
         if link.mc_alive() and not sent:
             link.write_col(1, struct.pack("<I", epoch))
@@ -427,7 +599,7 @@ def main():
         if in_world and script_t0 is None:
             script_t0 = time.time()
             print("MC in world at", mc["pos"])
-        if script_t0 is not None and not drive:
+        if script_t0 is not None and not drive and not npc:
             t = time.time() - script_t0
             # A fake NPC two blocks ahead: punch it, then have it hit back.
             link.write_actor(0xFF00ABCD, X0 + 2.5, FLOOR_Y, 0.5)

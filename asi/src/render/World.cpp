@@ -10,6 +10,7 @@
 #include "Coords.h"
 #include "Link.h"
 #include "Log.h"
+#include "NpcBlocks.h"
 
 #include <algorithm>
 #include <cmath>
@@ -53,7 +54,7 @@ namespace lc::render
 
 		std::unordered_map<std::uint64_t, Section>            sections;
 		std::unordered_map<std::uint32_t, IDirect3DTexture9*> entityTextures;
-		Mesh                                                  avatar, scene;
+		Mesh                                                  avatar, scene, sceneRest, sceneMount;
 		proto::WorldEntities                                  entities{};
 		EntityBuilder                                         builder;
 		SectionMesh                                           scratch;
@@ -413,7 +414,7 @@ namespace lc::render
 			device->SetTexture(0, atlas);
 		}
 
-		void SetCommonState(const FrameSnapshot& a_f, const TargetInfo& a_t)
+		void SetCommonState(const FrameSnapshot& a_f, const TargetInfo& a_t, const LightingParams& a_light)
 		{
 			auto* d = device;
 			d->SetVertexShader(vs);
@@ -427,6 +428,24 @@ namespace lc::render
 			d->SetVertexShaderConstantF(5, depth, 1);
 			const float light[4] = { a_f.dayFactor, 0.5f, 0.04f, a_f.exposure };
 			d->SetPixelShaderConstantF(0, light, 1);
+			// c1-c13: GTA's lighting (LightingParams is thirteen float4s in register order); s1 GTA's
+			// adapted luminance.
+			static_assert(sizeof(LightingParams) == 13 * 16);
+			LightingParams gta = a_light;
+			if (!(a_f.flags & kFrameGtaLighting)) {
+				gta.sunDir[3] = 0.0f;
+			}
+			if (!a_t.adaptedLum) {
+				gta.grade[3] = 0.0f;
+			}
+			d->SetPixelShaderConstantF(1, gta.sunDir, 13);
+			d->SetTexture(1, a_t.adaptedLum);
+			d->SetSamplerState(1, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+			d->SetSamplerState(1, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+			d->SetSamplerState(1, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+			d->SetSamplerState(1, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+			d->SetSamplerState(1, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+			d->SetSamplerState(1, D3DSAMP_SRGBTEXTURE, FALSE);
 
 			D3DVIEWPORT9 vp{ 0, 0, a_t.width, a_t.height, 0.0f, 1.0f };
 			d->SetViewport(&vp);
@@ -501,6 +520,10 @@ namespace lc::render
 					LC_LOG("Minecraft cleared its world (%zu sections dropped)", sections.size());
 					ClearSections();
 					ClearEntities();
+					NpcBlocks::Clear();  // the blocks GTA's peds and vehicles collide with (NpcBlocks.h)
+					break;
+				case proto::kRenSolids:
+					NpcBlocks::OnSolids(a_data, a_bytes);
 					break;
 				case proto::kRenTexture:
 					OnTexture(a_data, a_bytes);
@@ -512,21 +535,21 @@ namespace lc::render
 					OnMesh(scene, a_data, a_bytes, true);
 					break;
 				default:
-					break;  // kRenLights, kRenSolids, kRenDug, kRenRagdoll: not used yet (counted)
+					break;  // kRenLights, kRenDug, kRenRagdoll: not used yet (counted)
 				}
 			},
 			64ull << 20);
 		stats.drainMs += NowMs() - t0;
 	}
 
-	void World::Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_f, const TargetInfo& a_t)
+	void World::Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_f, const TargetInfo& a_t, const LightingParams& a_light, const double* a_mountFrom)
 	{
 		if (!ready || a_device != device || !(a_f.flags & kFrameCameraValid) || !a_t.width || !a_t.height) {
 			return;
 		}
 		const double t0 = NowMs();
 		++stats.frames;
-		SetCommonState(a_f, a_t);
+		SetCommonState(a_f, a_t, a_light);
 		const double* cam = a_f.camPos;
 		Mat4          clip;
 		std::memcpy(clip.m, a_f.clip, sizeof(clip.m));
@@ -572,7 +595,20 @@ namespace lc::render
 		if (a_f.flags & kFrameAvatar) {
 			DrawMesh(avatar, a_f.feet, cam, false);
 		}
-		DrawMesh(scene, scene.origin, cam, false);
+		// In a vehicle the rider is drawn at GTA's seat of this frame (a_f.feet), not where Minecraft
+		// last saw it (a frame or two behind: ~0.8 m at 50 m/s); its mount goes along.
+		const Mesh* sceneMain = &scene;
+		double      mountOrigin[3]{};
+		const bool  mount = a_mountFrom && (a_f.flags & kFrameMountShift) && !scene.batches.empty();
+		if (mount) {
+			SplitMount(scene.batches, scene.verts, scene.origin, a_mountFrom, sceneRest.batches, sceneRest.verts, sceneMount.batches, sceneMount.verts);
+			for (int i = 0; i < 3; ++i) {
+				mountOrigin[i] = scene.origin[i] + (a_f.feet[i] - a_mountFrom[i]);
+			}
+			sceneMain = &sceneRest;
+			DrawMesh(sceneMount, mountOrigin, cam, false);
+		}
+		DrawMesh(*sceneMain, scene.origin, cam, false);
 
 		// Translucent: water, stained glass, ice, back to front; then cracks and the outline.
 		device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
@@ -592,7 +628,10 @@ namespace lc::render
 		if (a_f.flags & kFrameAvatar) {
 			DrawMesh(avatar, a_f.feet, cam, true);
 		}
-		DrawMesh(scene, scene.origin, cam, true);
+		if (mount) {
+			DrawMesh(sceneMount, mountOrigin, cam, true);
+		}
+		DrawMesh(*sceneMain, scene.origin, cam, true);
 		if (atlas && !builder.cracks.empty()) {
 			SetOffset(origin, cam);
 			DrawUp(builder.cracks, 0, builder.cracks.size());

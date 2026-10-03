@@ -19,6 +19,8 @@ namespace lc::render
 		kFrameScreenOpen = 1u << 6,    // a Minecraft screen: draw its cursor
 		kFrameCrosshair = 1u << 7,     // Minecraft shows its crosshair: the invert pass
 		kFrameAvatar = 1u << 8,        // the player's third-person body at feet
+		kFrameMountShift = 1u << 9,    // in a vehicle: feet = GTA's seat this frame; the mount moves there too
+		kFrameGtaLighting = 1u << 10,  // light with GTA's sun, ambient and fog (else Minecraft's own lighting)
 	};
 
 	enum class CameraSource : std::uint32_t
@@ -41,7 +43,8 @@ namespace lc::render
 		float         nearZ = 0.1f, farZ = 1000.0f;
 		float         dayFactor = 1.0f;
 		float         gameHour = 12.0f;
-		double        feet[3]{};       // Minecraft feet (avatar), MC coords
+		double        feet[3]{};       // Minecraft feet (avatar), MC coords; with kFrameMountShift GTA's seat
+		float         rain = 0.0f;     // CWeather::Rain (0..1)
 		std::int32_t  cursorX = 0, cursorY = 0;  // overlay pixels
 		std::uint32_t guiScale = 0;
 		CameraSource  source = CameraSource::kNone;

@@ -57,6 +57,49 @@ namespace lc::HostDrive
 		std::atomic<int> padEnterCurrent{ 0 }, padEnterLast{ 0 };
 		bool  sawGettingIn = false;
 		float enterClock = 0.0f;  // seconds since the vehicle key (log)
+		int   tapsThisAttempt = 0;
+		bool  lastStanding = true;
+		// Pad runs only for the pad GTA hands the player's ped, i.e. while player control is on:
+		// frames in a row it ran = GTA reads the player's pad again (the taps wait for that).
+		std::atomic<std::uint32_t> padFrames{ 0 };
+		std::uint32_t              padFramesSeen = 0;
+		int                        padLiveRun = 0;
+		constexpr int              kPadLiveFrames = 3;
+		constexpr float            kMovingSpeed = 0.6f;  // m/s on the ground: GTA walks Niko to a door
+		constexpr float            kStandWait = 0.75f;   // the taps wait this long at most for Niko to stand
+		float                      releasedT = 0.0f;     // seconds since puppet mode let go for this attempt
+
+		// GTA's enter-vehicle check (1.0.8.0: 0xA60D0B, in the player's on-foot task) takes the press
+		// only while the ped counts as standing: CPed flag word 0x26C bit 0, set by the ped's ground
+		// probe (0x93E710) and cleared by every move of the SET_CHAR_COORDINATES kind (0x945F38), i.e.
+		// on every puppet frame. After puppet mode lets go the ped stands again 0.1 to 0.5 s later; the
+		// old single press came before that and was lost (the player's second F then worked).
+		bool PedStanding()
+		{
+			const CPed* p = FindPlayerPed();
+			return p && (*reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const std::uint8_t*>(p) + 0x26C) & 1u) != 0;
+		}
+
+		// ---- DebugWalkThroughCar (test hook) -----------------------------------------------------------
+		// Walks the puppet target through a parked car and then into a pedestrian, first with the old
+		// move (SET_CHAR_COORDINATES_NO_OFFSET), then with the direct one, and logs whether the car and
+		// the ped survive. Both are made ambient (no longer needed) first: the clearing spares mission
+		// entities, and the car the player walks into on the street is an ambient one.
+		struct WalkTest
+		{
+			int           round = 0;  // 0 the native, 1 the direct move, 2 done
+			int           step = 0;   // 0 wait, 1 spawn, 2 settle, 3 through the car, 4 into the ped, 5 back
+			float         t = 0.0f, wait = 0.0f, dt = 0.0f;
+			int           car = 0, ped = 0;
+			bool          carGone = false, pedGone = false;
+			float         carGoneAt = 0.0f, pedGoneAt = 0.0f;
+			float         carClosest = 99.0f, pedClosest = 99.0f;  // the target's closest approach (m, 2D)
+			bool          needStart = false, active = false, modelRequested = false;
+			GtaVec        start{}, target{};
+			float         dir[2]{};
+			float         carPos[3]{};
+			std::uint32_t vehBefore = 0, pedsBefore = 0;
+		} walk;
 
 		struct Car
 		{
@@ -131,6 +174,8 @@ namespace lc::HostDrive
 			}
 		}
 
+		bool gtaTookPress = false;  // GTA reacted to a tap in this attempt
+
 		void EnterByOtherMeans(int a_ped)
 		{
 			const auto& how = Cfg().vehicleEnterFallback;
@@ -140,17 +185,211 @@ namespace lc::HostDrive
 			}
 			// A warp needs a free driver's seat; the task pulls the driver out like GTA's own F.
 			const Car car = ClosestCar(a_ped, kFallbackRadius, how != "task");
-			LC_LOG("the enter press didn't take (GTA's enter control read %d, last %d before our press)", padEnterCurrent.load(), padEnterLast.load());
+			if (gtaTookPress) {
+				LC_LOG("GTA took the enter press but Niko stopped short of getting in");
+			} else {
+				LC_LOG("the enter press didn't take (GTA's enter control read %d, last %d before our press)", padEnterCurrent.load(), padEnterLast.load());
+			}
 			if (!car.handle) {
 				LC_LOG("no %svehicle is within %.0f m", how != "task" ? "empty " : "", kFallbackRadius);
 				return;
 			}
 			if (how == "task") {
-				LC_LOG("the enter press didn't take: TASK_ENTER_CAR_AS_DRIVER vehicle %d (%.1f m)", car.handle, car.distance);
+				LC_LOG("VehicleEnterFallback: TASK_ENTER_CAR_AS_DRIVER vehicle %d (%.1f m)", car.handle, car.distance);
 				S::TASK_ENTER_CAR_AS_DRIVER(a_ped, car.handle, 10000);
 			} else {
-				LC_LOG("the enter press didn't take: WARP_CHAR_INTO_CAR vehicle %d (%.1f m)", car.handle, car.distance);
+				LC_LOG("VehicleEnterFallback: WARP_CHAR_INTO_CAR vehicle %d (%.1f m)", car.handle, car.distance);
 				S::WARP_CHAR_INTO_CAR(a_ped, car.handle);
+			}
+		}
+
+		// Test hooks: a save can start indoors (Roman's flat); move Niko out to the nearest road (puppet
+		// mode off for a few frames, then the usual resync).
+		bool StartRelocation(int a_ped, const char* a_who, int a_interior, float a_aboveGround)
+		{
+			float x = 0, y = 0, z = 0, nx = 0, ny = 0, nz = 0;
+			S::GET_CHAR_COORDINATES(a_ped, &x, &y, &z);
+			if (debugRelocate || !S::GET_CLOSEST_CAR_NODE(x, y, z, &nx, &ny, &nz)) {
+				return false;
+			}
+			debugRelocate = 3;
+			debugRelocateTo[0] = nx, debugRelocateTo[1] = ny, debugRelocateTo[2] = nz;  // (SET_CHAR_COORDINATES adds 1 m: the root)
+			LC_LOG("%s: indoors/above ground (interior %d, %.1f m up): moving Niko to the road at %.1f %.1f %.1f", a_who, a_interior, a_aboveGround, nx, ny, nz);
+			return true;
+		}
+
+		std::uint32_t PoolUsed(bool a_vehicles)
+		{
+			if (a_vehicles) {
+				return CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->m_nUsed : 0;
+			}
+			return CPools::ms_pPedPool ? CPools::ms_pPedPool->m_nUsed : 0;
+		}
+
+		// The closest living pedestrian on foot within a_radius, other than a_ped (the ped pool).
+		int ClosestPed(int a_ped, float a_radius)
+		{
+			CPool<CPed>* pool = CPools::ms_pPedPool;
+			if (!pool) {
+				return 0;
+			}
+			float px = 0, py = 0, pz = 0;
+			S::GET_CHAR_COORDINATES(a_ped, &px, &py, &pz);
+			float bestD2 = a_radius * a_radius;
+			int   best = 0;
+			for (int slot = pool->FindNextUsed(0); slot >= 0; slot = pool->FindNextUsed(slot + 1)) {
+				CPed* p = pool->Get(slot);
+				if (!p || !p->m_pMatrix) {
+					continue;
+				}
+				const auto& m = p->m_pMatrix->pos;
+				const float dx = m.x - px, dy = m.y - py, dz = m.z - pz, d2 = dx * dx + dy * dy;
+				if (d2 >= bestD2 || std::fabs(dz) > 3.0f) {
+					continue;
+				}
+				const int handle = static_cast<int>(pool->GetIndex(p));
+				if (!handle || handle == a_ped || !S::DOES_CHAR_EXIST(handle) || S::IS_CHAR_DEAD(handle) || S::IS_CHAR_IN_ANY_CAR(handle)) {
+					continue;
+				}
+				bestD2 = d2;
+				best = handle;
+			}
+			return best;
+		}
+
+		void WalkTestTick(const Frame& a_f)
+		{
+			auto& w = walk;
+			w.dt = a_f.dt;
+			if (!Cfg().debugWalkThroughCar || w.round >= 2 || a_f.paused) {
+				return;
+			}
+			if (!a_f.puppeting || a_f.inCar || a_f.dead) {
+				w.wait = 0.0f;
+				if (w.step >= 3) {
+					LC_LOG("DebugWalkThroughCar: puppet mode ended mid-walk; starting this round again");
+					w.step = 0;
+					w.active = false;
+				}
+				return;
+			}
+			w.t += a_f.dt;
+			switch (w.step) {
+			case 0: {
+				if ((w.wait += a_f.dt) < (w.round == 0 ? 10.0f : 4.0f)) {
+					break;
+				}
+				float aboveGround = 99.0f;
+				S::GET_CHAR_HEIGHT_ABOVE_GROUND(a_f.ped, &aboveGround);
+				int interior = 0;
+				S::GET_INTERIOR_FROM_CHAR(a_f.ped, &interior);
+				if (aboveGround > 2.0f || interior != 0) {
+					StartRelocation(a_f.ped, "DebugWalkThroughCar", interior, aboveGround);
+					w.wait = 0.0f;
+					break;
+				}
+				w.step = 1;
+				w.modelRequested = false;
+				break;
+			}
+			case 1: {
+				const unsigned int model = S::GET_HASH_KEY("admiral");
+				if (!w.modelRequested) {
+					w.modelRequested = true;
+					CStreaming::ScriptRequestModel(static_cast<std::int32_t>(model));
+				}
+				if (!S::HAS_MODEL_LOADED(model)) {
+					break;
+				}
+				float x = 0, y = 0, z = 0, h = 0;
+				S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
+				S::GET_CHAR_HEADING(a_f.ped, &h);
+				w.dir[0] = -std::sin(h * kDegToRad);
+				w.dir[1] = std::cos(h * kDegToRad);
+				w.carPos[0] = x + w.dir[0] * 5.0f, w.carPos[1] = y + w.dir[1] * 5.0f, w.carPos[2] = z;
+				w.car = 0;
+				S::CREATE_CAR(model, w.carPos[0], w.carPos[1], w.carPos[2], &w.car, true);
+				S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
+				if (w.car) {
+					S::SET_CAR_HEADING(w.car, h + 90.0f);  // across the path
+				}
+				w.ped = 0;
+				S::CREATE_RANDOM_CHAR(x + w.dir[0] * 9.0f, y + w.dir[1] * 9.0f, z, &w.ped);
+				if (w.ped) {
+					S::TASK_STAND_STILL(w.ped, 20000);
+				}
+				// Ambient now, like the cars and pedestrians on the street (the clearing spares mission entities).
+				int car = w.car, ped = w.ped;
+				if (car) {
+					S::MARK_CAR_AS_NO_LONGER_NEEDED(&car);
+				}
+				if (ped) {
+					S::MARK_CHAR_AS_NO_LONGER_NEEDED(&ped);
+				}
+				LC_LOG("DebugWalkThroughCar round %d (%s move): car %d parked 5 m ahead across the path at %.1f %.1f %.1f, pedestrian %d 9 m ahead",
+					w.round + 1, w.round == 0 ? "native" : "direct", w.car, w.carPos[0], w.carPos[1], w.carPos[2], w.ped);
+				w.step = 2;
+				w.t = 0.0f;
+				break;
+			}
+			case 2:
+				if (w.t >= 1.5f) {
+					w.vehBefore = PoolUsed(true);
+					w.pedsBefore = PoolUsed(false);
+					w.carGone = w.pedGone = false;
+					w.needStart = true;
+					w.active = true;
+					w.step = 3;
+					w.t = 0.0f;
+				}
+				break;
+			default: {
+				if (w.car && !w.carGone && !S::DOES_VEHICLE_EXIST(w.car)) {
+					w.carGone = true;
+					w.carGoneAt = w.t;
+					const float dx = static_cast<float>(w.target.x) - w.carPos[0], dy = static_cast<float>(w.target.y) - w.carPos[1];
+					LC_LOG("DebugWalkThroughCar round %d: car %d DELETED (%.2f s into step %d, the player %.1f m from where it was parked)", w.round + 1, w.car,
+						w.t, w.step, std::sqrt(dx * dx + dy * dy));
+				}
+				if (w.ped && !w.pedGone && !S::DOES_CHAR_EXIST(w.ped)) {
+					w.pedGone = true;
+					w.pedGoneAt = w.t;
+					LC_LOG("DebugWalkThroughCar round %d: pedestrian %d DELETED (%.2f s into step %d)", w.round + 1, w.ped, w.t, w.step);
+				}
+				{
+					const float dx = static_cast<float>(w.target.x) - w.carPos[0], dy = static_cast<float>(w.target.y) - w.carPos[1];
+					w.carClosest = std::min(w.carClosest, std::sqrt(dx * dx + dy * dy));
+				}
+				if (w.step == 4 && w.ped && !w.pedGone && S::DOES_CHAR_EXIST(w.ped)) {
+					float x = 0, y = 0, z = 0;
+					S::GET_CHAR_COORDINATES(w.ped, &x, &y, &z);
+					const float dx = static_cast<float>(w.target.x) - x, dy = static_cast<float>(w.target.y) - y;
+					w.pedClosest = std::min(w.pedClosest, std::sqrt(dx * dx + dy * dy));
+				}
+				if (w.step == 3 && w.t >= 6.0f) {
+					// Into the closest pedestrian on foot (an ambient one if one is nearer than ours).
+					w.ped = ClosestPed(a_f.ped, 30.0f);
+					w.step = w.ped ? 4 : 5;
+					w.t = 0.0f;
+					if (w.ped) {
+						LC_LOG("DebugWalkThroughCar round %d: walking into pedestrian %d", w.round + 1, w.ped);
+					}
+				} else if (w.step == 4 && w.t >= 5.0f) {
+					w.step = 5;
+					w.t = 0.0f;
+				} else if (w.step == 5 && w.t >= 2.0f) {
+					w.active = false;
+					LC_LOG("DebugWalkThroughCar round %d (%s move): car %d %s (the player came within %.2f m of its centre), pedestrian %d %s (within %.2f m); "
+						   "vehicle pool %u -> %u, ped pool %u -> %u",
+						w.round + 1, w.round == 0 ? "native" : "direct", w.car, w.carGone ? "DELETED" : "still there", w.carClosest, w.ped,
+						!w.ped ? "(none)" : w.pedGone ? "DELETED" : "still there", w.pedClosest, w.vehBefore, PoolUsed(true), w.pedsBefore, PoolUsed(false));
+					w.carClosest = w.pedClosest = 99.0f;
+					++w.round;
+					w.step = 0;
+					w.wait = 0.0f;
+				}
+				break;
+			}
 			}
 		}
 
@@ -192,6 +431,7 @@ namespace lc::HostDrive
 		if (!a_pad) {
 			return;
 		}
+		padFrames.fetch_add(1, std::memory_order_relaxed);
 		if (pressEnter.load(std::memory_order_relaxed)) {
 			padEnterCurrent.store(a_pad->m_aValues[INPUT_ENTER].m_nCurrentValue, std::memory_order_relaxed);
 			padEnterLast.store(a_pad->m_aValues[INPUT_ENTER].m_nLastValue, std::memory_order_relaxed);
@@ -234,6 +474,17 @@ namespace lc::HostDrive
 		in.gettingIn = a_f.exists && !a_f.inCar && S::IS_CHAR_GETTING_IN_TO_A_CAR(a_f.ped);
 		in.cutscene = a_f.cutscene;
 		in.puppeting = a_f.puppeting;
+		const std::uint32_t pads = padFrames.load(std::memory_order_relaxed);
+		padLiveRun = pads != padFramesSeen ? padLiveRun + 1 : 0;
+		padFramesSeen = pads;
+		releasedT = logic.entering() && !a_f.puppeting ? releasedT + (a_f.paused ? 0.0f : a_f.dt) : 0.0f;
+		in.controlReady = a_f.exists && !a_f.puppeting && padLiveRun >= kPadLiveFrames && S::IS_PLAYER_CONTROL_ON(a_f.player) &&
+		                  (PedStanding() || releasedT >= kStandWait);
+		if (logic.entering() && a_f.exists && !a_f.puppeting && !a_f.inCar) {
+			float vx = 0, vy = 0, vz = 0;
+			S::GET_CHAR_VELOCITY(a_f.ped, &vx, &vy, &vz);
+			in.moving = vx * vx + vy * vy > kMovingSpeed * kMovingSpeed;
+		}
 		in.toggles = togglePresses.exchange(0, std::memory_order_relaxed);
 		in.vehicleActions = vehiclePresses.exchange(0, std::memory_order_relaxed);
 
@@ -261,16 +512,8 @@ namespace lc::HostDrive
 				} else if (aboveGround > 2.0f || interior != 0) {
 					// Indoors or up somewhere (a save can start in Roman's flat): out to the street.
 					debugCooldown = 1.0f;
-					if ((debugIndoorT += 1.0f) >= 6.0f && !debugRelocate) {
-						float x = 0, y = 0, z = 0, nx = 0, ny = 0, nz = 0;
-						S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
-						if (S::GET_CLOSEST_CAR_NODE(x, y, z, &nx, &ny, &nz)) {
-							debugRelocate = 3;
-							debugRelocateTo[0] = nx, debugRelocateTo[1] = ny, debugRelocateTo[2] = nz + 1.0f;
-							debugIndoorT = 0.0f;
-							LC_LOG("DebugAutoVehicle: indoors/above ground (interior %d, %.1f m up): moving Niko to the road at %.1f %.1f %.1f", interior,
-								aboveGround, nx, ny, nz);
-						}
+					if ((debugIndoorT += 1.0f) >= 6.0f && StartRelocation(a_f.ped, "DebugAutoVehicle", interior, aboveGround)) {
+						debugIndoorT = 0.0f;
 					}
 				} else {
 					debugIndoorT = 0.0f;
@@ -289,8 +532,15 @@ namespace lc::HostDrive
 						S::CREATE_CAR(model, x, y, z, &debugCar, true);
 						S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
 						debugCarRequested = false;
-						LC_LOG("DebugAutoVehicle: test car %d parked at %.1f %.1f %.1f", debugCar, x, y, z);
-						debugCooldown = 1.5f;
+						int driver = 0;
+						if (Cfg().debugVehicleDriver && debugCar) {
+							S::CREATE_RANDOM_CHAR_AS_DRIVER(debugCar, &driver);  // GTA's press then carjacks
+							if (driver) {
+								S::TASK_PAUSE(driver, 120000);  // ...a parked car: the driver waits instead of driving off
+							}
+						}
+						LC_LOG("DebugAutoVehicle: test car %d parked at %.1f %.1f %.1f%s", debugCar, x, y, z, driver ? " with a driver" : "");
+						debugCooldown = 6.0f;  // (GTA may need a moment before a fresh car can be entered)
 					} else {
 						debugCooldown = 0.25f;
 					}
@@ -316,6 +566,7 @@ namespace lc::HostDrive
 				}
 			}
 		}
+		WalkTestTick(a_f);
 		if (exitNow) {
 			exitPressT = kExitPressSeconds;
 		}
@@ -332,8 +583,29 @@ namespace lc::HostDrive
 			}
 		}
 		if (logic.entering() && !wasEntering) {
-			LC_LOG("vehicle key: handing Niko to GTA IV and pressing its enter-vehicle control");
+			LC_LOG("vehicle key: handing Niko to GTA IV, then tapping its enter-vehicle control");
 			enterClock = 0.0f;
+			tapsThisAttempt = 0;
+			gtaTookPress = false;
+		}
+		if (out.tapStarted) {
+			tapsThisAttempt = out.tapStarted;
+			LC_LOG("vehicle key: tap %d of GTA's enter control (%.2f s after the key; Niko %s)", out.tapStarted, enterClock,
+				PedStanding() ? "stands" : "doesn't stand yet, waited long enough");
+		}
+		if (logic.entering() && a_f.exists) {
+			// when GTA counts the released ped as standing again (log)
+			const bool standing = PedStanding();
+			if (standing != lastStanding) {
+				LC_LOG("vehicle key: GTA counts Niko as %s (%.2f s after the key)", standing ? "standing" : "NOT standing", enterClock);
+				lastStanding = standing;
+			}
+		} else {
+			lastStanding = true;
+		}
+		if (out.accepted) {
+			gtaTookPress = true;
+			LC_LOG("GTA took the press (tap %d): Niko %s (%.2f s after the key)", tapsThisAttempt, in.gettingIn ? "is getting in" : "walks to a door", enterClock);
 		}
 		if (wasEntering && !logic.entering() && a_f.inCar) {
 			LC_LOG("Niko is in a vehicle (%.2f s after the key)", enterClock);
@@ -343,7 +615,25 @@ namespace lc::HostDrive
 			LC_LOG("Niko is getting into a vehicle (%.2f s after the key)", enterClock);
 		}
 		sawGettingIn = logic.entering() && (sawGettingIn || in.gettingIn);
-		pressEnter.store(out.pressEnter, std::memory_order_relaxed);
+		if (Cfg().debugInjectEnterKey) {
+			// Test hook: the taps as real key events (SendInput, through Wine's DirectInput) instead
+			// of pad writes, to compare with what GTA does for a real F.
+			static bool injected = false;
+			if (out.pressEnter != injected) {
+				INPUT key{};
+				key.type = INPUT_KEYBOARD;
+				key.ki.wScan = Cfg().VehicleKeyDik();
+				key.ki.dwFlags = KEYEVENTF_SCANCODE | (out.pressEnter ? 0 : KEYEVENTF_KEYUP);
+				::SendInput(1, &key, sizeof(key));
+				injected = out.pressEnter;
+				if (out.pressEnter) {
+					LC_LOG("DebugInjectEnterKey: real key down (scan code 0x%02X)", Cfg().VehicleKeyDik());
+				}
+			}
+			pressEnter.store(false, std::memory_order_relaxed);
+		} else {
+			pressEnter.store(out.pressEnter, std::memory_order_relaxed);
+		}
 		if (out.fallbackEnter && a_f.exists) {
 			EnterByOtherMeans(a_f.ped);
 		}
@@ -368,7 +658,7 @@ namespace lc::HostDrive
 				debugRelocated = true;
 			}
 			if (--debugRelocate > 0) {
-				r.blocker = "DebugAutoVehicle: moving Niko to the road";
+				r.blocker = "test hook: moving Niko to the road";
 				r.hostDrives = true;
 			} else {
 				r.resync = true;
@@ -418,5 +708,43 @@ namespace lc::HostDrive
 		st.inVehicle = out.inVehicle;
 		st.nikoMode = logic.mode() == drive::Mode::kNiko;
 		return r;
+	}
+
+	int DebugPuppetTarget(GtaVec& a_feet)
+	{
+		auto& w = walk;
+		if (!w.active) {
+			return 0;
+		}
+		if (w.needStart) {
+			w.needStart = false;
+			w.start = a_feet;
+			w.target = a_feet;
+		}
+		// Moves the target toward a point at a_speed m/s; true once there.
+		const auto toward = [&](double a_x, double a_y, float a_speed) {
+			const double dx = a_x - w.target.x, dy = a_y - w.target.y, d = std::sqrt(dx * dx + dy * dy), step = a_speed * w.dt;
+			if (d <= step || d < 1e-6) {
+				w.target.x = a_x, w.target.y = a_y;
+				return true;
+			}
+			w.target.x += dx / d * step, w.target.y += dy / d * step;
+			return false;
+		};
+		if (w.step == 3) {
+			// 10 m out along the path (through the car at 5 m) and back, 6 s.
+			const float u = std::min(w.t / 6.0f, 1.0f), d = 10.0f * (u < 0.5f ? u * 2.0f : 2.0f - u * 2.0f);
+			w.target.x = w.start.x + w.dir[0] * d;
+			w.target.y = w.start.y + w.dir[1] * d;
+		} else if (w.step == 4 && w.ped && !w.pedGone && S::DOES_CHAR_EXIST(w.ped)) {
+			float x = 0, y = 0, z = 0;
+			S::GET_CHAR_COORDINATES(w.ped, &x, &y, &z);
+			toward(x, y, 8.0f);  // into the pedestrian, and stay there
+		} else if (w.step == 5) {
+			toward(a_feet.x, a_feet.y, 6.0f);  // back to where Minecraft's player is
+		}
+		w.target.z = a_feet.z;
+		a_feet = w.target;
+		return w.round == 0 ? 1 : 2;
 	}
 }

@@ -69,11 +69,18 @@ namespace lc::Input
 		bool                       hadPrevious = false;
 		RAWINPUTDEVICE             previous{};
 		bool                       quiet = false;  // set while unloading
+		std::atomic<std::uint32_t> focusChanges{ 0 };   // SetFocus flips (window thread), for the watchdog
+		std::uint32_t              focusChangesSeen = 0;
+		float                      watchdogT = 0.0f;   // seconds until the next routine check
+		float                      watchdogBurstT = 0.0f;  // after a focus change: check every frame this long
+		std::uint32_t              retakes = 0;
+		bool                       watchdogOff = false;  // DebugFocusCycle: its first cycle runs without it
+		std::atomic<std::uint32_t> rawMouseTotal{ 0 };   // WM_INPUT mouse motion ever received (DebugFocusCycle)
 
 		struct AtomicCounters
 		{
 			std::atomic<std::uint32_t> keys{ 0 }, buttons{ 0 }, scrolls{ 0 }, chars{ 0 }, cursors{ 0 }, rawMouse{ 0 }, releaseAll{ 0 }, openMenu{ 0 },
-				dropped{ 0 }, padZeroed{ 0 };
+				dropped{ 0 }, padZeroed{ 0 }, rawRetaken{ 0 };
 		} counters;
 
 		void Push(proto::InputType a_type, std::uint16_t a_code, std::int32_t a_a = 0, std::int32_t a_b = 0)
@@ -121,6 +128,7 @@ namespace lc::Input
 				return;
 			}
 			counters.rawMouse.fetch_add(1, std::memory_order_relaxed);
+			rawMouseTotal.fetch_add(1, std::memory_order_relaxed);
 			if (!Routing()) {
 				return;
 			}
@@ -205,6 +213,7 @@ namespace lc::Input
 		{
 			if (focused.exchange(a_focused) != a_focused) {
 				LC_LOG("window %s (%s)", a_focused ? "focused" : "lost focus", a_why);
+				focusChanges.fetch_add(1, std::memory_order_relaxed);
 				if (!a_focused) {
 					ReleaseAll();
 				}
@@ -299,6 +308,221 @@ namespace lc::Input
 			for (const auto& d : devices) {
 				LC_LOG("raw input: existing registration usage %u/%u flags 0x%lX hwnd %p%s", d.usUsagePage, d.usUsage, d.dwFlags, static_cast<void*>(d.hwndTarget),
 					d.hwndTarget == window ? " (the game window)" : "");
+			}
+		}
+
+		// The process's raw mouse registration (one per usage per process), if any.
+		bool FindMouseRegistration(RAWINPUTDEVICE& a_out)
+		{
+			RAWINPUTDEVICE devices[16];
+			UINT           count = 16;
+			const UINT     n = ::GetRegisteredRawInputDevices(devices, &count, sizeof(RAWINPUTDEVICE));
+			if (n == static_cast<UINT>(-1)) {
+				return false;
+			}
+			for (UINT i = 0; i < n; ++i) {
+				if (devices[i].usUsagePage == 0x01 && devices[i].usUsage == 0x02) {
+					a_out = devices[i];
+					return true;
+				}
+			}
+			return false;
+		}
+
+		// Raw input keeps one mouse registration per process, and Wine's DirectInput (re)registers it
+		// for its own input window (RIDEV_CAPTUREMOUSE | RIDEV_NOLEGACY, flags 0x230) whenever GTA IV
+		// acquires its mouse, and removes it when GTA unacquires: alt-tab does both. Puppet mode's
+		// registration was gone afterwards, so no WM_INPUT reached the game window (no mouse look) and,
+		// with NOLEGACY, no mouse button messages either, until puppet mode restarted (a trip through
+		// GTA's pause menu did that). While captured and focused, take it back.
+		void Watchdog(float a_dt)
+		{
+			if (!captured || !window || watchdogOff) {
+				return;
+			}
+			const std::uint32_t changes = focusChanges.load(std::memory_order_relaxed);
+			if (changes != focusChangesSeen) {
+				focusChangesSeen = changes;
+				watchdogBurstT = 3.0f;  // GTA re-acquires its mouse some frames after the focus comes back
+			}
+			if (!focused.load(std::memory_order_relaxed)) {
+				return;  // (the game loop is blocked while unfocused anyway)
+			}
+			watchdogBurstT = std::max(0.0f, watchdogBurstT - a_dt);
+			if ((watchdogT -= a_dt) > 0.0f && watchdogBurstT <= 0.0f) {
+				return;
+			}
+			watchdogT = 0.1f;
+			RAWINPUTDEVICE current{};
+			const bool     found = FindMouseRegistration(current);
+			if (found && current.hwndTarget == window && (current.dwFlags & RIDEV_INPUTSINK)) {
+				return;
+			}
+			if (found) {
+				previous = current;  // whoever registered it last gets it back when puppet mode ends
+				hadPrevious = true;
+			}
+			RAWINPUTDEVICE mouse{ 0x01, 0x02, RIDEV_INPUTSINK, window };
+			const bool     ok = ::RegisterRawInputDevices(&mouse, 1, sizeof(mouse)) != FALSE;
+			counters.rawRetaken.fetch_add(1, std::memory_order_relaxed);
+			if (++retakes <= 20) {
+				LC_LOG("raw mouse: the registration was %s (%s hwnd %p flags 0x%lX); %s for the game window", found ? "taken over" : "removed",
+					found ? "now" : "was", static_cast<void*>(found ? current.hwndTarget : nullptr), found ? current.dwFlags : 0ul,
+					ok ? "registered it again" : "re-registering FAILED");
+			} else {
+				LC_LOG_EVERY(10000, "raw mouse: taken back again (%u times so far)", retakes);
+			}
+		}
+
+		// ---- DebugFocusCycle (test hook): alt-tab without a keyboard ------------------------------------
+		// A window of our own on another thread takes the foreground for 3 s, then gives it back, like
+		// alt-tab (WM_ACTIVATEAPP, WM_KILLFOCUS; Wine's DirectInput unacquires and re-acquires GTA's
+		// mouse). Relative mouse moves injected with SendInput before and after show whether raw mouse
+		// input still reaches the game window. The first cycle runs without the watchdog (the old
+		// behaviour), then turns it on; the second has it on throughout.
+		struct FocusTest
+		{
+			int               cycle = 0;
+			int               phase = 0;  // 0 waiting, 1 probe before, 2 focus away, 3 after
+			float             t = 0.0f;
+			std::uint32_t     rawAt = 0;
+			std::atomic<bool> thiefDone{ false };
+		} focusTest;
+
+		void InjectMouseMoves()
+		{
+			for (int i = 0; i < 5; ++i) {
+				INPUT in{};
+				in.type = INPUT_MOUSE;
+				in.mi.dx = (i % 2) ? -3 : 3;
+				in.mi.dwFlags = MOUSEEVENTF_MOVE;
+				::SendInput(1, &in, sizeof(in));
+			}
+		}
+
+		void LogProbe(const char* a_when)
+		{
+			RAWINPUTDEVICE current{};
+			const bool     found = FindMouseRegistration(current);
+			LC_LOG("DebugFocusCycle %d: %s: %u raw mouse messages for 5 injected moves; mouse registration: %s hwnd %p flags 0x%lX%s; watchdog %s",
+				focusTest.cycle + 1, a_when, rawMouseTotal.load() - focusTest.rawAt, found ? "" : "none,", static_cast<void*>(found ? current.hwndTarget : nullptr),
+				found ? current.dwFlags : 0ul, found && current.hwndTarget == window ? " (the game window)" : "", watchdogOff ? "OFF" : "on");
+		}
+
+		DWORD WINAPI FocusThief(LPVOID)
+		{
+			HINSTANCE  inst = ::GetModuleHandleW(nullptr);
+			WNDCLASSW  wc{};
+			wc.lpfnWndProc = ::DefWindowProcW;
+			wc.hInstance = inst;
+			wc.lpszClassName = L"LibertyCraftFocusTest";
+			::RegisterClassW(&wc);
+			HWND w = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, wc.lpszClassName, L"LibertyCraft focus test", WS_POPUP | WS_VISIBLE, 0, 0, 32, 32,
+				nullptr, nullptr, inst, nullptr);
+			const BOOL took = w ? ::SetForegroundWindow(w) : FALSE;
+			LC_LOG("DebugFocusCycle: test window %p takes the foreground (SetForegroundWindow %d; foreground now %p, game window %p)", static_cast<void*>(w), took,
+				static_cast<void*>(::GetForegroundWindow()), static_cast<void*>(window));
+			const auto pump = [](DWORD a_ms) {
+				const ULONGLONG end = ::GetTickCount64() + a_ms;
+				while (::GetTickCount64() < end) {
+					MSG m;
+					while (::PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+						::TranslateMessage(&m);
+						::DispatchMessageW(&m);
+					}
+					::Sleep(10);
+				}
+			};
+			pump(1500);
+			RAWINPUTDEVICE current{};
+			const bool     found = FindMouseRegistration(current);
+			LC_LOG("DebugFocusCycle: while away: foreground %p, mouse registration: %s hwnd %p flags 0x%lX", static_cast<void*>(::GetForegroundWindow()),
+				found ? "" : "none,", static_cast<void*>(found ? current.hwndTarget : nullptr), found ? current.dwFlags : 0ul);
+			pump(1500);
+			const BOOL back = ::SetForegroundWindow(window);
+			if (w) {
+				::DestroyWindow(w);
+			}
+			pump(300);
+			LC_LOG("DebugFocusCycle: foreground given back (SetForegroundWindow %d; foreground now %p, game window %p)", back,
+				static_cast<void*>(::GetForegroundWindow()), static_cast<void*>(window));
+			focusTest.thiefDone = true;
+			return 0;
+		}
+
+		void FocusTestTick(float a_dt)
+		{
+			auto& ft = focusTest;
+			if (!Config::Get().debugFocusCycle || ft.cycle >= 2) {
+				return;
+			}
+			ft.t += a_dt;
+			const auto probe = [&](int a_next) {
+				ft.rawAt = rawMouseTotal.load();
+				InjectMouseMoves();
+				ft.phase = a_next;
+				ft.t = 0.0f;
+			};
+			switch (ft.phase) {
+			case 0:  // puppeting for a while
+				if (!captured || !focused.load()) {
+					ft.t = 0.0f;
+				} else if (ft.t >= (ft.cycle == 0 ? 15.0f : 20.0f)) {
+					probe(1);
+				}
+				break;
+			case 1:  // the probe before: then away
+				if (ft.t >= 0.5f) {
+					LogProbe("before the focus loss");
+					watchdogOff = ft.cycle == 0;
+					ft.thiefDone = false;
+					if (HANDLE h = ::CreateThread(nullptr, 0, &FocusThief, nullptr, 0, nullptr)) {
+						::CloseHandle(h);
+						ft.phase = 2;
+					} else {
+						ft.cycle = 2;
+					}
+					ft.t = 0.0f;
+				}
+				break;
+			case 2:  // away (the game loop mostly blocks meanwhile)
+				if (ft.thiefDone.load()) {
+					ft.phase = 3;
+					ft.t = 0.0f;
+				}
+				break;
+			case 3:  // back for 1 s: probe
+				if (ft.t >= 1.0f) {
+					probe(4);
+				}
+				break;
+			case 4:
+				if (ft.t >= 0.5f) {
+					LogProbe("1 s after the focus came back");
+					if (watchdogOff) {
+						watchdogOff = false;
+						LC_LOG("DebugFocusCycle 1: turning the raw mouse watchdog on");
+						ft.phase = 5;
+					} else {
+						++ft.cycle;
+						ft.phase = 0;
+					}
+					ft.t = 0.0f;
+				}
+				break;
+			case 5:  // the first cycle: probe again with the watchdog on
+				if (ft.t >= 1.0f) {
+					probe(6);
+				}
+				break;
+			default:
+				if (ft.t >= 0.5f) {
+					LogProbe("1 s after turning the watchdog on");
+					++ft.cycle;
+					ft.phase = 0;
+					ft.t = 0.0f;
+				}
+				break;
 			}
 		}
 	}
@@ -415,6 +639,12 @@ namespace lc::Input
 		counters.padZeroed.fetch_add(1, std::memory_order_relaxed);
 	}
 
+	void Tick(float a_dt)
+	{
+		Watchdog(a_dt);
+		FocusTestTick(a_dt);
+	}
+
 	void ConsumeLook(float& a_dx, float& a_dy)
 	{
 		a_dx = static_cast<float>(lookDx.exchange(0, std::memory_order_relaxed));
@@ -431,6 +661,6 @@ namespace lc::Input
 	{
 		auto take = [](std::atomic<std::uint32_t>& a_c) { return a_c.exchange(0, std::memory_order_relaxed); };
 		return { take(counters.keys), take(counters.buttons), take(counters.scrolls), take(counters.chars), take(counters.cursors), take(counters.rawMouse),
-			take(counters.releaseAll), take(counters.openMenu), take(counters.dropped), take(counters.padZeroed) };
+			take(counters.releaseAll), take(counters.openMenu), take(counters.dropped), take(counters.padZeroed), take(counters.rawRetaken) };
 	}
 }

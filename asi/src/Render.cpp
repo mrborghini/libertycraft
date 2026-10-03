@@ -6,6 +6,7 @@
 #include "Render.h"
 
 #include "render/Frame.h"
+#include "render/Lighting.h"
 #include "render/RenderMath.h"
 #include "render/World.h"
 
@@ -17,6 +18,7 @@
 #include "Overlay.h"
 #include "Perf.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -327,6 +329,106 @@ namespace lc::Render
 			LC_LOG("phase probe: %s", phaseViewportOffset >= 0 ? "embedded viewport found" : phaseViewportPtrAt >= 0 ? "viewport pointer found" : "no viewport found: final cam it is");
 		}
 
+		// ---- test hooks: DebugTimeOfDay / DebugWeather / DebugLightingAB (game thread) --------
+		struct DebugStep
+		{
+			float hour = -1.0f;  // < 0: leave the clock
+			int   weather = -1;  // < 0: leave the weather
+		};
+		std::vector<DebugStep> debugSteps;
+		bool                   debugParsed = false;
+		int                    debugStepIndex = -1;
+		std::uint64_t          debugT0 = 0;
+		bool                   debugMinecraftLighting = false;  // DebugLightingAB: first half of each step
+		std::atomic<int>       debugLogRequest{ 0 };           // render thread: dump GTA's constants
+
+		std::vector<float> ParseList(const std::string& a_s)
+		{
+			std::vector<float> out;
+			const char* p = a_s.c_str();
+			while (*p) {
+				char*       end = nullptr;
+				const float v = std::strtof(p, &end);
+				if (end == p) {
+					++p;
+					continue;
+				}
+				out.push_back(v);
+				p = end;
+			}
+			return out;
+		}
+
+		// Steps through the hours/weathers (one step every DebugStepSeconds once the blocks are first
+		// drawn), pinning GTA's clock each frame. Logs "debug step i/n: ..." for test scripts.
+		void DebugSequence(const Config& a_cfg, bool a_drawing)
+		{
+			if (!debugParsed) {
+				debugParsed = true;
+				const auto hours = ParseList(a_cfg.debugTimeOfDay), weathers = ParseList(a_cfg.debugWeather);
+				const std::size_t n = std::max(hours.size(), weathers.size());
+				for (std::size_t i = 0; i < n; ++i) {
+					DebugStep s;
+					s.hour = hours.empty() ? -1.0f : hours[i % hours.size()];
+					s.weather = weathers.empty() ? -1 : int(weathers[i % weathers.size()]);
+					debugSteps.push_back(s);
+				}
+				if (n == 0 && a_cfg.debugLightingAB) {
+					debugSteps.push_back(DebugStep{});
+				}
+			}
+			if (debugSteps.empty()) {
+				return;
+			}
+			const auto now = ::GetTickCount64();
+			if (!debugT0) {
+				if (!a_drawing) {
+					return;
+				}
+				debugT0 = now;
+			}
+			const float stepS = std::max(2.0f, a_cfg.debugStepSeconds);
+			const float t = float(now - debugT0) / 1000.0f;
+			const int   index = std::min(int(t / stepS), int(debugSteps.size()) - 1);
+			const auto& step = debugSteps[std::size_t(index)];
+			const bool  mcLighting = a_cfg.debugLightingAB && std::fmod(t, stepS) < stepS * 0.5f && t < stepS * float(debugSteps.size());
+			if (step.hour >= 0.0f) {
+				const float h = std::fmod(step.hour, 24.0f);
+				CClock::ms_nGameClockHours = std::uint32_t(h);
+				CClock::ms_nGameClockMinutes = std::uint32_t((h - std::floor(h)) * 60.0f);
+				CClock::ms_nGameClockSeconds = 0;
+			}
+			if (index != debugStepIndex || mcLighting != debugMinecraftLighting) {
+				if (index != debugStepIndex && step.weather >= 0) {
+					CWeather::ForceWeatherNow(step.weather);
+				}
+				debugStepIndex = index;
+				debugMinecraftLighting = mcLighting;
+				LC_LOG("debug step %d/%zu: time %02u:%02u, weather %u -> %u (%.2f, forced %d, rain %.2f), lighting %s", index + 1, debugSteps.size(),
+					CClock::ms_nGameClockHours, CClock::ms_nGameClockMinutes, CWeather::OldWeatherType, CWeather::NewWeatherType, CWeather::InterpolationValue,
+					step.weather, CWeather::Rain, (mcLighting || a_cfg.renderLighting != Config::RenderLighting::kGta) ? "minecraft" : "gta");
+				debugLogRequest = 2;
+			}
+		}
+
+		// DebugVehicleSpeed: in a vehicle, push it forward 4 s of every 8 (natives from drawingEvent:
+		// a test hook only).
+		void DebugVehicleSpeed(const Config& a_cfg)
+		{
+			if (a_cfg.debugVehicleSpeed <= 0.0f || !Game::State().inVehicle || (::GetTickCount64() / 1000) % 8 >= 4) {
+				return;
+			}
+			namespace S = ::Scripting;
+			int ped = 0, veh = 0;
+			S::GET_PLAYER_CHAR(static_cast<int>(S::GET_PLAYER_ID()), &ped);
+			if (ped && S::IS_CHAR_IN_ANY_CAR(ped)) {
+				S::GET_CAR_CHAR_IS_USING(ped, &veh);
+				if (veh) {
+					S::SET_CAR_FORWARD_SPEED(veh, a_cfg.debugVehicleSpeed);
+				}
+			}
+		}
+
 		void Capture(FrameSnapshot& a_f, const Config& a_cfg)
 		{
 			auto& st = Game::State();
@@ -373,10 +475,15 @@ namespace lc::Render
 				a_f.flags |= render::kFrameCameraValid;
 			}
 
-			// Lighting: GTA's clock.
+			// Lighting: GTA's clock (Minecraft's own lighting) and weather; GTA's lighting constants
+			// are read back on the render thread.
 			a_f.gameHour = float(CClock::ms_nGameClockHours) + float(CClock::ms_nGameClockMinutes) / 60.0f + float(CClock::ms_nGameClockSeconds) / 3600.0f;
 			a_f.dayFactor = render::DayFactor(a_f.gameHour);
 			a_f.exposure = a_cfg.renderExposure > 0.0f ? a_cfg.renderExposure : 1.0f;
+			a_f.rain = CWeather::Rain;
+			if (a_cfg.renderLighting == Config::RenderLighting::kGta && !debugMinecraftLighting) {
+				a_f.flags |= render::kFrameGtaLighting;
+			}
 
 			using RD = Config::RenderDepth;
 			if (a_cfg.renderDepth != RD::kOff) {
@@ -418,6 +525,30 @@ namespace lc::Render
 				a_f.feet[0] = mc.x;
 				a_f.feet[1] = mc.y;
 				a_f.feet[2] = mc.z;
+				// In a vehicle Minecraft's rider (and mount) arrive a frame or two behind GTA's seat,
+				// which moved on with the vehicle: draw them at the seat of this frame (the ped's
+				// matrix, as HostDrive measures it, minus VehicleSeatDrop).
+				bool seatFix = true;
+				if (a_cfg.debugSeatAB && st.inVehicle) {
+					static bool lastFix = true;
+					seatFix = ((::GetTickCount64() + 2000) / 4000) % 2 == 0;
+					if (seatFix != lastFix) {
+						lastFix = seatFix;
+						LC_LOG("DebugSeatAB: rider %s", seatFix ? "at GTA's seat (corrected)" : "where Minecraft reports it (uncorrected)");
+					}
+				}
+				CPed* ped = st.inVehicle && seatFix ? FindPlayerPed() : nullptr;
+				float pos[3];
+				if (ped && ped->m_pMatrix && SafeCopy(pos, &ped->m_pMatrix->pos, sizeof(pos)) && Finite(pos, 3)) {
+					const McVec seat = GtaToMc(pos[0], pos[1], pos[2] - a_cfg.vehicleSeatDrop);
+					const double dx = seat.x - mc.x, dy = seat.y - mc.y, dz = seat.z - mc.z;
+					if (dx * dx + dy * dy + dz * dz < 6.0 * 6.0) {
+						a_f.feet[0] = seat.x;
+						a_f.feet[1] = seat.y;
+						a_f.feet[2] = seat.z;
+						a_f.flags |= render::kFrameMountShift;
+					}
+				}
 			}
 			a_f.guiScale = haveMc ? mc.guiScale : 0;
 			a_f.cursorX = st.cursorX;
@@ -480,6 +611,8 @@ namespace lc::Render
 		std::uint32_t loggedTargets = 0;
 		std::uint32_t lastTargetKey = 0;
 		std::uint32_t dcCalls = 0, framesDrawn = 0, deviceLostFrames = 0;
+		std::uint32_t mountFrames = 0;  // frames the rider was moved to GTA's seat
+		double        mountShiftSum = 0.0, mountShiftMax = 0.0;
 		std::uint64_t lastStatsMs = 0;
 		double        stateMs = 0.0;
 		std::uint32_t bbW = 0, bbH = 0, bbCheck = 0;
@@ -529,6 +662,373 @@ namespace lc::Render
 			return a_buf;
 		}
 
+		// ---- GTA's lighting -----------------------------------------------------------------------
+		// GTA IV's shaders share their global parameters at fixed registers (render/Lighting.h). At our
+		// draw command (right after GTA's tone mapping) the fog and tone mapping constants and the
+		// adapted luminance texture are still bound, but the sun/ambient registers have been reused by
+		// later passes. So SetPixelShaderConstantF is watched (a device vtable slot) and the sun pass's
+		// values are kept: per frame, the writes while gDirectionalColour holds its brightest sun/moon.
+		namespace sunwatch
+		{
+			using SetF = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
+			// IDirect3DDevice9 vtable order: SetVertexShaderConstantF 94, SetPixelShaderConstantF 109.
+			constexpr unsigned         kSlots[2] = { 109, 94 };
+			const char* const          kStageNames[2] = { "pixel", "vertex" };
+			SetF                       original[2]{};
+			bool                       tried = false;
+			std::atomic<std::uint32_t> calls{ 0 };
+
+			struct Seen
+			{
+				float         regs[4][4];  // c17, c18, c37, c38
+				std::uint32_t count, firstCall;
+			};
+			struct Stage
+			{
+				float         shadow[48][4]{};  // c0-c47 as last written
+				Seen          seen[12]{};       // DebugLighting: the distinct sun/ambient sets this frame
+				std::uint32_t seenCount = 0, frameCalls = 0, frameTouch = 0;
+			};
+			Stage          stages[2];
+			bool           recordSeen = false;
+			// GTA's tone mapping pass, caught as it sets its constants (c64-c95; a later pass reuses
+			// some of them before our draw command runs).
+			float          high[32][4]{};
+			float          texelX = 0.0f, texelY = 0.0f;  // 1 / the back buffer size (set by the render thread)
+			render::GtaTone tone;
+			unsigned       toneReg = 0;  // ToneMapParams register of the variant seen this frame (0: none)
+
+			void WatchHigh(UINT a_start, const float* a_data, UINT a_count)
+			{
+				if (!a_data || a_start + a_count <= 64 || a_start >= 96) {
+					return;
+				}
+				const UINT from = std::max<UINT>(a_start, 64), to = std::min<UINT>(a_start + a_count, 96);
+				for (UINT r = from; r < to; ++r) {
+					const float* v = a_data + (r - a_start) * 4;
+					// c66: the tone mapping (and bloom) passes write Exposure as (x, 0, 0, 0); a later
+					// pass reuses c66 for a colour, which must not count as the exposure.
+					if (r == render::gtareg::kExposure && (v[1] != 0.0f || v[2] != 0.0f || v[3] != 0.0f)) {
+						continue;
+					}
+					std::memcpy(high[r - 64], v, 16);
+				}
+				if (texelX > 0.0f && from <= 84 && to > 66) {
+					render::GtaTone t;
+					if (const unsigned reg = render::FindTone(high, texelX, texelY, t)) {
+						tone = t;
+						toneReg = reg;
+					}
+				}
+			}
+
+			void Watch(int a_stage, UINT a_start, const float* a_data, UINT a_count)
+			{
+				auto& st = stages[a_stage];
+				++st.frameCalls;
+				if (!a_data || a_start >= 48 || !a_count) {
+					return;
+				}
+				const UINT n = std::min<UINT>(a_count, 48 - a_start);
+				std::memcpy(st.shadow[a_start], a_data, n * 16);
+				auto has = [&](UINT a_r) { return a_r >= a_start && a_r < a_start + n; };
+				if (!(has(render::gtareg::kDirLight) || has(render::gtareg::kDirColour) || has(render::gtareg::kAmbient0) || has(render::gtareg::kAmbient1))) {
+					return;
+				}
+				++st.frameTouch;
+				float cur[4][4];
+				std::memcpy(cur[0], st.shadow[render::gtareg::kDirLight], 16);
+				std::memcpy(cur[1], st.shadow[render::gtareg::kDirColour], 16);
+				std::memcpy(cur[2], st.shadow[render::gtareg::kAmbient0], 16);
+				std::memcpy(cur[3], st.shadow[render::gtareg::kAmbient1], 16);
+				// The distinct register sets of this frame and how many draws used each: the scene's
+				// sun pass and its geometry use one set hundreds of times; a few other passes (an
+				// interior's partial writes, a second light direction for a handful of draws) differ.
+				std::uint32_t k = 0;
+				while (k < st.seenCount && std::memcmp(st.seen[k].regs, cur, sizeof(cur)) != 0) {
+					++k;
+				}
+				if (k < st.seenCount) {
+					++st.seen[k].count;
+				} else if (k < 12) {
+					std::memcpy(st.seen[k].regs, cur, sizeof(cur));
+					st.seen[k].count = 1;
+					st.seen[k].firstCall = st.frameCalls;
+					st.seenCount = k + 1;
+				}
+			}
+
+			HRESULT STDMETHODCALLTYPE HookPs(IDirect3DDevice9* a_d, UINT a_start, const float* a_data, UINT a_count)
+			{
+				calls.fetch_add(1, std::memory_order_relaxed);
+				Watch(0, a_start, a_data, a_count);
+				WatchHigh(a_start, a_data, a_count);
+				return original[0](a_d, a_start, a_data, a_count);
+			}
+
+			HRESULT STDMETHODCALLTYPE HookVs(IDirect3DDevice9* a_d, UINT a_start, const float* a_data, UINT a_count)
+			{
+				Watch(1, a_start, a_data, a_count);
+				return original[1](a_d, a_start, a_data, a_count);
+			}
+
+			bool Patch(void** a_slot, void* a_value)
+			{
+				DWORD old = 0;
+				if (!::VirtualProtect(a_slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+					return false;
+				}
+				*a_slot = a_value;
+				::VirtualProtect(a_slot, sizeof(void*), old, &old);
+				::FlushInstructionCache(::GetCurrentProcess(), a_slot, sizeof(void*));
+				return true;
+			}
+
+			void Install(IDirect3DDevice9* a_d)
+			{
+				tried = true;
+				auto**     vtbl = *reinterpret_cast<void***>(a_d);
+				void*const hooks[2] = { reinterpret_cast<void*>(&HookPs), reinterpret_cast<void*>(&HookVs) };
+				for (int s = 0; s < 2; ++s) {
+					void** slot = vtbl + kSlots[s];
+					void*  was = *slot;
+					if (!Patch(slot, hooks[s])) {
+						LC_LOG("WARNING: can't watch Set%sShaderConstantF (VirtualProtect error %lu)", s ? "Vertex" : "Pixel", ::GetLastError());
+						continue;
+					}
+					original[s] = reinterpret_cast<SetF>(was);
+				}
+				if (!original[0]) {
+					LC_LOG("WARNING: GTA's sun/ambient unknown: Minecraft's lighting");
+					return;
+				}
+				// Check the slot: our own call must come through.
+				const auto  before = calls.load();
+				const float probe[4] = { 0, 0, 0, 0 };
+				a_d->SetPixelShaderConstantF(47, probe, 1);
+				if (calls.load() == before) {
+					for (int s = 0; s < 2; ++s) {
+						if (original[s]) {
+							Patch(vtbl + kSlots[s], reinterpret_cast<void*>(original[s]));
+							original[s] = nullptr;
+						}
+					}
+					LC_LOG("WARNING: vtable slot %u isn't SetPixelShaderConstantF: unhooked; GTA's sun/ambient unknown", kSlots[0]);
+					return;
+				}
+				LC_LOG("watching Set{Pixel,Vertex}ShaderConstantF (device %p, vtable %p) for GTA's sun and ambient", static_cast<void*>(a_d), static_cast<void*>(vtbl));
+			}
+
+			// Forget this frame's writes (a frame without the blocks: nothing to light).
+			void Reset()
+			{
+				for (auto& st : stages) {
+					st.seenCount = st.frameCalls = st.frameTouch = 0;
+				}
+				toneReg = 0;
+			}
+
+			// This frame's tone mapping constants, then start over for the next frame.
+			unsigned TakeTone(render::GtaTone& a_out)
+			{
+				const unsigned reg = toneReg;
+				a_out = tone;
+				toneReg = 0;
+				return reg;
+			}
+
+			// This frame's sun pass (the valid pixel shader set most draws used), then start over for
+			// the next frame.
+			bool Take(render::GtaSun& a_out, std::uint32_t& a_writes, std::uint32_t& a_distinct)
+			{
+				const auto& ps = stages[0];
+				int         best = -1;
+				for (std::uint32_t k = 0; k < ps.seenCount; ++k) {
+					render::GtaSun c;
+					std::memcpy(c.dir, ps.seen[k].regs[0], 16);
+					std::memcpy(c.colour, ps.seen[k].regs[1], 16);
+					std::memcpy(c.amb0, ps.seen[k].regs[2], 16);
+					std::memcpy(c.amb1, ps.seen[k].regs[3], 16);
+					if (render::SunValid(c) && (best < 0 || ps.seen[k].count > ps.seen[best].count)) {
+						best = int(k);
+						a_out = c;
+					}
+				}
+				a_writes = best >= 0 ? ps.seen[best].count : 0;
+				a_distinct = ps.seenCount;
+				const bool any = original[0] && best >= 0;
+				for (int s = 0; s < 2; ++s) {
+					auto& st = stages[s];
+					if (recordSeen && (s == 0 || Config::Get().diagnostics)) {
+						LC_LOG("sun watch, %s shader constants: %u calls this frame, %u touching c17/c18/c37/c38, %u distinct sets:", kStageNames[s], st.frameCalls,
+							st.frameTouch, st.seenCount);
+						for (std::uint32_t k = 0; k < st.seenCount; ++k) {
+							const auto& r = st.seen[k].regs;
+							LC_LOG("  x%u from call %u: c17 %.3f %.3f %.3f %.3f c18 %.3f %.3f %.3f %.3f c37 %.3f %.3f %.3f %.3f c38 %.3f %.3f %.3f %.3f", st.seen[k].count,
+								st.seen[k].firstCall, r[0][0], r[0][1], r[0][2], r[0][3], r[1][0], r[1][1], r[1][2], r[1][3], r[2][0], r[2][1], r[2][2], r[2][3],
+								r[3][0], r[3][1], r[3][2], r[3][3]);
+						}
+					}
+					st.seenCount = st.frameCalls = st.frameTouch = 0;
+				}
+				recordSeen = false;
+				return any;
+			}
+		}
+
+		render::LightingInputs lastInputs;
+		bool                   loggedInputs = false;
+		bool                   lastToneWatched = false;
+		std::uint64_t          nextLightLog = 0;
+		render::GtaSun         heldSun;              // the last good sun pass (a frame without one keeps it)
+		bool                   heldSunOk = false;
+		std::uint32_t          sunMissingFrames = 0;
+
+		const char* Ok(bool a_ok)
+		{
+			return a_ok ? "ok" : "missing";
+		}
+
+		// GTA's adapted luminance: the 1x1 float texture its tone mapping sampled (s5 in the full
+		// variant). Not AddRef'd beyond this frame's use.
+		IDirect3DBaseTexture9* FindAdaptedLuminance(IDirect3DDevice9* a_d, DWORD& a_stage)
+		{
+			static const DWORD kOrder[] = { 5, 1, 2, 3, 4, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+			for (const DWORD s : kOrder) {
+				IDirect3DBaseTexture9* t = nullptr;
+				if (FAILED(a_d->GetTexture(s, &t)) || !t) {
+					continue;
+				}
+				D3DSURFACE_DESC desc{};
+				const bool      ok = t->GetType() == D3DRTYPE_TEXTURE && SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &desc)) && desc.Width == 1 &&
+				                desc.Height == 1 && (desc.Format == D3DFMT_R32F || desc.Format == D3DFMT_R16F || desc.Format == D3DFMT_G16R16F || desc.Format == D3DFMT_G32R32F);
+				t->Release();
+				if (ok) {
+					a_stage = s;
+					return t;  // still bound to stage s, so it stays alive through our draw
+				}
+			}
+			return nullptr;
+		}
+
+		// DebugLighting: the registers and textures around, raw.
+		void DumpGtaState(IDirect3DDevice9* a_d)
+		{
+			float r[96][4]{};
+			a_d->GetPixelShaderConstantF(0, &r[0][0], 96);
+			for (unsigned i = 16; i < 96; i += 2) {
+				if (i == 48) {
+					i = 64;
+				}
+				LC_LOG("  c%u %.4g %.4g %.4g %.4g | c%u %.4g %.4g %.4g %.4g", i, r[i][0], r[i][1], r[i][2], r[i][3], i + 1, r[i + 1][0], r[i + 1][1], r[i + 1][2], r[i + 1][3]);
+			}
+			float ff[12][4]{};
+			a_d->GetPixelShaderConstantF(212, &ff[0][0], 12);
+			for (unsigned i = 0; i < 12; i += 2) {
+				LC_LOG("  c%u %.4g %.4g %.4g %.4g | c%u %.4g %.4g %.4g %.4g", 212 + i, ff[i][0], ff[i][1], ff[i][2], ff[i][3], 213 + i, ff[i + 1][0], ff[i + 1][1],
+					ff[i + 1][2], ff[i + 1][3]);
+			}
+			for (DWORD s = 0; s < 16; ++s) {
+				IDirect3DBaseTexture9* t = nullptr;
+				if (FAILED(a_d->GetTexture(s, &t)) || !t) {
+					continue;
+				}
+				D3DSURFACE_DESC desc{};
+				char            fmt[16];
+				if (t->GetType() == D3DRTYPE_TEXTURE && SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &desc))) {
+					LC_LOG("  sampler %lu: texture %p %ux%u %s", s, static_cast<void*>(t), desc.Width, desc.Height, FormatName(desc.Format, fmt));
+				}
+				t->Release();
+			}
+		}
+
+		// Everything GTA's picture was made with this frame -> the world shader's parameters.
+		render::LightingParams GtaLighting(IDirect3DDevice9* a_d, const FrameSnapshot& a_f, std::uint32_t a_rtW, std::uint32_t a_rtH,
+			IDirect3DBaseTexture9*& a_adapted)
+		{
+			const auto&            cfg = Config::Get();
+			render::LightingInputs in;
+			in.rain = a_f.rain;
+			a_adapted = nullptr;
+			unsigned toneReg = 0;
+			bool     toneWatched = false;
+			if (!sunwatch::tried) {
+				sunwatch::Install(a_d);
+			}
+			std::uint32_t writes = 0, distinct = 0;
+			render::GtaSun sun;
+			if (sunwatch::Take(sun, writes, distinct) && render::SunValid(sun)) {
+				heldSun = sun;
+				heldSunOk = true;
+				sunMissingFrames = 0;
+			} else if (++sunMissingFrames > 30) {
+				heldSunOk = false;  // half a second without a sun pass (a loading screen, a cutscene cut): don't keep stale light
+			}
+			in.sun = heldSun;
+			in.sunOk = heldSunOk;
+
+			float r[96][4]{};
+			if (SUCCEEDED(a_d->GetPixelShaderConstantF(0, &r[0][0], 96))) {
+				std::memcpy(in.fog.params, r[render::gtareg::kFogParams], 16);
+				std::memcpy(in.fog.colour, r[render::gtareg::kFogColor], 16);
+				std::memcpy(in.fog.colourN, r[render::gtareg::kFogColorN], 16);
+				std::memcpy(in.fog.depthFx, r[render::gtareg::kDepthFx], 16);
+				in.fogOk = render::FogValid(in.fog);
+				in.depthFxOk = render::DepthFxValid(in.fog);
+				// The tone mapping as its pass set it (watched), else what is left in the registers.
+				toneReg = sunwatch::TakeTone(in.tone);
+				toneWatched = toneReg != 0;
+				if (!toneWatched) {
+					float high[32][4];
+					std::memcpy(high, r[64], sizeof(high));
+					toneReg = a_rtW && a_rtH ? render::FindTone(high, 1.0f / float(a_rtW), 1.0f / float(a_rtH), in.tone) : 0;
+				}
+				in.toneOk = toneReg != 0;
+			}
+			if (a_rtW && a_rtH) {
+				sunwatch::texelX = 1.0f / float(a_rtW);
+				sunwatch::texelY = 1.0f / float(a_rtH);
+			}
+			DWORD stage = 0;
+			if (in.toneOk) {
+				a_adapted = FindAdaptedLuminance(a_d, stage);
+				in.adaptedTexture = a_adapted != nullptr;
+			}
+			render::ExposureTuning tune;
+			tune.exposure = a_f.exposure;
+			tune.key = cfg.renderExposureKey;
+			tune.floor = cfg.renderExposureFloor;
+			tune.saturation = cfg.renderSaturation;
+			const auto p = render::MakeLighting(in, tune);
+
+			const bool changed = !loggedInputs || in.sunOk != lastInputs.sunOk || in.fogOk != lastInputs.fogOk || in.toneOk != lastInputs.toneOk ||
+			                     in.adaptedTexture != lastInputs.adaptedTexture || toneWatched != lastToneWatched;
+			lastToneWatched = toneWatched;
+			const auto now = ::GetTickCount64();
+			const int  dump = debugLogRequest.exchange(0);
+			if (changed || dump || (cfg.debugLighting && now >= nextLightLog)) {
+				nextLightLog = now + 10000;
+				loggedInputs = true;
+				lastInputs = in;
+				const auto& s = in.sun;
+				const auto& t = in.tone;
+				LC_LOG("GTA lighting (hour %.2f, rain %.2f): %s; sun %s (%u draws of %u sets) towards %.2f %.2f %.2f colour %.3f %.3f %.3f x %.2f, ambient %.3f %.3f %.3f "
+					   "+ down %.3f %.3f %.3f; fog %s %.1f to %.1f m (+%.2f, near %.2f) far %.3f %.3f %.3f near %.3f %.3f %.3f; depthFx %s %.2f %.2f %.1f to %.1f m; "
+					   "tone %s (ToneMapParams c%u, %s) exposure %.3f key %.3f saturation %.2f gamma %.3f correct %.3f %.3f %.3f shift %.2f %.2f %.2f x %.0f; adapted luminance %s",
+					a_f.gameHour, a_f.rain, p.sunDir[3] > 0.5f ? "GTA's lighting" : "Minecraft's lighting (no sun pass seen)", Ok(in.sunOk), writes, distinct, -s.dir[0],
+					-s.dir[1], -s.dir[2], s.colour[0], s.colour[1], s.colour[2], s.colour[3], s.amb0[0], s.amb0[1], s.amb0[2], s.amb1[0], s.amb1[1], s.amb1[2],
+					Ok(in.fogOk), in.fog.params[0], in.fog.params[1], in.fog.params[2], in.fog.params[3], in.fog.colour[0], in.fog.colour[1], in.fog.colour[2],
+					in.fog.colourN[0], in.fog.colourN[1], in.fog.colourN[2], Ok(in.depthFxOk), in.fog.depthFx[0], in.fog.depthFx[1], in.fog.depthFx[2],
+					in.fog.depthFx[3], Ok(in.toneOk), toneReg, toneWatched ? "as its pass set it" : "left in the registers", t.exposure, t.tmp[1], t.dsg[0], t.dsg[2], t.cc[0], t.cc[1], t.cc[2], t.cs[0], t.cs[1], t.cs[2], t.cs[3],
+					in.adaptedTexture ? (stage == 5 ? "GTA's texture (s5)" : "GTA's texture (not s5)") : "stand-in");
+				if (dump && cfg.debugLighting) {
+					DumpGtaState(a_d);
+				}
+				sunwatch::recordSeen = cfg.debugLighting;  // the next frame's writes, listed at its Take
+			}
+			return p;
+		}
+
 		void LogStats(const FrameSnapshot& a_f)
 		{
 			const auto now = ::GetTickCount64();
@@ -566,6 +1066,12 @@ namespace lc::Render
 					ws.drawMs / frames, ws.maxDrawMs, stateMs / frames, ws.drainMs / frames, overlayMs / frames);
 				(void)a_f;
 			}
+			if (mountFrames) {
+				LC_LOG("rider at GTA's seat in %u frames: Minecraft's feet were %.2f m behind on average (worst %.2f m)", mountFrames, mountShiftSum / mountFrames,
+					mountShiftMax);
+			}
+			mountFrames = 0;
+			mountShiftSum = mountShiftMax = 0.0;
 			framesDrawn = dcCalls = deviceLostFrames = 0;
 			stateMs = 0.0;
 		}
@@ -649,6 +1155,12 @@ namespace lc::Render
 			// Draw once per game frame, into the frame's full-size target.
 			const bool fullSize = rt.Width && rt.Height && (!bbW || (rt.Width == bbW && rt.Height == bbH));
 			const bool drawWorld = (a_f.flags & render::kFrameDrawWorld) != 0;
+			if (!sunwatch::tried) {
+				sunwatch::Install(device);  // from the first frame on, so the first lit frame has GTA's values
+			}
+			if (!drawWorld) {
+				sunwatch::Reset();  // no blocks to light: the next frame's scene starts afresh
+			}
 			if (a_f.gameFrame == drawnFrame || !fullSize || !(drawWorld || overlayWanted)) {
 				Overlay::Upload(device, false);
 				LogStats(a_f);
@@ -671,7 +1183,22 @@ namespace lc::Render
 			}
 			stateMs += NowMs() - t0;
 			if (drawWorld) {
-				render::World::Get().Draw(device, a_f, target);
+				const render::LightingParams light = GtaLighting(device, a_f, rt.Width, rt.Height, target.adaptedLum);
+				// The mount: where Minecraft's latest scene has the rider's feet.
+				proto::McState mc{};
+				double         mountFrom[3]{};
+				const bool     mount = (a_f.flags & render::kFrameMountShift) && Link::Get().ReadMcState(mc) && (mc.flags & proto::kMcInWorld);
+				if (mount) {
+					mountFrom[0] = mc.x;
+					mountFrom[1] = mc.y;
+					mountFrom[2] = mc.z;
+					const double dx = a_f.feet[0] - mc.x, dy = a_f.feet[1] - mc.y, dz = a_f.feet[2] - mc.z;
+					const double shift = std::sqrt(dx * dx + dy * dy + dz * dz);
+					++mountFrames;
+					mountShiftSum += shift;
+					mountShiftMax = std::max(mountShiftMax, shift);
+				}
+				render::World::Get().Draw(device, a_f, target, light, mount ? mountFrom : nullptr);
 			}
 			if (overlayWanted) {
 				Overlay::Draw(device, a_f, rt.Width, rt.Height);
@@ -709,6 +1236,10 @@ namespace lc::Render
 		f.gameFrame = gameFrame;
 		f.call = callInFrame;
 		Capture(f, cfg);
+		if (f.call == 0) {
+			DebugSequence(cfg, (f.flags & render::kFrameDrawWorld) != 0);
+			DebugVehicleSpeed(cfg);
+		}
 		Enqueue(f);
 	}
 }

@@ -38,8 +38,9 @@ namespace lc
 		// only as tall as the probe start).
 		enum class ProbeFrom { kTop, kFeet } probeFrom = ProbeFrom::kTop;
 		float probeHeight = 3.0f;
-		// Camera matrix rows (which CMatrix row is the camera's right/forward/up), discovered at
-		// runtime by default ("auto"); or e.g. "0,1,2" / "-0,1,2" (leading '-' flips a row's sign).
+		// Camera matrix rows (which CMatrix row is the camera's right/forward/up): "auto" pins the
+		// known-good 0,1,2 and has the game's camera cross-check them, "discover" adopts what the
+		// game's camera says; or e.g. "0,1,2" / "-0,1,2" (leading '-' flips a row's sign).
 		std::string cameraRows = "auto";
 
 		// ---- Minecraft's blocks and HUD (Render, Overlay) ----
@@ -57,6 +58,30 @@ namespace lc
 		// Minecraft's HUD/GUI: auto (while puppeting or a Minecraft screen is open), always (whenever
 		// Minecraft is alive), off.
 		enum class OverlayMode { kAuto, kAlways, kOff } overlay = OverlayMode::kAuto;
+		// Light the blocks with GTA IV's sun/moon, ambient and fog (gta), or Minecraft's own light
+		// levels (minecraft). render/Lighting.h.
+		enum class RenderLighting { kGta, kMinecraft } renderLighting = RenderLighting::kGta;
+		// Colour saturation of the GTA-lit blocks while GTA's tone mapping constants are unavailable
+		// (otherwise GTA's own, from the timecycle).
+		float renderSaturation = 0.8f;
+		// Calibration (not in the default ini): the auto-exposure model's key and floor (Lighting.h).
+		float renderExposureKey = 0.85f;
+		float renderExposureFloor = 11.0f;
+		// Test hooks (not in the default ini): pin GTA's clock to these hours in turn (e.g.
+		// "12,19.5,23") and force these weather types (-1 leaves it; 0 extrasunny .. 4 rain .. 7
+		// lightning), one step every debugStepSeconds; debugLightingAB alternates Minecraft's and GTA's
+		// lighting within each step; debugLighting logs GTA's lighting constants.
+		std::string debugTimeOfDay;
+		std::string debugWeather;
+		float       debugStepSeconds = 20.0f;
+		bool        debugLightingAB = false;
+		bool        debugLighting = false;
+		// Test hook (not in the default ini): in a vehicle, SET_CAR_FORWARD_SPEED to this (m/s) for
+		// 4 s of every 8 (Render.cpp), to see the rider stay in the seat at speed.
+		float       debugVehicleSpeed = 0.0f;
+		// Test hook: in a vehicle, draw the rider where Minecraft reports it (uncorrected) for 4 s of
+		// every 8, logging each switch.
+		bool        debugSeatAB = false;
 
 		// ---- combat (Combat.h) ----
 		// Minecraft and GTA IV fight each other: the actor table, Minecraft's hits/explosions/death,
@@ -75,6 +100,18 @@ namespace lc
 		// session, move the player (out of a car / an interior) to the nearest street, among peds.
 		bool combatSelfTest = false;
 		bool debugWarpOutdoors = false;
+		// Minecraft damage x this = GTA body and engine health off a vehicle (1000 each; the engine burns
+		// below 0, and a car with no body health left blows up).
+		float vehicleDamageScale = 15.0f;
+		// Minecraft's blocks are solid for GTA IV's peds and vehicles (NpcBlocks.h). Not in the default
+		// ini: how a ped is moved back out of blocks (0 the entity's own SetPosition, 1
+		// SET_CHAR_COORDINATES_NO_OFFSET).
+		bool npcBlocks = true;
+		int  npcPushMethod = 0;
+		// Test hook (not in the default ini): -1 off; else Minecraft's hits shove peds a different way
+		// each hit (0 world direction, 1 world direction in the ped's own frame, 2 the old flags, 3 no
+		// force), cycling from this one, and log how far and which way each went.
+		int debugKnockbackVariant = -1;
 		// ---- vehicles and Niko mode (HostDrive.h) ----
 		// While Minecraft drives the player: hand Niko back to GTA IV and enter/steal the nearest
 		// vehicle (GTA's own enter control). In the vehicle GTA drives (and its own F gets out).
@@ -96,6 +133,18 @@ namespace lc
 		// him to the nearest road if he's indoors), and GTA's exit control after 12 s in one.
 		bool debugAutoToggle = false;
 		bool debugAutoVehicle = false;
+		// How the puppeted ped is placed every frame: "direct" (the SET_CHAR_COORDINATES natives' own
+		// move, without their clearing of the destination, which deleted the cars and pedestrians the
+		// player walked into) or "native" (SET_CHAR_COORDINATES_NO_OFFSET, the old way). Game.cpp.
+		std::string puppetMove = "direct";
+		// Test hooks (not in the default ini): walk the puppet target through a parked car and a
+		// pedestrian with each move method and log whether they survive; give DebugAutoVehicle's test
+		// car a driver (a carjack); take the window focus away and back twice (alt-tab, no keyboard).
+		bool debugWalkThroughCar = false;
+		bool debugVehicleDriver = false;
+		bool debugFocusCycle = false;
+		// Test hook: the vehicle key's taps of GTA's enter control as real key events (SendInput).
+		bool debugInjectEnterKey = false;
 
 		static Config& Get();
 		// Loads <asi dir>/LibertyCraft.ini (creating it with defaults if absent). Logs what it got.

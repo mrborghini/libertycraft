@@ -52,6 +52,41 @@ public final class HostClip {
 		return new HostHitResult(location, face, new BlockPos(cell[0], cell[1], cell[2]), hit);
 	}
 
+	/**
+	 * The crosshair's hit on GTA IV geometry (Use.PICK) names the cell a block placed there goes into,
+	 * which is what block items need. Items that act on the cell in front of the face they're used on
+	 * (flint and steel, fire charges: {@code clickedPos.relative(face)}) need the cell behind it
+	 * instead, so their fire lands in that same cell, on the ground (BlockStateBaseMixin makes GTA IV
+	 * ground hold it up). Other hits and items are returned as they are.
+	 */
+	public static BlockHitResult forItem(net.minecraft.world.item.ItemStack stack, BlockHitResult hit) {
+		if (!(hit instanceof HostHitResult) || !(stack.getItem() instanceof net.minecraft.world.item.FlintAndSteelItem
+			|| stack.getItem() instanceof net.minecraft.world.item.FireChargeItem)) {
+			return hit;
+		}
+		return behindFace(hit, true);
+	}
+
+	/**
+	 * A hit on GTA IV geometry moved back one cell from where a block placed against it would go, so
+	 * that {@code getBlockPos().relative(getDirection())} is that cell (where buckets pour and fire
+	 * starters light). With {@code clampLocation} the location is moved inside the new cell, for a
+	 * hit that goes to the server in a "use item on" packet (it only accepts a location within a
+	 * block of the cell it names); otherwise it stays the exact point on the surface (a boat is
+	 * put there).
+	 */
+	public static BlockHitResult behindFace(BlockHitResult hit, boolean clampLocation) {
+		BlockPos pos = hit.getBlockPos().relative(hit.getDirection().getOpposite());
+		Vec3 at = hit.getLocation();
+		if (!clampLocation) {
+			return new BlockHitResult(at, hit.getDirection(), pos, false);
+		}
+		Vec3 inside = new Vec3(
+			Math.clamp(at.x, pos.getX(), pos.getX() + 1.0), Math.clamp(at.y, pos.getY(), pos.getY() + 1.0), Math.clamp(at.z, pos.getZ(), pos.getZ() + 1.0)
+		);
+		return new BlockHitResult(inside, hit.getDirection(), pos, false);
+	}
+
 	private static final HostTri STONE_WALL = new HostTri(new float[9], 0, dev.libertycraft.link.Proto.TRI_DIGGABLE | (dev.libertycraft.link.Proto.DIG_STONE << dev.libertycraft.link.Proto.TRI_MATERIAL_SHIFT));
 
 	/**
