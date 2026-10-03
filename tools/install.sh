@@ -213,7 +213,7 @@ fi
 # --- 3. downgrade ----------------------------------------------------------------------------
 step "Downgrading GTAIV.exe to $TARGET_VERSION"
 if need_asset BaseAssets.zip; then
-  unpack "$LC_CACHE/BaseAssets.zip" "$STAGE/base" '1080/GTAIV.exe' 'Shared/*' 'ZolikaPatch/ZolikaPatch.*'
+  unpack "$LC_CACHE/BaseAssets.zip" "$STAGE/base" '1080/GTAIV.exe' 'Shared/*' 'ZolikaPatch/ZolikaPatch.*' 'XLivelessAddon/XLivelessAddon.ini'
   exe="$STAGE/base/1080/GTAIV.exe"
   [[ $(stat -c %s "$exe") == "$TARGET_EXE_SIZE" && $(pe_version "$exe") == "$TARGET_VERSION" ]] \
     || die "BaseAssets.zip's 1080/GTAIV.exe is not the expected $TARGET_VERSION exe"
@@ -248,6 +248,31 @@ if need_asset GTAIV.EFLC.FusionFixLegacyAddon.zip; then
   install_tree "$STAGE/legacy"
 else
   plan "extract xlive.dll and plugins/XLivelessAddon.asi from the Legacy Addon (after downloading it)"
+fi
+
+# XLivelessAddon reads plugins/XLivelessAddon.ini, but the Legacy Addon ships none, so its
+# SkipWebConnect defaults to 0. The game then keeps running its GFWL-era online "health check"
+# against servers that no longer exist and loops on "The connection to Games for Windows - LIVE
+# has been lost. Returning to single player." (seen under Proton 11, 2026-10). ZolikaPatch's
+# MiscFixes would cover it, but that option is off (it crashes next to XLivelessAddon, see
+# ZOLIKA_OFF_ALWAYS). So: start from the downgrade kit's template and force the check off.
+# With FusionFix, its own SkipIntro/SkipMenu/windowing options do the rest; patching the same
+# code twice is what crashed with ZolikaPatch's BikeFeetFix, so XLivelessAddon's copies go off.
+XLA_SET=(SkipWebConnect=1 RemoveRegistryPathDependency=1 VRAMFix=1)
+(( FUSIONFIX )) && XLA_SET+=(SkipIntro=0 SkipMenu=0 BorderlessWindowed=0 DoNotPauseOnMinimize=0)
+if need_asset BaseAssets.zip; then
+  install_file "$STAGE/base/XLivelessAddon/XLivelessAddon.ini" plugins/XLivelessAddon.ini keep
+  ok "plugins/XLivelessAddon.ini ($LC_LAST)"
+  ini="$GAME/plugins/XLivelessAddon.ini"
+  if (( DRY_RUN )); then          # edit a scratch copy to show what would change
+    ini="$STAGE/XLivelessAddon.ini"
+    if [[ -f "$GAME/plugins/XLivelessAddon.ini" ]]; then cp "$GAME/plugins/XLivelessAddon.ini" "$ini"
+    else cp "$STAGE/base/XLivelessAddon/XLivelessAddon.ini" "$ini"; fi
+  fi
+  res=$(INI_ADD=1 ini_set "$ini" MAIN "${XLA_SET[@]}")
+  ok "XLivelessAddon.ini [MAIN]: ${XLA_SET[*]} ($res)"
+else
+  plan "write plugins/XLivelessAddon.ini with ${XLA_SET[*]}"
 fi
 
 # --- 5. ZolikaPatch -----------------------------------------------------------------------
@@ -307,6 +332,7 @@ else
   check "GTAIV.exe version $v" '[[ $v == "$TARGET_VERSION" ]]'
   check "xlive.dll (ASI loader)" '[[ -f $GAME/xlive.dll ]]'
   check "plugins/XLivelessAddon.asi" '[[ -f $GAME/plugins/XLivelessAddon.asi ]]'
+  check "XLivelessAddon SkipWebConnect=1" 'grep -qiE "^\s*SkipWebConnect\s*=\s*1" "$GAME/plugins/XLivelessAddon.ini" 2>/dev/null'
   check "no dinput8.dll" '[[ ! -e $GAME/dinput8.dll ]]'
   if (( ZOLIKA )); then check "ZolikaPatch.asi + .ini" '[[ -f $GAME/ZolikaPatch.asi && -f $GAME/ZolikaPatch.ini ]]'; fi
   if (( FUSIONFIX )); then
