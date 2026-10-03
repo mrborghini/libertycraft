@@ -10,6 +10,18 @@ This is a port of the idea (and most of the Minecraft-side code) of
 > **Status: early development, but playable.** Minecraft drives Niko, its blocks and HUD render in
 > Liberty City, collision follows GTA IV's map, and combat works both ways. See [Milestones](#milestones).
 
+## Screenshots
+
+![A Minecraft cabin, TNT and a pig on a Broker street under the El train](docs/screenshots/broker-build.jpg)
+*Real Minecraft blocks and mobs on a Broker street, lit by GTA IV's sun and hidden behind its world.*
+
+| | |
+|---|---|
+| ![TNT in Roman's apartment](docs/screenshots/apartment-tnt.jpg) | ![The Minecraft player plays Niko in the opening cutscene](docs/screenshots/cutscene.jpg) |
+| Blocks indoors, with the Minecraft HUD | Your Minecraft character plays Niko in cutscenes |
+| ![Driving a convertible as the Minecraft player](docs/screenshots/driving.jpg) | ![Bailing out of a moving car](docs/screenshots/bailout.jpg) |
+| Driving (F steals a car the GTA way) | Bailing out of a moving car: GTA's ragdoll, Minecraft's body |
+
 ## How it works
 
 ```
