@@ -4,8 +4,8 @@
 #  1. Downgrades the Steam Complete Edition (1.2.0.x) to 1.0.8.0, the version IV-SDK,
 #     ZolikaPatch and LibertyCraft.asi are written against. Same files and defaults as
 #     Gillian's GTA IV Downgrade Utility.
-#  2. Installs the ASI loader (Ultimate ASI Loader as xlive.dll), XLivelessAddon,
-#     ZolikaPatch, FusionFix and - if built - LibertyCraft.asi.
+#  2. Installs the ASI loader (Ultimate ASI Loader as xlive.dll), ZolikaPatch, FusionFix
+#     and - if built - LibertyCraft.asi. (Not XLivelessAddon: see step 4.)
 #  3. Creates/updates the "LibertyCraft" Prism Launcher instance (Minecraft 26.3 + Fabric).
 #
 # Everything it changes in the game folder is backed up and listed in
@@ -24,7 +24,7 @@ Usage: tools/install.sh [options]
       --uninstall      undo everything recorded in the backup manifest (see below)
       --full           also copy the full 1.0.8.0 data files (1080FullFiles.zip, ~100 MB);
                        only needed if something misbehaves with the minimal downgrade
-      --no-fusionfix   skip FusionFix (the ASI loader and XLivelessAddon are still installed)
+      --no-fusionfix   skip FusionFix (the ASI loader is still installed)
       --no-zolikapatch skip ZolikaPatch
       --no-minecraft   skip the Prism Launcher instance
       --dxvk           also install FusionFix's d3d9.dll/vulkan.dll (its own DXVK build).
@@ -88,9 +88,9 @@ ZOLIKA_OFF_FF=(BikeFeetFix BikePhoneAnimsFix BorderlessWindowed BuildingAlphaFix
   HighQualityReflections ImprovedShaderStreaming MouseFix NewMemorySystem NoLiveryLimit
   OutOfCommissionFix PoliceEpisodicWeaponSupport RemoveBoundingBoxCulling ReversingLightFix
   SkipIntro SkipMenu)
-# Always off: ZolikaPatch.ini says "some features from XLivelessAddon, disable if not using GFWL
-# and you have XLivelessAddon installed already" - we always install XLivelessAddon, and leaving
-# it on also crashes at startup.
+# Always off: with FusionFix 5.x it crashes the game ~2 s after FusionFix loads (access violation
+# inside GTAIV.EFLC.FusionFix.asi; reproduced under Proton 11, 2026-10). ZolikaPatch.ini describes
+# it as "some features from XLivelessAddon"; we need neither (see step 4).
 ZOLIKA_OFF_ALWAYS=(MiscFixes)
 
 # --- helpers ----------------------------------------------------------------------------
@@ -213,7 +213,7 @@ fi
 # --- 3. downgrade ----------------------------------------------------------------------------
 step "Downgrading GTAIV.exe to $TARGET_VERSION"
 if need_asset BaseAssets.zip; then
-  unpack "$LC_CACHE/BaseAssets.zip" "$STAGE/base" '1080/GTAIV.exe' 'Shared/*' 'ZolikaPatch/ZolikaPatch.*' 'XLivelessAddon/XLivelessAddon.ini'
+  unpack "$LC_CACHE/BaseAssets.zip" "$STAGE/base" '1080/GTAIV.exe' 'Shared/*' 'ZolikaPatch/ZolikaPatch.*'
   exe="$STAGE/base/1080/GTAIV.exe"
   [[ $(stat -c %s "$exe") == "$TARGET_EXE_SIZE" && $(pe_version "$exe") == "$TARGET_VERSION" ]] \
     || die "BaseAssets.zip's 1080/GTAIV.exe is not the expected $TARGET_VERSION exe"
@@ -238,42 +238,27 @@ if (( FULL )); then
 fi
 
 # --- 4. ASI loader ---------------------------------------------------------------------------
-step "ASI loader: Ultimate ASI Loader as xlive.dll + XLivelessAddon"
+step "ASI loader: Ultimate ASI Loader as xlive.dll"
 # Why xlive.dll and not dinput8.dll: 1.0.8.0 imports xlive.dll (Games for Windows Live) and
 # would not start without GFWL. The Legacy Addon's xlive.dll is Ultimate ASI Loader built to
 # stand in for it, so it removes the GFWL dependency *and* loads *.asi from the game root and
 # plugins/. As a bonus Wine has no builtin xlive.dll, so no WINEDLLOVERRIDES is needed.
+#
+# Why not the Legacy Addon's XLivelessAddon.asi: with it the game loops on "The connection to
+# Games for Windows - LIVE has been lost. Returning to single player." right after startup
+# (with or without its SkipWebConnect option). Without it the game goes straight into the
+# story. ZolikaPatch already covers what we would need it for (SavegameFix removes the GFWL
+# savegame CRC check, NewSavesCompatibility loads newer saves). Earlier installs added it, so
+# take it out again.
 if need_asset GTAIV.EFLC.FusionFixLegacyAddon.zip; then
-  unpack "$LC_CACHE/GTAIV.EFLC.FusionFixLegacyAddon.zip" "$STAGE/legacy"
+  unpack "$LC_CACHE/GTAIV.EFLC.FusionFixLegacyAddon.zip" "$STAGE/legacy" 'xlive.dll'
   install_tree "$STAGE/legacy"
 else
-  plan "extract xlive.dll and plugins/XLivelessAddon.asi from the Legacy Addon (after downloading it)"
+  plan "extract xlive.dll from the Legacy Addon (after downloading it)"
 fi
-
-# XLivelessAddon reads plugins/XLivelessAddon.ini, but the Legacy Addon ships none, so its
-# SkipWebConnect defaults to 0. The game then keeps running its GFWL-era online "health check"
-# against servers that no longer exist and loops on "The connection to Games for Windows - LIVE
-# has been lost. Returning to single player." (seen under Proton 11, 2026-10). ZolikaPatch's
-# MiscFixes would cover it, but that option is off (it crashes next to XLivelessAddon, see
-# ZOLIKA_OFF_ALWAYS). So: start from the downgrade kit's template and force the check off.
-# With FusionFix, its own SkipIntro/SkipMenu/windowing options do the rest; patching the same
-# code twice is what crashed with ZolikaPatch's BikeFeetFix, so XLivelessAddon's copies go off.
-XLA_SET=(SkipWebConnect=1 RemoveRegistryPathDependency=1 VRAMFix=1)
-(( FUSIONFIX )) && XLA_SET+=(SkipIntro=0 SkipMenu=0 BorderlessWindowed=0 DoNotPauseOnMinimize=0)
-if need_asset BaseAssets.zip; then
-  install_file "$STAGE/base/XLivelessAddon/XLivelessAddon.ini" plugins/XLivelessAddon.ini keep
-  ok "plugins/XLivelessAddon.ini ($LC_LAST)"
-  ini="$GAME/plugins/XLivelessAddon.ini"
-  if (( DRY_RUN )); then          # edit a scratch copy to show what would change
-    ini="$STAGE/XLivelessAddon.ini"
-    if [[ -f "$GAME/plugins/XLivelessAddon.ini" ]]; then cp "$GAME/plugins/XLivelessAddon.ini" "$ini"
-    else cp "$STAGE/base/XLivelessAddon/XLivelessAddon.ini" "$ini"; fi
-  fi
-  res=$(INI_ADD=1 ini_set "$ini" MAIN "${XLA_SET[@]}")
-  ok "XLivelessAddon.ini [MAIN]: ${XLA_SET[*]} ($res)"
-else
-  plan "write plugins/XLivelessAddon.ini with ${XLA_SET[*]}"
-fi
+for f in plugins/XLivelessAddon.asi plugins/XLivelessAddon.ini; do
+  try_remove "$f" "XLivelessAddon makes the game loop on the GFWL 'connection lost' message"
+done
 
 # --- 5. ZolikaPatch -----------------------------------------------------------------------
 if (( ZOLIKA )); then
@@ -293,7 +278,7 @@ if (( ZOLIKA )); then
     ok "ZolikaPatch.ini [Options]: ${#off[@]} options set to 0 ($res)"
     [[ $res == *"missing: -" ]] || warn "some options were not in ZolikaPatch.ini (newer/older ZolikaPatch?) - left alone"
   else
-    plan "copy ZolikaPatch.asi/.ini and switch off the options that clash with FusionFix/XLivelessAddon"
+    plan "copy ZolikaPatch.asi/.ini and switch off the options that clash with FusionFix"
   fi
 fi
 
@@ -331,8 +316,7 @@ else
   v=$(pe_version "$GAME/GTAIV.exe")
   check "GTAIV.exe version $v" '[[ $v == "$TARGET_VERSION" ]]'
   check "xlive.dll (ASI loader)" '[[ -f $GAME/xlive.dll ]]'
-  check "plugins/XLivelessAddon.asi" '[[ -f $GAME/plugins/XLivelessAddon.asi ]]'
-  check "XLivelessAddon SkipWebConnect=1" 'grep -qiE "^\s*SkipWebConnect\s*=\s*1" "$GAME/plugins/XLivelessAddon.ini" 2>/dev/null'
+  check "no XLivelessAddon" '[[ ! -e $GAME/plugins/XLivelessAddon.asi ]]'
   check "no dinput8.dll" '[[ ! -e $GAME/dinput8.dll ]]'
   if (( ZOLIKA )); then check "ZolikaPatch.asi + .ini" '[[ -f $GAME/ZolikaPatch.asi && -f $GAME/ZolikaPatch.ini ]]'; fi
   if (( FUSIONFIX )); then

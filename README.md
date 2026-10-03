@@ -60,7 +60,7 @@ What `tools/install.sh` does to the game folder (`…/steamapps/common/Grand The
   Windows Live's `xlive.dll`; this one replaces GFWL and loads the `.asi` plugins, so no
   `dinput8.dll` and no `WINEDLLOVERRIDES` are needed.
 * Installs ZolikaPatch (with the options FusionFix already covers switched off), FusionFix
-  (`plugins/`, `update/`), XLivelessAddon and — once built — `plugins/LibertyCraft.asi`.
+  (`plugins/`, `update/`) and — once built — `plugins/LibertyCraft.asi`.
 * Backs up every file it replaces to `_libertycraft_backup/` with a manifest;
   `tools/uninstall.sh` (= `install.sh --uninstall`) restores them and deletes what was added.
   Steam → GTA IV → Properties → Installed Files → **Verify integrity of game files** also reverts
