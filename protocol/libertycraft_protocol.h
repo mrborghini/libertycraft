@@ -23,7 +23,15 @@
 // fabric/src/main/java/dev/libertycraft/link/Proto.java; if you change anything here, change it
 // there too and bump kVersion.
 //
-// All multi-byte values are little-endian. Skyrim creates the mapping; Minecraft opens it.
+// Handshake: whichever side starts first creates the bridge and sizes it to kMappingBytes; neither
+// side ever shrinks or truncates it (pages a peer has mapped would vanish under it: SIGBUS). The
+// host writes the header (magic, version, its pid, heartbeat) and zeroes its regions on every
+// (re)start, including mcPid: Minecraft treats a cleared mcPid as "new host instance" because a fresh
+// wineserver may hand GTA IV the same pid again. Minecraft then rewrites mcPid and resends its caches.
+// Under Wine the host's pid is a Wine pid, so Minecraft judges host liveness by the heartbeat
+// (8 s timeout); the host should keep it ticking during loading screens and while paused.
+//
+// All multi-byte values are little-endian.
 // Coordinates in this protocol are always Minecraft space (blocks, Y up, Z south) unless noted.
 #pragma once
 
@@ -38,7 +46,7 @@ namespace libertycraft::proto
 	inline constexpr wchar_t       kBridgeFileWine[] = L"Z:\\dev\\shm\\libertycraft-bridge";  // Wine side
 
 	// 1 Minecraft block == 70 Skyrim units (Skyrim player ~128 units tall, MC player 1.8 blocks).
-	inline constexpr double kUnitsPerBlock = 70.0;
+	inline constexpr double kUnitsPerBlock = 1.0;  // GTA IV metres per block (SkyCraft: 70 Skyrim units)
 
 	// ---- region offsets ---------------------------------------------------------------------
 	inline constexpr std::uint64_t kOffHeader = 0x0;

@@ -1,10 +1,20 @@
-"""Watch Minecraft's physics ticks and frames through the live shared memory; report stalls."""
-import ctypes, mmap, struct, sys, time
-k32 = ctypes.windll.kernel32
-freq = ctypes.c_int64(); k32.QueryPerformanceFrequency(ctypes.byref(freq)); F = freq.value
+"""Watch Minecraft's physics ticks and frames through the live bridge; report stalls.
+
+    python3 tools/tick_monitor.py [seconds]
+
+The bridge is LIBERTYCRAFT_LINK or /dev/shm/libertycraft-bridge. Ported from SkyCraft (MIT).
+"""
+import mmap, os, struct, sys, time
+PATH = os.environ.get("LIBERTYCRAFT_LINK", "/dev/shm/libertycraft-bridge")
+# McState.tickQpc is in Wine's QueryPerformanceCounter units: CLOCK_MONOTONIC_RAW / 100 ns.
+F = 10_000_000
 def qpc():
-    v = ctypes.c_int64(); k32.QueryPerformanceCounter(ctypes.byref(v)); return v.value
-m = mmap.mmap(-1, 0x1000, tagname=r"Local\SkyCraft_v1", access=mmap.ACCESS_READ)
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 100
+try:
+    with open(PATH, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0x1000, access=mmap.ACCESS_READ)
+except (OSError, ValueError) as e:
+    sys.exit(f"can't map {PATH} ({e}); is the host or Minecraft running?")
 secs = float(sys.argv[1]) if len(sys.argv) > 1 else 60
 last_tick = None; last_tick_seen = None; ticks = []; stalls = []
 last_frame = None; last_frame_t = qpc(); frame_stalls = []

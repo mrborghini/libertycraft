@@ -1,9 +1,12 @@
-"""Stand-in for the SKSE plugin, for testing the Minecraft mod without Skyrim.
+"""Stand-in for the GTA IV ASI plugin, for testing the Minecraft mod without GTA IV (Linux).
 
-Creates the shared mapping, streams a flat floor + a staircase of collision, holds W / Space for a
-bit, prints Minecraft's reported player state, and saves the overlay frame to a PNG.
+Creates the shared bridge file, streams a flat floor + a staircase of collision, scripts some input
+(punch an NPC, build, shoot, drop and pick up an item), prints Minecraft's reported player state,
+and saves the overlay frame to a PNG.
 
-    python tools/fake_skyrim.py [seconds] [out.png]
+    python3 tools/fake_host.py [--link PATH] [seconds] [out.png] [atlas.png]
+
+Ported from SkyCraft's tools/fake_skyrim.py (MIT). Stdlib only.
 """
 
 import mmap
@@ -13,9 +16,11 @@ import sys
 import time
 import zlib
 
-MAGIC = 0x43594B53
+MAGIC = 0x5954424C  # "LBTY"
 VERSION = 11
-NAME = os.environ.get("SKYCRAFT_LINK", "Local\\SkyCraft_v1")  # fake_guest.py runs one beside a real Skyrim
+# The bridge is a tmpfs file both sides mmap (see protocol/libertycraft_protocol.h). Override with
+# --link PATH or LIBERTYCRAFT_LINK, matching the client's -Dlibertycraft.link=PATH.
+BRIDGE = os.environ.get("LIBERTYCRAFT_LINK", "/dev/shm/libertycraft-bridge")
 OFF_SKY = 0x100
 OFF_MC = 0x200
 OFF_OVL = 0x300
@@ -39,17 +44,29 @@ X0 = 100000    # test area origin (blocks); must be a multiple of 8
 
 
 def tick():
-    import ctypes
+    # GTA IV's GetTickCount64 under Wine: CLOCK_MONOTONIC_RAW in ms. Minecraft uses the same clock.
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 1_000_000
 
-    return ctypes.windll.kernel32.GetTickCount64()
+
+def open_bridge(path, size):
+    """Map the bridge file read-write, creating it or growing it to `size` if needed.
+
+    Never shrink it: a Minecraft that already mapped it would crash (SIGBUS) on the lost pages.
+    """
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if os.fstat(fd).st_size < size:
+            os.ftruncate(fd, size)  # sparse in tmpfs: pages cost memory once touched
+        return mmap.mmap(fd, size, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE)
+    finally:
+        os.close(fd)  # the mapping keeps the file alive
 
 
 class Link:
-    def __init__(self):
-        import ctypes
-
-        ctypes.windll.kernel32.GetTickCount64.restype = ctypes.c_uint64
-        self.m = mmap.mmap(-1, SIZE, tagname=NAME)
+    def __init__(self, path=BRIDGE):
+        self.m = open_bridge(path, SIZE)
+        # Like the real host on (re)start: zero our side's headers (this also clears mcPid, which is
+        # how a running Minecraft notices the restart even if the host pid repeats) and the rings.
         self.m[0:0x100] = bytes(0x100)
         self.m[OFF_SKY:OFF_SKY + 0x40] = bytes(0x40)
         self.m[OFF_OVL:OFF_OVL + 0x100] = bytes(0x100)
@@ -265,14 +282,21 @@ def read_world_entities(link):
 
 
 def main():
-    seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 90
-    out = sys.argv[2] if len(sys.argv) > 2 else "overlay.png"
-    link = Link()
-    print("fake Skyrim up; waiting for Minecraft...")
+    args = sys.argv[1:]
+    path = BRIDGE
+    if "--link" in args:
+        i = args.index("--link")
+        path = args[i + 1]
+        del args[i:i + 2]
+    seconds = float(args[0]) if len(args) > 0 else 90
+    out = args[1] if len(args) > 1 else "overlay.png"
+    atlas_out = args[2] if len(args) > 2 else None
+    link = Link(path)
+    print(f"fake host up on {path}; waiting for Minecraft...")
     epoch = 1
     sent = False
     start = time.time()
-    # Far from anywhere a real Skyrim worldspace maps to, so test blocks never show up in the game.
+    # Far from anywhere Liberty City maps to, so test blocks never show up in the game.
     spawn = (X0 + 0.5, FLOOR_Y, 0.5)
     yaw = -90.0  # facing +X
     pitch = 10.0
@@ -308,8 +332,8 @@ def main():
                 if click + 0.1 <= t < click + 0.15:
                     link.push_input(2, 1, 0)
             if 2.5 <= t < 2.55:
-                link.push_input(7, 0, 2000, 0xFF00ABCD, 0)  # 20 Skyrim damage, melee, from the NPC
-            # Build: cobblestone (hotbar 8) onto the Skyrim floor, looking down and to the side.
+                link.push_input(7, 0, 2000, 0xFF00ABCD, 0)  # 20 host damage, melee, from the NPC
+            # Build: cobblestone (hotbar 8) onto the host's floor, looking down and to the side.
             if 3.0 <= t < 3.05:
                 yaw, pitch = 0.0, 55.0  # facing +Z, away from the NPC
                 link.push_input(1, 37, 1)  # '8'
@@ -321,7 +345,7 @@ def main():
                 link.push_input(2, 3, 0)
             # Bow (hotbar 3): draw and loose an arrow into the floor further out.
             if 4.2 <= t < 4.25:
-                yaw, pitch = 180.0, 35.0  # facing -Z: open Skyrim floor, no Minecraft blocks
+                yaw, pitch = 180.0, 35.0  # facing -Z: open host floor, no Minecraft blocks
                 link.push_input(1, 32, 1)  # '3'
             if 4.3 <= t < 4.35:
                 link.push_input(1, 32, 0)
@@ -373,10 +397,10 @@ def main():
             print(f"t={time.time()-start:5.1f} mc flags={mc['flags']:#x} ack={mc['ack']} pos=({mc['pos'][0]:.3f}, {mc['pos'][1]:.3f}, {mc['pos'][2]:.3f}) yaw={mc['yaw']:.1f} frame={mc['frame']}")
         time.sleep(1 / 60)
     print(f"summary: {link.sections} section meshes, events {link.events}")
-    if link.atlas and len(sys.argv) > 3:
+    if link.atlas and atlas_out:
         w, h, px = link.atlas
-        save_png(sys.argv[3], w, h, px, False)
-        print(f"atlas saved to {sys.argv[3]}")
+        save_png(atlas_out, w, h, px, False)
+        print(f"atlas saved to {atlas_out}")
 
 
 if __name__ == "__main__":

@@ -1,22 +1,20 @@
 {
   "schemaVersion": 1,
-  "id": "skycraft",
+  "id": "libertycraft",
   "version": "${version}",
-  "name": "SkyCraft",
-  "description": "Play Skyrim with Minecraft physics, inventory and viewmodels.",
-  "authors": ["chasmlol"],
-  "contact": {
-    "sources": "https://github.com/chasmlol/SkyCraft"
-  },
+  "name": "LibertyCraft",
+  "description": "Play GTA IV with Minecraft physics, inventory and viewmodels. A port of SkyCraft.",
+  "authors": ["LibertyCraft contributors"],
+  "contributors": ["chasmlol (SkyCraft, MIT, https://github.com/chasmlol/SkyCraft)"],
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
-    "main": ["dev.skycraft.SkyCraft"],
-    "client": ["dev.skycraft.client.SkyCraftClient"]
+    "main": ["dev.libertycraft.LibertyCraft"],
+    "client": ["dev.libertycraft.client.LibertyCraftClient"]
   },
   "mixins": [
-    "skycraft.mixins.json",
-    { "config": "skycraft.client.mixins.json", "environment": "client" }
+    "libertycraft.mixins.json",
+    { "config": "libertycraft.client.mixins.json", "environment": "client" }
   ],
   "depends": {
     "fabricloader": ">=0.19.5",

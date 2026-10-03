@@ -18,18 +18,22 @@ repositories {
 	// for more information about repositories.
 }
 
+base {
+	archivesName = project.archives_base_name
+}
+
 loom {
 	splitEnvironmentSourceSets()
 
 	runs {
 		client {
-			programArgs "--username", (System.getenv("SKYCRAFT_USERNAME") ?: "Dovahkiin")
-			vmArgs "--enable-native-access=ALL-UNNAMED", "-Dskycraft.quitWithSkyrim=false"
+			programArgs "--username", (System.getenv("LIBERTYCRAFT_USERNAME") ?: "Niko")
+			vmArgs "--enable-native-access=ALL-UNNAMED", "-Dlibertycraft.quitWithHost=false"
 		}
 	}
 
 	mods {
-		"skycraft" {
+		"libertycraft" {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
@@ -84,7 +88,8 @@ jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
 
-	from("LICENSE") {
+	// The repository's MIT licence (which also carries SkyCraft's notice) ships inside the jar.
+	from(rootProject.file("../LICENSE")) {
 		rename { "${it}_$projectName"}
 	}
 }

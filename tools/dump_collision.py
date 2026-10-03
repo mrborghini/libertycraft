@@ -1,10 +1,19 @@
-"""Decode the collision ring in the live SkyCraft shared memory (read-only) and summarize it."""
-import mmap, struct, sys
-NAME = "Local\SkyCraft_v1"
+"""Decode the collision ring in the live LibertyCraft bridge (read-only) and summarize it.
+
+    python3 tools/dump_collision.py [player_x player_y player_z]
+
+The bridge is LIBERTYCRAFT_LINK or /dev/shm/libertycraft-bridge. Ported from SkyCraft (MIT).
+"""
+import mmap, os, struct, sys
+PATH = os.environ.get("LIBERTYCRAFT_LINK", "/dev/shm/libertycraft-bridge")
 OFF_COL = 0x20000
 COL_BYTES = 32 << 20
 DATA = COL_BYTES - 0x80
-m = mmap.mmap(-1, 0x20000 + COL_BYTES, tagname=NAME, access=mmap.ACCESS_READ)
+try:
+    with open(PATH, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0x20000 + COL_BYTES, access=mmap.ACCESS_READ)
+except (OSError, ValueError) as e:
+    sys.exit(f"can't map {PATH} ({e}); is the host or Minecraft running?")
 head, = struct.unpack_from("<Q", m, OFF_COL)
 tail, = struct.unpack_from("<Q", m, OFF_COL + 0x40)
 print(f"head={head} tail={tail}")
