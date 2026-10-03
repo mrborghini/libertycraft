@@ -58,6 +58,10 @@ namespace lc
 			"RenderLighting=gta\n"
 			"; colour saturation of the GTA-lit blocks when GTA's tone mapping can't be read (else GTA's own)\n"
 			"RenderSaturation=0.8\n"
+			"; sun shadows: the blocks take GTA IV's and cast their own, on themselves and on GTA's world\n"
+			"RenderShadows=1\n"
+			"; how dark GTA's world gets in the blocks' shadow (1: as GTA shades its own)\n"
+			"RenderShadowStrength=1.0\n"
 			"; combat: Minecraft hits/explosions/death reach GTA IV, GTA damage to the puppeted player reaches Minecraft\n"
 			"Combat=1\n"
 			"; Minecraft damage x this = GTA health off a ped; GTA damage to the player / this = Minecraft damage\n"
@@ -81,6 +85,8 @@ namespace lc
 			"; hide Niko in vehicles in Minecraft mode (the Minecraft player sits there on its mount)\n"
 			"HideNikoInVehicle=1\n"
 			"ToggleStartsInMinecraft=1\n"
+			"; GTA's phone in Minecraft mode: the arrow keys (and Enter, Backspace, numbers while it's out) go to GTA\n"
+			"PhoneKeys=1\n"
 			"; metres from the seated ped's position down to the riding Minecraft player's feet\n"
 			"VehicleSeatDrop=0.75\n"
 			"; if GTA's enter press didn't take: warp | task | none\n"
@@ -224,6 +230,15 @@ namespace lc
 		if (auto v = get("debuglighting")) debugLighting = ToBool(*v, debugLighting);
 		if (auto v = get("debugvehiclespeed")) debugVehicleSpeed = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugseatab")) debugSeatAB = ToBool(*v, debugSeatAB);
+		if (auto v = get("rendershadows")) renderShadows = ToBool(*v, renderShadows);
+		if (auto v = get("rendershadowcast")) renderShadowCast = ToBool(*v, renderShadowCast);
+		if (auto v = get("rendershadowstrength")) renderShadowStrength = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.0f, 1.0f);
+		if (auto v = get("rendershadowbias")) renderShadowBias = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.0f, 2.0f);
+		if (auto v = get("rendershadowdistance")) renderShadowDistance = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.0f, 1000.0f);
+		if (auto v = get("debugshadows")) debugShadows = ToBool(*v, debugShadows);
+		if (auto v = get("debugshadowsab")) debugShadowsAB = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugshadowview")) debugShadowView = ToBool(*v, debugShadowView);
+		if (auto v = get("debugshadowspot")) debugShadowSpot = *v;
 		if (auto v = get("combat")) combat = ToBool(*v, combat);
 		if (auto v = get("peddamagescale")) pedDamageScale = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("playerdamagescale")) playerDamageScale = static_cast<float>(std::atof(v->c_str()));
@@ -257,6 +272,8 @@ namespace lc
 		if (auto v = get("debugvehicledriver")) debugVehicleDriver = ToBool(*v, debugVehicleDriver);
 		if (auto v = get("debugfocuscycle")) debugFocusCycle = ToBool(*v, debugFocusCycle);
 		if (auto v = get("debuginjectenterkey")) debugInjectEnterKey = ToBool(*v, debugInjectEnterKey);
+		if (auto v = get("phonekeys")) phoneKeys = ToBool(*v, phoneKeys);
+		if (auto v = get("debugphone")) debugPhone = ToBool(*v, debugPhone);
 		if (auto v = get("ragdollonvehiclehit")) ragdollOnVehicleHit = ToBool(*v, ragdollOnVehicleHit);
 		if (auto v = get("debugbailout")) debugBailOut = ToBool(*v, debugBailOut);
 		if (auto v = get("debugrunover")) debugRunOver = ToBool(*v, debugRunOver);
@@ -280,6 +297,9 @@ namespace lc
 		LC_LOG("config: RenderLighting=%s RenderSaturation=%.2f (exposure key %.2f floor %.1f)%s%s%s%s", renderLighting == RenderLighting::kGta ? "gta" : "minecraft",
 			renderSaturation, renderExposureKey, renderExposureFloor, debugTimeOfDay.empty() ? "" : (" DebugTimeOfDay=" + debugTimeOfDay).c_str(),
 			debugWeather.empty() ? "" : (" DebugWeather=" + debugWeather).c_str(), debugLightingAB ? " DebugLightingAB=1" : "", debugLighting ? " DebugLighting=1" : "");
+		LC_LOG("config: RenderShadows=%d RenderShadowStrength=%.2f RenderShadowBias=%.2f RenderShadowDistance=%.0f%s%s%s", renderShadows, renderShadowStrength,
+			renderShadowBias, renderShadowDistance, renderShadowCast ? "" : " RenderShadowCast=0", debugShadows ? " DebugShadows=1" : "",
+			debugShadowsAB > 0.0f ? (debugShadowView ? " DebugShadowsAB on DebugShadowView=1" : " DebugShadowsAB on") : (debugShadowView ? " DebugShadowView=1" : ""));
 		if (debugVehicleSpeed > 0.0f) {
 			LC_LOG("config: DebugVehicleSpeed=%.1f%s", debugVehicleSpeed, debugSeatAB ? " DebugSeatAB=1" : "");
 		}
@@ -298,6 +318,7 @@ namespace lc
 			vehicleEnterFallback.c_str(), debugAutoToggle ? " DebugAutoToggle=1" : "", debugAutoVehicle ? " DebugAutoVehicle=1" : "");
 		LC_LOG("config: PuppetMove=%s%s%s%s%s", puppetMove.c_str(), debugWalkThroughCar ? " DebugWalkThroughCar=1" : "",
 			debugVehicleDriver ? " DebugVehicleDriver=1" : "", debugFocusCycle ? " DebugFocusCycle=1" : "", debugInjectEnterKey ? " DebugInjectEnterKey=1" : "");
+		LC_LOG("config: PhoneKeys=%d%s", phoneKeys, debugPhone ? " DebugPhone=1" : "");
 		LC_LOG("config: RagdollOnVehicleHit=%d%s%s%s%s", ragdollOnVehicleHit, debugBailOut ? " DebugBailOut=1" : "", debugRunOver ? " DebugRunOver=1" : "",
 			debugCutscene.empty() ? "" : " DebugCutscene=", debugCutscene.c_str());
 		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",

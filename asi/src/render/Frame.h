@@ -22,6 +22,7 @@ namespace lc::render
 		kFrameMountShift = 1u << 9,    // in a vehicle: feet = GTA's seat this frame; the mount moves there too
 		kFrameGtaLighting = 1u << 10,  // light with GTA's sun, ambient and fog (else Minecraft's own lighting)
 		kFrameBody = 1u << 11,         // the player's body posed on GTA's skeleton (bodyParts at bodyOrigin; Body.h)
+		kFrameShadows = 1u << 12,      // sun shadows (RenderShadows, Shadows.h)
 	};
 
 	enum class CameraSource : std::uint32_t

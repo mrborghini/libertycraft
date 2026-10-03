@@ -65,11 +65,12 @@ with `--demo-section` writes an atlas + a few cubes into the render ring.
 | `Render.*` | `drawingEvent`: snapshots the frame's camera (render phase grcViewport / final cam), clock and flags into a draw command of our own that GTA's render thread executes; drains the render ring there |
 | `render/World.*` | the D3D9 block renderer: atlas + mips, section vertex buffers, entities/scene/avatar, outline and cracks, Minecraft lighting, depth-tested against GTA's (FusionFix log) depth |
 | `render/RenderMath.h`, `render/Shaders.h`, `render/Frame.h`, `render/D3D9Util.h` | pure helpers (tested on Linux), the HLSL (compiled at runtime by d3dcompiler_47), the frame snapshot, D3D9 helpers |
+| `render/Shadows.h`, `render/ShadowPass.*` | sun shadows (see Rendering): GTA's cascade layout and lookup (`Shadows.h`, SDK-free, tested in `tests/render_test.cpp`), our own cascade atlas, the caster passes and the pass that darkens GTA's world in the blocks' shadow |
 | `Overlay.*` | Minecraft's GUI/HUD composited over the frame (premultiplied alpha, crosshair invert pass, cursor) |
 | `HostDrive.*`, `DriveLogic.h` | vehicles and Niko mode: who drives the player (Minecraft or GTA IV); after a vehicle or a knockdown GTA keeps Niko until he really stands; a car running into the puppeted player (or one of GTA's explosions) knocks them over (`RagdollOnVehicleHit`) |
 | `NikoBody.*`, `render/Body.h` | the Minecraft body on Niko's skeleton (`MinecraftBody`): while GTA animates Niko (vehicles, knockdowns, cutscenes, Niko mode) he is hidden and Minecraft's standing body (`kRenRagdoll`) is drawn with each part on his bones, sized to him (see Vehicles and Niko mode). `render/Body.h` is SDK-free and tested on Linux (`tests/body_test.cpp`) |
 | `Coords.h` | GTA <-> MC coordinates, heading <-> yaw, camera basis |
-| `Combat.*`, `combat/CombatMath.h` | actor table (peds, and vehicles as rows of small boxes that stay within 0.2 m of the car's outline whichever way it faces -> Minecraft stand-ins), Minecraft hits/explosions/death -> GTA (vehicle hits: body/engine damage and fire; where a hit landed (`kEvHitPoint`) is followed into the car's model box, so a blow or an arrow on a side window's glass breaks that window (no native breaks a windscreen; the window native is checked against the game's code once, and only used on a settled, intact vehicle whose model has that window) and an arrow through any glass hits whoever sits behind it, who dies slumped in the seat), GTA damage to the puppeted player -> `kInHurt` |
+| `Combat.*`, `combat/CombatMath.h` | actor table (peds, and vehicles as rows of small boxes that stay within 0.2 m of the car's outline whichever way it faces -> Minecraft stand-ins), Minecraft hits/explosions/death -> GTA (vehicle hits: body/engine damage and fire; where a hit landed (`kEvHitPoint`) is followed into the car's model box, so a blow or an arrow on a side window's glass breaks that window (no native breaks a windscreen; the window native is checked against the game's code once, and only used on a settled, intact vehicle whose model has that window) and an arrow through any glass hits whoever sits behind it, who dies slumped in the seat), GTA damage to the puppeted player -> `kInHurt` (with the weapon's kind, found with `HAS_CHAR_BEEN_DAMAGED_BY_WEAPON` since the ped's last damage weapon field is unset on 1.0.8.0, and the direction it came from, so Minecraft's shield blocks what comes from in front); the puppeted player's health stays at a buffer of 1000 that GTA can't take, and GTA's radar arcs show Minecraft's health and armour instead (see `GtaHud`) |
 | `Doors.*` | GTA's doors swing open for the Minecraft player (Niko is frozen with collision off, so he never pushes one): a door (object pool, `collision/Objects.h`'s door shape) opens away from the player when they walk into it, through GTA's door state (`SET_STATE_OF_CLOSEST_DOOR_OF_TYPE`; object heading or a push as fallbacks), and is shut and handed back to GTA once they are clear |
 | `NpcBlocks.*`, `combat/BlockPush.h` | Minecraft's blocks are solid for GTA's peds and vehicles: `kRenSolids` bitsets (handed over by `render/World.cpp`'s ring consumer) push peds out of block columns (they follow walls round) and take the speed into blocks off cars and bikes. `BlockPush.h` is SDK-free and tested on Linux (`tests/combat_test.cpp`) |
 | `Config.*`, `Log.*`, `CrashLog.*`, `Perf.h` | ini, log file, crash handler, frame-time stats |
@@ -104,7 +105,8 @@ drains); all state it touches is saved/restored with a per-draw `D3DSBT_ALL` sta
   standard D3D depth. `RenderDepth=` overrides.
 - Resources: everything static is `D3DPOOL_MANAGED` (atlas with CPU-built mips, section vertex
   buffers, entity textures, the overlay texture) and per-frame geometry goes through
-  `DrawPrimitiveUP`, so the game's device `Reset` needs nothing from us. Section meshes are stored
+  `DrawPrimitiveUP`, so the game's device `Reset` needs nothing from us (but for the shadow atlas,
+  see Shadows). Section meshes are stored
   as quads (4 vertices + a shared index buffer) when Minecraft's triangles come in (0 1 2)(0 2 3).
 - Shaders: HLSL string literals (`render/Shaders.h`) compiled at startup with `D3DCompile` from
   `d3dcompiler_47.dll` (Proton's builtin, vkd3d-shader) to vs_3_0 / ps_3_0.
@@ -135,6 +137,33 @@ drains); all state it touches is saved/restored with a per-draw `D3DSBT_ALL` sta
 - Minecraft's own lighting (`RenderLighting=minecraft`, and the fallback): texture x vertex colour
   (tint, AO) x Minecraft's face shade (from the normal index) x the light-map curve of max(block,
   sky x day factor from GTA's clock), Minecraft gamma 0.5, `RenderExposure`.
+- Shadows (`render/Shadows.h`, `render/ShadowPass.*`, `RenderShadows=1`): the blocks take GTA IV's
+  sun shadows and cast their own, onto themselves and onto GTA's world. FusionFix 5 renders GTA's
+  sun shadow cascades into one R32F atlas (4 cascades side by side, width = 4 x height, ending at
+  10, 30, 85 and 256 m) that is still bound on sampler 15 at our draw command. Its deferred sun pass
+  (`deferred_lighting.fxc`) looks a point up with the shadow globals `c53` to `c63`
+  (`gShadowMatrix`, each cascade's uv scale and offset, `gFacetCentre`: the camera's depth plus the
+  cascades' ends) and FusionFix's filter settings (`c217` to `c223`: softness, normal offset bias,
+  4 or 16 rotated Poisson taps, CHSS, cascade blend). The `SetPixelShaderConstantF` watch keeps the
+  set most writes used among those made for this frame's camera, and the world shader repeats GTA's
+  lookup and filter: a block's sun term is multiplied by it (no sun shadows when GTA's sun pass used
+  none for half a second, indoors for example). The blocks, the entities, the avatar and the body
+  are drawn into an atlas of our own with the same layout, cascade by cascade (scissored to the
+  cascade's quarter; sections culled per cascade and beyond `RenderShadowDistance`), storing the
+  value GTA compares with, so one lookup gives both GTA's shadow and GTA's plus the blocks', with
+  GTA's own filtering. Before the blocks are drawn, a full-screen pass reads GTA's depth buffer (the
+  INTZ texture behind it), rebuilds each pixel's position and normal and multiplies the frame by how
+  much less sun the blocks leave it: `(ambient * ao + sun * N.L * both) / (ambient * ao + sun * N.L *
+  GTA's)` per colour channel (GTA's own split: `ao` is its G-buffer 2's z, still bound on s0 after its
+  tone mapping, and N.L gets FusionFix's remap `saturate(N.L * 4/3 - 1/3)`, as in its sun pass),
+  pulled towards 1 by GTA's fog and raised to its tone mapping gamma, so what GTA already shades is
+  left alone and a block shadow is as dark as GTA's on the same ground (`RenderShadowStrength`). The
+  blocks' own sun term uses the same N.L remap. Our atlas is `D3DPOOL_DEFAULT`: a hook on
+  `IDirect3DDevice9::Reset` releases it first. The shadow constants sit in the shaders' low registers
+  (`c14` to `c27`; placed at `c100` and up, DXVK sometimes left them unset for the block shader), and
+  the `SetPixelShaderConstantF` watch ignores what our own draw command writes. The `GTA sun shadows`
+  log line says what is in use; every 10 s a `shadows in N frames` line gives both passes' CPU and
+  GPU times (about 0.25 ms CPU and 0.7 ms GPU at 500 sections, measured).
 - Cutout is alpha-tested; translucent is sorted by section, back to front.
 - In a vehicle Minecraft's rider and its mount reach us a frame or two after GTA moved the seat
   (0.8 m at 50 m/s): the avatar is drawn at this frame's seat (the ped's matrix minus
@@ -188,7 +217,7 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `LogPerf` | `1` | one frame-time line a minute (10 s with Diagnostics) |
 | `FreezePed` | `1` | `FREEZE_CHAR_POSITION` while puppeting (0: zero the velocity every frame) |
 | `PuppetPlayerControl` | `1` | the player keeps GTA's player control while puppeted (its pad is zeroed, so GTA doesn't move him): without it GTA's peds and police take him for a cutscene player and stop fighting and chasing him |
-| `GtaHud` | `1` | keep GTA IV's HUD and radar next to Minecraft's HUD in Minecraft mode; GTA still hides them itself in cutscenes and menus (0: Minecraft's HUD only) |
+| `GtaHud` | `1` | keep GTA IV's HUD and radar next to Minecraft's HUD in Minecraft mode; GTA still hides them itself in cutscenes and menus (0: Minecraft's HUD only). While Combat owns Niko's health the radar's ring mirrors Minecraft (its health, max health and armour reach us in `McState`'s padding, `kMcVitalsValid`): the HUD's three reads of the player's health (the arc, the flash of what was just lost, where the armour arc starts) call a stub that answers 100 + 100 x Minecraft's health fraction, and its two reads of his max health read 200 (0x87068E, 0x8706C0, 0x86B019, 0x86C869, 0x86C8A5 on 1.0.8.0, each checked byte for byte first), so GTA's own HUD code shows Minecraft's health as its own: the loss flash, the red blink at a quarter or less, the armour arc right after the health arc. GTA's real health stays at the 1000 buffer. GTA's armour is set to Minecraft's armour points x 5 (it absorbs GTA's damage first, which is still sent to Minecraft, and is put back each frame). In Niko mode and vehicles GTA's own values show |
 | `PuppetCollision` | `0` | not in the default ini: the puppeted ped keeps its collision (not needed for GTA's peds and police to fight him: with player control on, their shots and blows reach him either way) |
 | `RootToFeet` | `1.0` | metres from the ped root to its feet until measured |
 | `MeasureRootToFeet` | `1` | measure it in game |
@@ -216,6 +245,12 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `RenderExposure` | `1.0` | brightness multiplier for the blocks (after GTA's tone mapping) |
 | `RenderLighting` | `gta` | `gta`: GTA IV's sun, ambient, fog and tone mapping (see Rendering); `minecraft`: Minecraft's own light levels |
 | `RenderSaturation` | `0.8` | colour saturation of the blocks when GTA's tone mapping constants are unavailable (else GTA's own) |
+| `RenderShadows` | `1` | sun shadows: the blocks take GTA IV's and cast their own onto themselves and GTA's world (see Rendering) |
+| `RenderShadowStrength` | `1.0` | how dark GTA's world gets in the blocks' shadow (1: as GTA shades its own; 0: the blocks shade only blocks) |
+| `RenderShadowBias`, `RenderShadowDistance`, `RenderShadowCast` | `0.05`, `128`, `1` | not in the default ini: metres the blocks' casting surfaces move away from the sun (against acne), how far from the camera blocks cast (m), and `0`: the blocks only take GTA's shadows |
+| `DebugShadows`, `DebugShadowsAB` | `0` | test hooks: log GTA's shadow constants (on changes and every 10 s) and write both atlases to `<gamedir>/libertycraft-shadow-gta.pgm` and `-ours.pgm` (15 s after the shadows come on, then every 30 s); `DebugShadowsAB=N` switches the shadows off and on every N s, logging `DebugShadowsAB: shadows on/off` |
+| `DebugShadowView` | `0` | test hook: the blocks show their shadow term instead of their colour (red GTA's, green GTA's and the blocks', blue 0.5) |
+| `DebugShadowSpot` | | test hook: `x,y,z,heading` (GTA), 12 s after the blocks are first drawn put the player there once (e.g. `1191.6,202.6,32.5,149`, the sunny sidewalk outside Schottler Medical Center) |
 | `RenderExposureKey`, `RenderExposureFloor` | `0.85`, `11` | calibration of the auto exposure stand-in (not in the default ini) |
 | `DebugTimeOfDay`, `DebugWeather`, `DebugStepSeconds` | | test hooks: pin GTA's clock to each hour of a list in turn (e.g. `12,19.5,21.5,0`) and force each weather of a list (`-1` leaves it; 0 extrasunny, 3 cloudy, 4 rain, 6 foggy), one step every `DebugStepSeconds` (20) once the blocks are drawn; logs `debug step i/n` |
 | `DebugLightingAB`, `DebugLighting` | `0` | test hooks: alternate Minecraft's and GTA's lighting within each step; log GTA's lighting registers and the sun/ambient sets per step |
@@ -230,6 +265,8 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `DebugAutoVehicle` | `0` | test hook: press the vehicle key when a car is within 12 m (else park an empty test car next to Niko first; indoors, move him to the nearest road), and GTA's exit control after 12 s in a car |
 | `DebugVehicleDriver` | `0` | test hook: DebugAutoVehicle's test car gets a random driver (the press carjacks) |
 | `DebugInjectEnterKey` | `0` | test hook: the vehicle key's taps as real key events (`SendInput`) instead of pad writes |
+| `PhoneKeys` | `1` | GTA's phone in Minecraft mode: the arrow keys are GTA's, and Enter, Backspace and the number keys while the phone is out (see Input while puppeting) |
+| `DebugPhone` | `0` | test hook: real key events that log which pad controls some keys feed, then take the phone out, open the phone book, scroll and put it away |
 | `PuppetMove` | `direct` | how the puppeted ped is placed: `direct` (the natives' own move without their clearing, see Conventions) or `native` (`SET_CHAR_COORDINATES_NO_OFFSET`: deletes the cars and peds the player walks into) |
 | `DebugWalkThroughCar` | `0` | test hook: walks the puppet target through a parked (ambient) car and into a pedestrian, once with each move method, and logs whether they survive |
 | `DebugFocusCycle` | `0` | test hook: a window of the plugin's own takes the foreground for 3 s and gives it back, twice (alt-tab without a keyboard); SendInput mouse moves before and after show whether raw mouse input still arrives. The first cycle runs without the raw mouse watchdog |
@@ -308,10 +345,23 @@ The decisions are `DriveLogic.h` (pure, tested by `asi/tests/drive_test.cpp`).
 Keys go to Minecraft as SDL3 scancodes (hardware scancode -> DirectInput code -> SDL). Esc and
 `` ` `` stay GTA's (pause menu) unless a Minecraft screen is open; F1-F12 go to both. `MenuKey`
 sends `kInOpenMenu`. Mouse: raw input (`WM_INPUT`) for look / the GUI cursor, buttons and wheel
-from window messages. GTA reads DirectInput itself, but with player control off (puppet mode)
-`CPad::GetPad()` hands the player's ped an empty pad, so its controls do nothing; `processPadEvent`
-zeroes every CPad control except `INPUT_FRONTEND_PAUSE` for any frame where control is on anyway.
-Focus loss and GTA menus send `kInReleaseAll`.
+from window messages. GTA reads DirectInput itself and the player keeps player control while
+puppeted (`PuppetPlayerControl`), so `processPadEvent` zeroes every CPad control except
+`INPUT_FRONTEND_PAUSE` and, with `PhoneKeys`, the phone's (below). Focus loss and GTA menus send
+`kInReleaseAll`.
+
+GTA's phone (`PhoneKeys=1`, the default) works like in plain GTA IV: Up takes it out (or answers a
+call), the arrows navigate, Enter selects, Backspace goes back and finally puts it away. The arrow
+keys are always GTA's; while the phone is out Enter, Backspace and the number keys are GTA's too
+(Minecraft gets none of them then, only key-ups). In the pad, measured with `DebugPhone`: Up feeds
+`PHONE_TAKE_OUT`, `FRONTEND_UP`, `KB_UP`; the other arrows the matching `FRONTEND_`/`KB_` controls;
+Enter `FRONTEND_ACCEPT` and `KB_PHONE_ACCEPT`; Backspace `FRONTEND_CANCEL` and `KB_PHONE_CANCEL`.
+Those stay unzeroed: the arrows' controls and the phone's own accept/cancel always, the frontend
+accept/cancel only while the phone is out. "The phone is out" is the game's own flag that
+`CREATE_MOBILE_PHONE` / `DESTROY_MOBILE_PHONE` set (1.0.8.0: `0x1792CB5`, its address read from the
+native's code, which is checked first), or `SCRIPT_IS_USING_MOBILE_PHONE`'s (the next byte); the
+log says `phone: out` / `phone: away`. While it is out the puppet move keeps Niko's tasks (his
+phone task), which every other puppet frame clears.
 
 Raw input allows one mouse registration per process, and Wine's DirectInput registers it for its
 own window (`RIDEV_CAPTUREMOUSE | RIDEV_NOLEGACY`) whenever GTA acquires its mouse and removes it

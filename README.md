@@ -116,9 +116,12 @@ Minecraft's `config/libertycraft.properties`.
 - [x] **M7**: your Minecraft character plays Niko when GTA animates him (cutscenes, cars, bail-outs, knockdowns);
   doors open, street furniture is solid, NPCs and cops fight back, Minecraft attacks count as crimes, cars and
   their occupants can be hit, optional radio restoration
+- [x] **M8**: blocks and your Minecraft body take and cast GTA's sun shadows (same cascades and filtering as GTA),
+  both HUDs at once with GTA's health and armour mirroring Minecraft, shields block GTA hits, GTA's phone works in
+  Minecraft mode
 
-Known gaps: blocks get no GTA shadows; windscreens can't be broken (only side windows); cutscene support
-needs 1.0.8.0; peds take double damage from Minecraft explosions.
+Known gaps: no shadows on blocks indoors; cutscene support needs 1.0.8.0; peds take double damage from
+Minecraft explosions. (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
 
 ## Licenses
 

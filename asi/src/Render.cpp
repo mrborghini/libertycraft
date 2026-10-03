@@ -8,6 +8,8 @@
 #include "render/Frame.h"
 #include "render/Lighting.h"
 #include "render/RenderMath.h"
+#include "render/ShadowPass.h"
+#include "render/Shadows.h"
 #include "render/World.h"
 
 #include "Config.h"
@@ -430,6 +432,42 @@ namespace lc::Render
 			}
 		}
 
+		// DebugShadowSpot: once, 12 s after the blocks are first drawn, put the player at "x,y,z,heading"
+		// (natives from drawingEvent: a test hook only).
+		void DebugSpot(const Config& a_cfg, bool a_drawing)
+		{
+			static bool          done = false;
+			static std::uint64_t t0 = 0;
+			if (done || a_cfg.debugShadowSpot.empty() || (!t0 && !a_drawing)) {
+				return;
+			}
+			const auto now = ::GetTickCount64();
+			if (!t0) {
+				t0 = now;
+			}
+			if (now - t0 < 12000) {
+				return;
+			}
+			done = true;
+			const auto v = ParseList(a_cfg.debugShadowSpot);
+			if (v.size() < 3) {
+				LC_LOG("DebugShadowSpot: want x,y,z[,heading], got \"%s\"", a_cfg.debugShadowSpot.c_str());
+				return;
+			}
+			namespace S = ::Scripting;
+			int ped = 0;
+			S::GET_PLAYER_CHAR(static_cast<int>(S::GET_PLAYER_ID()), &ped);
+			if (!ped || S::IS_CHAR_IN_ANY_CAR(ped)) {
+				LC_LOG("DebugShadowSpot: no player on foot");
+				return;
+			}
+			S::SET_CHAR_COORDINATES(ped, v[0], v[1], v[2]);
+			if (v.size() > 3) {
+				S::SET_CHAR_HEADING(ped, v[3]);
+			}
+			LC_LOG("DebugShadowSpot: player put at GTA %.1f %.1f %.1f heading %.0f", v[0], v[1], v[2], v.size() > 3 ? v[3] : -1.0f);
+		}
+
 		void Capture(FrameSnapshot& a_f, const Config& a_cfg)
 		{
 			auto& st = Game::State();
@@ -484,6 +522,21 @@ namespace lc::Render
 			a_f.rain = CWeather::Rain;
 			if (a_cfg.renderLighting == Config::RenderLighting::kGta && !debugMinecraftLighting) {
 				a_f.flags |= render::kFrameGtaLighting;
+			}
+			// Sun shadows; DebugShadowsAB=N: off and on in turn, N s each.
+			bool shadows = a_cfg.renderShadows;
+			if (a_cfg.debugShadowsAB > 0.0f) {
+				static int lastAB = -1;
+				const auto period = std::uint64_t(std::max(1.0f, a_cfg.debugShadowsAB) * 1000.0f);
+				const bool on = (::GetTickCount64() / period) % 2 == 1;
+				shadows = shadows && on;
+				if (int(on) != lastAB) {
+					lastAB = int(on);
+					LC_LOG("DebugShadowsAB: shadows %s", on ? "on" : "off");
+				}
+			}
+			if (shadows) {
+				a_f.flags |= render::kFrameShadows;
 			}
 
 			using RD = Config::RenderDepth;
@@ -678,6 +731,117 @@ namespace lc::Render
 		// adapted luminance texture are still bound, but the sun/ambient registers have been reused by
 		// later passes. So SetPixelShaderConstantF is watched (a device vtable slot) and the sun pass's
 		// values are kept: per frame, the writes while gDirectionalColour holds its brightest sun/moon.
+		// GTA's sun shadow constants (render/Shadows.h): the pixel shader globals c53-c63 its sun pass set
+		// (the set most writes used this frame, like the sun) and FusionFix's c217-c223 as last written.
+		namespace shadowwatch
+		{
+			using render::shreg::kFirst;
+			using render::shreg::kCount;
+			using render::shreg::kFfFirst;
+			using render::shreg::kFfCount;
+			constexpr std::uint32_t kNone = 0xFFFFFFFF;
+			struct Seen
+			{
+				render::GtaShadowSet set;
+				std::uint32_t        count;
+			};
+			render::GtaShadowSet     cur;  // c53-c63 as last written (c55 is no parameter: left at 0)
+			constexpr std::uint32_t  kSeen = 32;
+			Seen                     seen[kSeen]{};
+			std::uint32_t            seenCount = 0, lastIdx = kNone, writes = 0;
+			render::FusionShadowTune ff;
+
+			void Watch(UINT a_start, const float* a_data, UINT a_count)
+			{
+				if (!a_data || !a_count) {
+					return;
+				}
+				const UINT end = a_start + a_count;
+				if (end > kFfFirst && a_start < kFfFirst + kFfCount) {
+					const UINT from = std::max<UINT>(a_start, kFfFirst), to = std::min<UINT>(end, kFfFirst + kFfCount);
+					std::memcpy(ff.r[from - kFfFirst], a_data + (from - a_start) * 4, (to - from) * 16);
+					ff.known = true;
+				}
+				if (end <= kFirst || a_start >= kFirst + kCount) {
+					return;
+				}
+				const UINT from = std::max<UINT>(a_start, kFirst), to = std::min<UINT>(end, kFirst + kCount);
+				bool       changed = false;
+				for (UINT r = from; r < to; ++r) {
+					const float* v = a_data + (r - a_start) * 4;
+					if (r != kFirst + 2 && std::memcmp(cur.r[r - kFirst], v, 16) != 0) {
+						std::memcpy(cur.r[r - kFirst], v, 16);
+						changed = true;
+					}
+				}
+				++writes;
+				if (!changed && lastIdx < seenCount) {
+					++seen[lastIdx].count;
+					return;
+				}
+				for (std::uint32_t k = 0; k < seenCount; ++k) {
+					if (std::memcmp(&seen[k].set, &cur, sizeof(cur)) == 0) {
+						++seen[k].count;
+						lastIdx = k;
+						return;
+					}
+				}
+				// A new set (or one half-way between two: GTA sets each register on its own). A full table
+				// makes room by dropping the least used.
+				std::uint32_t k = seenCount;
+				if (seenCount < kSeen) {
+					++seenCount;
+				} else {
+					k = 0;
+					for (std::uint32_t i = 1; i < kSeen; ++i) {
+						if (seen[i].count < seen[k].count) {
+							k = i;
+						}
+					}
+				}
+				seen[k].set = cur;
+				seen[k].count = 1;
+				lastIdx = k;
+			}
+
+			void Reset()
+			{
+				seenCount = 0;
+				writes = 0;
+				lastIdx = kNone;
+			}
+
+			// This frame's set: the valid one most writes left in the registers among those made for this
+			// frame's camera (a_cam, a_fwd: GTA's cascade thresholds, gFacetCentre, are the cascades' ends
+			// plus the camera's own depth; other viewports, a water reflection, and the half-way sets of a
+			// switch between them don't fit). Then start over.
+			bool Take(const double a_cam[3], const float a_fwd[3], render::GtaShadowSet& a_out, std::uint32_t& a_writes, std::uint32_t& a_distinct,
+				std::uint32_t& a_otherCamera)
+			{
+				int best = -1;
+				a_otherCamera = 0;
+				for (std::uint32_t k = 0; k < seenCount; ++k) {
+					if (!render::ShadowSetValid(seen[k].set)) {
+						continue;
+					}
+					if (!render::ShadowSetFitsCamera(seen[k].set, a_cam, a_fwd)) {
+						a_otherCamera += seen[k].count;
+						continue;
+					}
+					if (best < 0 || seen[k].count > seen[best].count) {
+						best = int(k);
+					}
+				}
+				if (best >= 0) {
+					a_out = seen[best].set;
+				}
+				a_writes = best >= 0 ? seen[best].count : 0;
+				a_distinct = seenCount;
+				Reset();
+				return best >= 0;
+			}
+		}
+
 		namespace sunwatch
 		{
 			using SetF = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
@@ -768,17 +932,25 @@ namespace lc::Render
 				}
 			}
 
+			// Set while our draw command draws (render thread): our own writes aren't GTA's.
+			bool ours = false;
+
 			HRESULT STDMETHODCALLTYPE HookPs(IDirect3DDevice9* a_d, UINT a_start, const float* a_data, UINT a_count)
 			{
 				calls.fetch_add(1, std::memory_order_relaxed);
-				Watch(0, a_start, a_data, a_count);
-				WatchHigh(a_start, a_data, a_count);
+				if (!ours) {
+					Watch(0, a_start, a_data, a_count);
+					WatchHigh(a_start, a_data, a_count);
+					shadowwatch::Watch(a_start, a_data, a_count);
+				}
 				return original[0](a_d, a_start, a_data, a_count);
 			}
 
 			HRESULT STDMETHODCALLTYPE HookVs(IDirect3DDevice9* a_d, UINT a_start, const float* a_data, UINT a_count)
 			{
-				Watch(1, a_start, a_data, a_count);
+				if (!ours) {
+					Watch(1, a_start, a_data, a_count);
+				}
 				return original[1](a_d, a_start, a_data, a_count);
 			}
 
@@ -1039,6 +1211,143 @@ namespace lc::Render
 			return p;
 		}
 
+		// ---- GTA's sun shadows (render/Shadows.h) ------------------------------------------------------
+		render::GtaShadowSet heldShadow;
+		bool                 heldShadowOk = false;
+		std::uint32_t        shadowMissingFrames = 0;
+		int                  lastShadowState = -1;
+		std::uint64_t        nextShadowLog = 0;
+		// Frames with shadows on, by where GTA's set came from: this frame's, or one held from an earlier
+		// frame (GTA's sun pass set none for this camera); and how often the chosen set changed.
+		std::uint32_t        shadowFreshFrames = 0, shadowHeldFrames = 0, shadowSetChanges = 0;
+
+		// This frame's ShadowFrame: GTA's shadow constants and its cascade atlas (on sampler 15 at our draw
+		// command). Returns the atlas (AddRef'd: the caller releases it after drawing) or null: no shadows.
+		bool loggedGBuffer = false;
+
+		// GTA's G-buffer 2 (its z scales the ambient in GTA's sun pass): its tone mapping pass, right before
+		// our draw command, samples it on s0. A texture the back buffer's size, A8R8G8B8 (FusionFix's
+		// G-buffer format). Not AddRef'd beyond this frame (it stays bound to s0 until we change it, and
+		// GTA's render target lives on).
+		IDirect3DBaseTexture9* GtaGBuffer2(IDirect3DDevice9* a_d, std::uint32_t a_w, std::uint32_t a_h)
+		{
+			IDirect3DBaseTexture9* t = nullptr;
+			D3DSURFACE_DESC        d{};
+			const bool ok = SUCCEEDED(a_d->GetTexture(0, &t)) && t && t->GetType() == D3DRTYPE_TEXTURE &&
+			                SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &d)) && d.Width == a_w && d.Height == a_h &&
+			                (d.Format == D3DFMT_A8R8G8B8 || d.Format == D3DFMT_X8R8G8B8) && (d.Usage & D3DUSAGE_RENDERTARGET);
+			if (!loggedGBuffer && t) {
+				loggedGBuffer = true;
+				char fmt[16];
+				LC_LOG("GTA's G-buffer 2 (ambient occlusion for the blocks' shadow on GTA's world) on s0: %s (%ux%u %s, usage 0x%lX)", ok ? "yes" : "no", d.Width, d.Height,
+					FormatName(d.Format, fmt), static_cast<unsigned long>(d.Usage));
+			}
+			if (t) {
+				t->Release();
+			}
+			return ok ? t : nullptr;
+		}
+
+		IDirect3DBaseTexture9* GtaShadows(IDirect3DDevice9* a_d, const FrameSnapshot& a_f, const render::LightingParams& a_light, std::uint32_t a_rtW,
+			std::uint32_t a_rtH, render::ShadowFrame& a_out)
+		{
+			const auto&          cfg = Config::Get();
+			const auto           tuning = render::TuningFrom(shadowwatch::ff);
+			render::shadowpass::SetNdlRemap(tuning.ndlScale, tuning.ndlOffset);
+			render::GtaShadowSet set;
+			std::uint32_t        writes = 0, distinct = 0, otherCamera = 0;
+			const float          fwd[3] = { a_f.clip[0][3], a_f.clip[1][3], a_f.clip[2][3] };
+			const bool fresh = shadowwatch::Take(a_f.camPos, fwd, set, writes, distinct, otherCamera);
+			if (fresh) {
+				if (std::memcmp(&set, &heldShadow, sizeof(set)) != 0) {
+					++shadowSetChanges;
+				}
+				heldShadow = set;
+				heldShadowOk = true;
+				shadowMissingFrames = 0;
+			} else if (++shadowMissingFrames > 30) {
+				heldShadowOk = false;  // half a second without GTA's sun pass using shadows (interiors, loading)
+			}
+			IDirect3DBaseTexture9* t = nullptr;
+			D3DSURFACE_DESC        desc{};
+			bool                   atlasOk = false;
+			if (SUCCEEDED(a_d->GetTexture(15, &t)) && t) {
+				atlasOk = t->GetType() == D3DRTYPE_TEXTURE && SUCCEEDED(static_cast<IDirect3DTexture9*>(t)->GetLevelDesc(0, &desc)) &&
+				          desc.Format == D3DFMT_R32F && desc.Width == desc.Height * 4 && desc.Height >= 64;
+			}
+			const bool want = (a_f.flags & render::kFrameShadows) && (a_f.flags & render::kFrameGtaLighting) && a_light.sunDir[3] > 0.5f;
+			const bool ok = want && heldShadowOk && atlasOk;
+			if (ok) {
+				++(fresh ? shadowFreshFrames : shadowHeldFrames);
+				a_out.params = render::MakeShadowParams(heldShadow, tuning, a_f.camPos, fwd, true);
+				a_out.gbuffer2 = GtaGBuffer2(a_d, a_rtW, a_rtH);
+				a_out.gtaAtlas = t;
+				a_out.atlasW = desc.Width;
+				a_out.atlasH = desc.Height;
+				a_out.cast = cfg.renderShadowCast;
+				const float* mz = a_out.params.mz;
+				a_out.casterBias = cfg.renderShadowBias * std::sqrt(mz[0] * mz[0] + mz[1] * mz[1] + mz[2] * mz[2]);
+				a_out.strength = cfg.renderShadowStrength;
+				a_out.distance = cfg.renderShadowDistance;
+				a_out.view = cfg.debugShadowView;
+				// DebugShadows: both atlases to <gamedir>/libertycraft-shadow-*.pgm, 15 s after the shadows came on, then every 30 s.
+				static std::uint64_t nextDump = 0;
+				const auto           nowMs = ::GetTickCount64();
+				if (cfg.debugShadows && (nextDump == 0 || nowMs >= nextDump)) {
+					a_out.dump = nextDump != 0;
+					nextDump = nowMs + (nextDump == 0 ? 15000 : 30000);
+				}
+			}
+			const int  state = (want ? 1 : 0) | (heldShadowOk ? 2 : 0) | (atlasOk ? 4 : 0);
+			const auto now = ::GetTickCount64();
+			if (state != lastShadowState || (cfg.debugShadows && now >= nextShadowLog)) {
+				nextShadowLog = now + 10000;
+				const bool first = lastShadowState < 0;
+				lastShadowState = state;
+				char fmt[16];
+				LC_LOG("GTA sun shadows: %s (wanted %d, GTA's set %s: %u writes of %u distinct sets this frame, %u writes for other cameras; GTA's atlas on s15: "
+					   "%s %ux%u %s)",
+					ok ? "on" : "off", want ? 1 : 0, heldShadowOk ? "ok" : "missing", writes, distinct, otherCamera, atlasOk ? "yes" : (t ? "not the atlas" : "none"),
+					desc.Width, desc.Height, t ? FormatName(desc.Format, fmt) : "-");
+				if (heldShadowOk && (first || cfg.debugShadows || ok)) {
+					const auto& r = heldShadow.r;
+					for (unsigned i = 0; i < render::shreg::kCount; i += 2) {
+						const unsigned j = std::min(i + 1, render::shreg::kCount - 1);
+						LC_LOG("  c%u %.6g %.6g %.6g %.6g | c%u %.6g %.6g %.6g %.6g", 53 + i, r[i][0], r[i][1], r[i][2], r[i][3], 53 + j, r[j][0], r[j][1], r[j][2], r[j][3]);
+					}
+					const auto& ff = shadowwatch::ff;
+					LC_LOG("  FusionFix %s: c217 %.3g %.3g %.3g %.3g c218 %.3g %.3g %.3g %.3g c220 %.3g %.3g %.3g %.3g c221 %.3g c223 %.3g %.3g %.3g %.3g",
+						ff.known ? "seen" : "not seen", ff.r[0][0], ff.r[0][1], ff.r[0][2], ff.r[0][3], ff.r[1][0], ff.r[1][1], ff.r[1][2], ff.r[1][3], ff.r[3][0],
+						ff.r[3][1], ff.r[3][2], ff.r[3][3], ff.r[4][0], ff.r[6][0], ff.r[6][1], ff.r[6][2], ff.r[6][3]);
+					if (ok) {
+						const auto& p = a_out.params;
+						const float l = std::sqrt(p.mz[0] * p.mz[0] + p.mz[1] * p.mz[1] + p.mz[2] * p.mz[2]);
+						const float toSun = l > 0.0f ? (p.mz[0] * a_light.sunDir[0] + p.mz[1] * a_light.sunDir[1] + p.mz[2] * a_light.sunDir[2]) / l : 0.0f;
+						LC_LOG("  camera %.1f %.1f %.1f forward %.3f %.3f %.3f; cascades end at %.1f %.1f %.1f %.1f m (thresholds %.1f %.1f %.1f), fade %.0f m; light depth "
+							   "%.4f per m, along the way to the sun %.3f; softness %.2f bias %.2f blend %.2f fov %.2f taps %d CHSS %d (max %.1f light %.2f) N.L x%.3f %+.3f; "
+							   "caster bias %.4f",
+							a_f.camPos[0], a_f.camPos[1], a_f.camPos[2], p.fwd[0], p.fwd[1], p.fwd[2], p.bounds[0], p.bounds[1], p.bounds[2], p.bounds[3], p.split[0],
+							p.split[1], p.split[2], p.split[3], l, toSun, p.filter[1], p.filter[2], p.filter[3], p.misc[0], p.misc[1] > 0.5f ? 16 : 4,
+							p.misc[2] > 0.5f ? 1 : 0, p.chss[0], p.chss[1], p.ndl[0], p.ndl[1], a_out.casterBias);
+						for (int k = 0; k < render::kCascades; ++k) {
+							LC_LOG("  cascade %d: uv = sc.xy x (%.6g, %.6g) + (%.4f, %.4f)", k, p.casc[k][0], p.casc[k][1], p.casc[k][2], p.casc[k][3]);
+						}
+						const float at[3] = { p.fwd[0] * 5.0f, p.fwd[1] * 5.0f, p.fwd[2] * 5.0f - 1.5f }, n[3] = { 0.0f, 0.0f, 1.0f };
+						const auto  c = render::ShadowLookup(p, at, n);
+						LC_LOG("  5 m ahead, 1.5 m down: cascade %d uv %.4f %.4f zr %.6f (taps in u %.3f to %.3f, radius %.6f %.6f)", c.cascade, c.uv[0], c.uv[1], c.zr,
+							c.clampU[0], c.clampU[1], c.radius[0], c.radius[1]);
+					}
+				}
+			}
+			if (!ok) {
+				if (t) {
+					t->Release();
+				}
+				return nullptr;
+			}
+			return t;
+		}
+
 		void LogStats(const FrameSnapshot& a_f)
 		{
 			const auto now = ::GetTickCount64();
@@ -1078,6 +1387,14 @@ namespace lc::Render
 			}
 			if (ws.bodyFrames) {
 				LC_LOG("Minecraft body on Niko's skeleton drawn in %u frames", ws.bodyFrames);
+			}
+			if (const auto ss = render::shadowpass::TakeStats(); ss.frames || shadowHeldFrames) {
+				const double f = ss.frames, g = std::max(1u, ss.gpuFrames);
+				LC_LOG("shadows in %u frames (GTA's set from that frame in %u, held from an earlier one in %u; it changed %u times): casters %.0f draws, %.2f ms CPU, "
+					   "%.2f ms GPU; GTA's world in the blocks' shadow in %u frames, %.2f ms CPU, %.2f ms GPU (GPU times from %u frames)",
+					ss.frames, shadowFreshFrames, shadowHeldFrames, shadowSetChanges, ss.casterDraws / f, ss.casterCpuMs / f, ss.casterGpuMs / g, ss.darkenFrames,
+					ss.darkenCpuMs / f, ss.darkenGpuMs / g, ss.gpuFrames);
+				shadowFreshFrames = shadowHeldFrames = shadowSetChanges = 0;
 			}
 			if (mountFrames) {
 				LC_LOG("rider at GTA's seat in %u frames: Minecraft's feet were %.2f m behind on average (worst %.2f m)", mountFrames, mountShiftSum / mountFrames,
@@ -1173,6 +1490,7 @@ namespace lc::Render
 			}
 			if (!drawWorld) {
 				sunwatch::Reset();  // no blocks to light: the next frame's scene starts afresh
+				shadowwatch::Reset();
 			}
 			if (a_f.gameFrame == drawnFrame || !fullSize || !(drawWorld || overlayWanted)) {
 				Overlay::Upload(device, false);
@@ -1195,6 +1513,7 @@ namespace lc::Render
 				return;
 			}
 			stateMs += NowMs() - t0;
+			sunwatch::ours = true;  // from here to the state block's Apply the constants written are ours
 			if (drawWorld) {
 				const render::LightingParams light = GtaLighting(device, a_f, rt.Width, rt.Height, target.adaptedLum);
 				// The mount: where Minecraft's latest scene has the rider's feet.
@@ -1211,7 +1530,12 @@ namespace lc::Render
 					mountShiftSum += shift;
 					mountShiftMax = std::max(mountShiftMax, shift);
 				}
-				render::World::Get().Draw(device, a_f, target, light, mount ? mountFrom : nullptr);
+				render::ShadowFrame    shadowFrame;
+				IDirect3DBaseTexture9* gtaAtlas = GtaShadows(device, a_f, light, rt.Width, rt.Height, shadowFrame);
+				render::World::Get().Draw(device, a_f, target, light, mount ? mountFrom : nullptr, gtaAtlas ? &shadowFrame : nullptr);
+				if (gtaAtlas) {
+					gtaAtlas->Release();
+				}
 			}
 			if (overlayWanted) {
 				Overlay::Draw(device, a_f, rt.Width, rt.Height);
@@ -1219,6 +1543,7 @@ namespace lc::Render
 			const double t1 = NowMs();
 			saved->Apply();
 			saved->Release();
+			sunwatch::ours = false;
 			stateMs += NowMs() - t1;
 			++framesDrawn;
 			LogStats(a_f);
@@ -1251,6 +1576,7 @@ namespace lc::Render
 		Capture(f, cfg);
 		if (f.call == 0) {
 			DebugSequence(cfg, (f.flags & render::kFrameDrawWorld) != 0);
+			DebugSpot(cfg, (f.flags & render::kFrameDrawWorld) != 0);
 			DebugVehicleSpeed(cfg);
 		}
 		Enqueue(f);

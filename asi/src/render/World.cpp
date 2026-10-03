@@ -5,6 +5,7 @@
 #include "render/Body.h"
 #include "render/D3D9Util.h"
 #include "render/RenderMath.h"
+#include "render/ShadowPass.h"
 #include "render/Shaders.h"
 
 #include "Config.h"
@@ -135,6 +136,7 @@ namespace lc::render
 				if (device) {
 					LC_LOG("Direct3D device changed (%p -> %p): dropping Minecraft's GPU data", static_cast<void*>(device), static_cast<void*>(a_device));
 					Forget();
+					shadowpass::Forget();
 				}
 				device = a_device;
 			}
@@ -583,19 +585,115 @@ namespace lc::render
 		stats.drainMs += NowMs() - t0;
 	}
 
-	void World::Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_f, const TargetInfo& a_t, const LightingParams& a_light, const double* a_mountFrom)
+	void World::Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_f, const TargetInfo& a_t, const LightingParams& a_light, const double* a_mountFrom,
+		const ShadowFrame* a_shadows)
 	{
 		if (!ready || a_device != device || !(a_f.flags & kFrameCameraValid) || !a_t.width || !a_t.height) {
 			return;
 		}
 		const double t0 = NowMs();
 		++stats.frames;
-		SetCommonState(a_f, a_t, a_light);
 		const double* cam = a_f.camPos;
 		Mat4          clip;
 		std::memcpy(clip.m, a_f.clip, sizeof(clip.m));
 		const Frustum frustum = Frustum::FromClip(clip);
 		const double  maxDist = std::max(64.0, double(a_f.farZ)) + 16.0;
+
+		// This frame's meshes. Minecraft's world things around an integer origin near the camera, and
+		// its entities.
+		const McVec  camMc = GtaToMc(cam[0], cam[1], cam[2]);
+		const double origin[3] = { std::floor(camMc.x), std::floor(camMc.y), std::floor(camMc.z) };
+		builder.Clear();
+		if (Link::Get().ReadWorldEntities(entities)) {
+			builder.Build(entities, origin);
+		}
+		// The player's body on GTA's skeleton (Niko hidden): the standing body's parts posed by this
+		// frame's bones.
+		const bool posed = (a_f.flags & kFrameBody) && !ragdoll.batches.empty();
+		if (posed) {
+			body::Pose pose;
+			static_assert(sizeof(pose.part) == sizeof(a_f.bodyParts));
+			std::memcpy(pose.part, a_f.bodyParts, sizeof(pose.part));
+			body::PoseMesh(ragdoll.batches, ragdoll.verts, pose, posedBody.verts);
+			posedBody.batches = ragdoll.batches;
+			const McVec o = GtaToMc(a_f.bodyOrigin[0], a_f.bodyOrigin[1], a_f.bodyOrigin[2]);
+			posedBody.origin[0] = o.x;
+			posedBody.origin[1] = o.y;
+			posedBody.origin[2] = o.z;
+			++stats.bodyFrames;
+		}
+		// In a vehicle the rider is drawn at GTA's seat of this frame (a_f.feet), not where Minecraft
+		// last saw it (a frame or two behind: ~0.8 m at 50 m/s); its mount goes along.
+		const Mesh* sceneMain = &scene;
+		double      mountOrigin[3]{};
+		const bool  mount = a_mountFrom && (a_f.flags & kFrameMountShift) && !scene.batches.empty();
+		if (mount) {
+			SplitMount(scene.batches, scene.verts, scene.origin, a_mountFrom, sceneRest.batches, sceneRest.verts, sceneMount.batches, sceneMount.verts);
+			for (int i = 0; i < 3; ++i) {
+				mountOrigin[i] = scene.origin[i] + (a_f.feet[i] - a_mountFrom[i]);
+			}
+			sceneMain = &sceneRest;
+		}
+		// The opaque things besides the sections (the casters draw them into our atlas too).
+		auto drawOpaqueMeshes = [&] {
+			if (atlas && !builder.solid.empty()) {
+				SetOffset(origin, cam);
+				DrawUp(builder.solid, 0, builder.solid.size());
+			}
+			if (a_f.flags & kFrameAvatar) {
+				DrawMesh(avatar, a_f.feet, cam, false);
+			}
+			if (posed) {
+				DrawMesh(posedBody, posedBody.origin, cam, false);
+			}
+			if (mount) {
+				DrawMesh(sceneMount, mountOrigin, cam, false);
+			}
+			DrawMesh(*sceneMain, scene.origin, cam, false);
+		};
+
+		// Sun shadows (render/Shadows.h): the blocks, the entities and the body into our atlas, cascade by
+		// cascade in GTA's layout; then GTA's world darkened where they shade it.
+		const bool shadows = a_shadows && a_shadows->gtaAtlas && a_shadows->params.fwd[3] > 0.5f;
+		if (shadows) {
+			if (shadowpass::Prepare(device, *a_shadows) && shadowpass::BeginCasters(device, *a_shadows)) {
+				device->SetVertexDeclaration(decl);
+				device->SetIndices(quadIb);
+				device->SetTexture(0, atlas);
+				const auto   calls0 = stats.drawCalls;
+				const double castDist = std::min(maxDist, double(std::max(a_shadows->distance, 0.0f)) + 16.0);
+				for (int k = 0; k < kCascades; ++k) {
+					shadowpass::Cascade(device, *a_shadows, k);
+					if (atlas) {
+						for (const auto& [key, s] : sections) {
+							if (!s.opaque) {
+								continue;
+							}
+							const double o[3] = { s.sx * 16.0, s.sy * 16.0, s.sz * 16.0 };
+							const GtaVec g = McToGta(o[0], o[1], o[2]);
+							const float  c[3] = { float(g.x - cam[0]) + 8.0f, float(g.y - cam[1]) - 8.0f, float(g.z - cam[2]) + 8.0f };
+							if (double(c[0]) * c[0] + double(c[1]) * c[1] + double(c[2]) * c[2] > castDist * castDist ||
+								!SphereInCascade(a_shadows->params, k, c, kSectionRadius)) {
+								continue;
+							}
+							SetOffset(o, cam);
+							device->SetStreamSource(0, s.vb, 0, sizeof(Vertex));
+							DrawPart(s, 0, s.opaque);
+						}
+					}
+					drawOpaqueMeshes();
+				}
+				shadowpass::EndCasters(device, std::uint32_t(stats.drawCalls - calls0));
+				if (a_shadows->dump) {
+					shadowpass::DumpAtlases(device, *a_shadows);
+				}
+			}
+			shadowpass::Darken(device, a_f, a_light, *a_shadows, a_t.width, a_t.height);
+			shadowpass::FrameDone();
+		}
+
+		SetCommonState(a_f, a_t, a_light);
+		shadowpass::BindLookup(device, shadows ? a_shadows : nullptr);
 
 		// Opaque and cutout blocks.
 		sorted.clear();
@@ -621,51 +719,7 @@ namespace lc::render
 				DrawPart(s, 0, s.opaque);
 			}
 		}
-
-		// Minecraft's world things around an integer origin near the camera, and its entities.
-		const McVec  camMc = GtaToMc(cam[0], cam[1], cam[2]);
-		const double origin[3] = { std::floor(camMc.x), std::floor(camMc.y), std::floor(camMc.z) };
-		builder.Clear();
-		if (Link::Get().ReadWorldEntities(entities)) {
-			builder.Build(entities, origin);
-		}
-		if (atlas && !builder.solid.empty()) {
-			SetOffset(origin, cam);
-			DrawUp(builder.solid, 0, builder.solid.size());
-		}
-		if (a_f.flags & kFrameAvatar) {
-			DrawMesh(avatar, a_f.feet, cam, false);
-		}
-		// The player's body on GTA's skeleton (Niko hidden): the standing body's parts posed by this
-		// frame's bones.
-		const bool posed = (a_f.flags & kFrameBody) && !ragdoll.batches.empty();
-		if (posed) {
-			body::Pose pose;
-			static_assert(sizeof(pose.part) == sizeof(a_f.bodyParts));
-			std::memcpy(pose.part, a_f.bodyParts, sizeof(pose.part));
-			body::PoseMesh(ragdoll.batches, ragdoll.verts, pose, posedBody.verts);
-			posedBody.batches = ragdoll.batches;
-			const McVec o = GtaToMc(a_f.bodyOrigin[0], a_f.bodyOrigin[1], a_f.bodyOrigin[2]);
-			posedBody.origin[0] = o.x;
-			posedBody.origin[1] = o.y;
-			posedBody.origin[2] = o.z;
-			DrawMesh(posedBody, posedBody.origin, cam, false);
-			++stats.bodyFrames;
-		}
-		// In a vehicle the rider is drawn at GTA's seat of this frame (a_f.feet), not where Minecraft
-		// last saw it (a frame or two behind: ~0.8 m at 50 m/s); its mount goes along.
-		const Mesh* sceneMain = &scene;
-		double      mountOrigin[3]{};
-		const bool  mount = a_mountFrom && (a_f.flags & kFrameMountShift) && !scene.batches.empty();
-		if (mount) {
-			SplitMount(scene.batches, scene.verts, scene.origin, a_mountFrom, sceneRest.batches, sceneRest.verts, sceneMount.batches, sceneMount.verts);
-			for (int i = 0; i < 3; ++i) {
-				mountOrigin[i] = scene.origin[i] + (a_f.feet[i] - a_mountFrom[i]);
-			}
-			sceneMain = &sceneRest;
-			DrawMesh(sceneMount, mountOrigin, cam, false);
-		}
-		DrawMesh(*sceneMain, scene.origin, cam, false);
+		drawOpaqueMeshes();
 
 		// Translucent: water, stained glass, ice, back to front; then cracks and the outline.
 		device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);

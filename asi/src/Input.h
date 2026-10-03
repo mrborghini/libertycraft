@@ -27,6 +27,9 @@ namespace lc::Input
 	// GTA IV (re)acquires its mouse, e.g. after alt-tab, which left mouse look dead. Also runs the
 	// DebugFocusCycle test hook.
 	void Tick(float a_dt);
+	// GTA's phone is out (taken out by the player, or a call): from the game's own flag, updated by
+	// Tick. Safe from any thread.
+	bool PhoneOut();
 	// processPadEvent: while puppeting, zero every control except the pause menu's.
 	void Pad(CPad* a_pad);
 	// Mouse-look counts accumulated since the last call (raw mouse units).

@@ -3,6 +3,7 @@
 #include "Coords.h"
 #include "render/Lighting.h"
 #include "render/RenderMath.h"
+#include "render/Shadows.h"
 
 #include <cmath>
 #include <cstdio>
@@ -451,6 +452,284 @@ static void TestMountSplit()
 	CHECK(InMountBox(0.0f, 0.0f, 0.0f) && !InMountBox(3.0f, 0.0f, 0.0f) && !InMountBox(0.0f, 3.0f, 0.0f));
 }
 
+// ---- sun shadows (render/Shadows.h) ------------------------------------------------------------
+// A GTA-like shadow set: an orthographic light basis (u, v across the light, depth towards the sun),
+// four cascades side by side in the atlas around a camera at a_cam looking along a_fwd.
+struct FakeShadow
+{
+	GtaShadowSet set;
+	double       u[3], v[3], l[3];  // light basis (unit)
+	double       size[4];           // metres across each cascade
+	double       centre[4][2];      // each cascade's centre in (u, v) metres
+	float        splits[3] = { 10.0f, 30.0f, 85.0f };
+	float        fade = 256.0f;
+};
+
+static void Normalize(double a_v[3])
+{
+	const double l = std::sqrt(a_v[0] * a_v[0] + a_v[1] * a_v[1] + a_v[2] * a_v[2]);
+	for (int i = 0; i < 3; ++i) {
+		a_v[i] /= l;
+	}
+}
+
+static FakeShadow MakeFake(const double a_cam[3], const float a_fwd[3])
+{
+	FakeShadow f;
+	f.l[0] = 0.3, f.l[1] = -0.4, f.l[2] = 0.85;
+	Normalize(f.l);
+	// u = normalize(z x l), v = l x u
+	f.u[0] = -f.l[1], f.u[1] = f.l[0], f.u[2] = 0.0;
+	Normalize(f.u);
+	f.v[0] = f.l[1] * f.u[2] - f.l[2] * f.u[1];
+	f.v[1] = f.l[2] * f.u[0] - f.l[0] * f.u[2];
+	f.v[2] = f.l[0] * f.u[1] - f.l[1] * f.u[0];
+	const double cascadeSize[4] = { 24.0, 70.0, 180.0, 520.0 };
+	const double ahead[4] = { 5.0, 20.0, 57.0, 170.0 };
+	auto dotv = [](const double a[3], const double b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+	// gShadowMatrix: x = P.u / S0, y = P.v / S0 (cascade 0's size), w = P.l (metres towards the sun) + 100.
+	float(*m)[4] = f.set.r + shreg::kMatrix;
+	for (int r = 0; r < 3; ++r) {
+		m[r][0] = float(f.u[r] / cascadeSize[0]);
+		m[r][1] = float(f.v[r] / cascadeSize[0]);
+		m[r][2] = 0.0f;
+		m[r][3] = float(f.l[r]);
+	}
+	m[3][0] = m[3][1] = 0.0f;
+	m[3][3] = 100.0f;
+	// Cascade k: uv = sc.xy * scale + offset puts its centre (ahead of the camera) mid-quarter.
+	float scale[4][2], offset[4][2];
+	for (int k = 0; k < 4; ++k) {
+		f.size[k] = cascadeSize[k];
+		const double c[3] = { a_cam[0] + a_fwd[0] * ahead[k], a_cam[1] + a_fwd[1] * ahead[k], a_cam[2] + a_fwd[2] * ahead[k] };
+		f.centre[k][0] = dotv(c, f.u);
+		f.centre[k][1] = dotv(c, f.v);
+		const double ratio = cascadeSize[0] / cascadeSize[k];  // sc is in cascade-0 units
+		scale[k][0] = float(ratio * 0.25);
+		scale[k][1] = float(-ratio);
+		offset[k][0] = float(0.125 + 0.25 * k - (f.centre[k][0] / cascadeSize[0]) * scale[k][0]);
+		offset[k][1] = float(0.5 - (f.centre[k][1] / cascadeSize[0]) * scale[k][1]);
+	}
+	// Incremental registers: value(k) = dot((1, k>=1, k>=2, k>=3), reg).
+	auto incr = [](const float (&a_v)[4][2], int a_c, float a_out[4]) {
+		a_out[0] = a_v[0][a_c];
+		for (int k = 1; k < 4; ++k) {
+			a_out[k] = a_v[k][a_c] - a_v[k - 1][a_c];
+		}
+	};
+	incr(scale, 0, f.set.r[shreg::kParam0]);
+	incr(scale, 1, f.set.r[shreg::kParam4]);
+	incr(offset, 0, f.set.r[shreg::kParam8]);
+	incr(offset, 1, f.set.r[shreg::kParam14]);
+	const double camDepth = a_cam[0] * a_fwd[0] + a_cam[1] * a_fwd[1] + a_cam[2] * a_fwd[2];
+	for (int i = 0; i < 3; ++i) {
+		f.set.r[shreg::kFacet][i] = float(f.splits[i] + camDepth);
+	}
+	f.set.r[shreg::kFacet][3] = float(f.fade + camDepth);
+	f.set.r[shreg::kParam18][2] = 1.0f / 1024.0f;
+	f.set.r[shreg::kParam18][3] = f.fade;
+	return f;
+}
+
+static void TestShadowSet()
+{
+	const double cam[3] = { 893.7, -500.1, 20.1 };
+	const float  fwd[3] = { 0.6f, 0.8f, 0.0f };
+	FakeShadow   f = MakeFake(cam, fwd);
+	CHECK(ShadowSetValid(f.set));
+	float b[4];
+	CascadeBounds(f.set, b);
+	NEAR(b[0], 10.0, 0.01);
+	NEAR(b[1], 30.0, 0.01);
+	NEAR(b[2], 85.0, 0.01);
+	NEAR(b[3], 256.0, 0.01);
+	FakeShadow bad = f;
+	bad.set.r[shreg::kMatrix][0] = std::nanf("");
+	CHECK(!ShadowSetValid(bad.set));
+	bad = f;
+	bad.set.r[shreg::kFacet][1] = bad.set.r[shreg::kFacet][0] - 1.0f;  // cascades must grow
+	CHECK(!ShadowSetValid(bad.set));
+	bad = f;
+	bad.set.r[shreg::kParam18][3] = 0.0f;  // no fade distance
+	CHECK(!ShadowSetValid(bad.set));
+	CHECK(!ShadowSetValid(GtaShadowSet{}));
+	// Made for this camera; not for one 3 m further along, or looking elsewhere.
+	CHECK(ShadowSetFitsCamera(f.set, cam, fwd));
+	const double moved[3] = { cam[0] + 3.0 * fwd[0], cam[1] + 3.0 * fwd[1], cam[2] };
+	CHECK(!ShadowSetFitsCamera(f.set, moved, fwd));
+	const float other[3] = { -0.8f, 0.6f, 0.0f };
+	CHECK(!ShadowSetFitsCamera(f.set, cam, other));
+
+	// Tuning: FusionFix's defaults when its constants weren't seen; its values when they were.
+	FusionShadowTune ff;
+	ShadowTuning     t = TuningFrom(ff);
+	NEAR(t.softness, 1.5, 1e-6);
+	NEAR(t.bias, 5.0, 1e-6);
+	CHECK(t.taps16 && !t.chss);
+	ff.known = true;
+	ff.r[1][0] = 3.0f, ff.r[1][1] = -8.0f, ff.r[1][2] = 1.0f, ff.r[1][3] = 0.2f;  // c218
+	ff.r[3][2] = 4.0f / 3.0f, ff.r[3][3] = -1.0f / 3.0f;                            // c220
+	ff.r[4][0] = 0.0f;                                                              // c221: Definition off
+	ff.r[6][1] = 1.2f;                                                              // c223.y
+	t = TuningFrom(ff);
+	NEAR(t.softness, 3.0, 1e-6);
+	NEAR(t.bias, 8.0, 1e-6);
+	NEAR(t.blend, 0.2, 1e-6);
+	NEAR(t.fov, 1.2, 1e-6);
+	CHECK(!t.taps16 && t.chss);
+	NEAR(t.ndlScale, 4.0 / 3.0, 1e-6);
+	NEAR(t.ndlOffset, -1.0 / 3.0, 1e-6);
+}
+
+// The GTA sun pass's lookup straight from the registers, in absolute double world coordinates.
+static void GtaReference(const FakeShadow& a_f, const float a_fwd[3], const double a_p[3], int& a_cascade, double a_uv[2], double& a_zr)
+{
+	const auto& r = a_f.set.r;
+	const double d = a_fwd[0] * a_p[0] + a_fwd[1] * a_p[1] + a_fwd[2] * a_p[2];
+	const double fl[4] = { 1.0, d >= r[shreg::kFacet][0] ? 1.0 : 0.0, d >= r[shreg::kFacet][1] ? 1.0 : 0.0, d >= r[shreg::kFacet][2] ? 1.0 : 0.0 };
+	auto dot4 = [&](const float* a_r) { return fl[0] * a_r[0] + fl[1] * a_r[1] + fl[2] * a_r[2] + fl[3] * a_r[3]; };
+	a_cascade = int(fl[1] + fl[2] + fl[3]);
+	const float(*m)[4] = r + shreg::kMatrix;
+	double sc[3];
+	const int comp[3] = { 0, 1, 3 };
+	for (int c = 0; c < 3; ++c) {
+		sc[c] = a_p[0] * m[0][comp[c]] + a_p[1] * m[1][comp[c]] + a_p[2] * m[2][comp[c]] + m[3][comp[c]];
+	}
+	a_uv[0] = sc[0] * dot4(r[shreg::kParam0]) + dot4(r[shreg::kParam8]);
+	a_uv[1] = sc[1] * dot4(r[shreg::kParam4]) + dot4(r[shreg::kParam14]);
+	a_zr = 0.5 - 0.0005 * sc[2];
+}
+
+static void TestShadowLookup()
+{
+	const double cam[3] = { 893.7, -500.1, 20.1 };
+	const float  fwd[3] = { 0.6f, 0.8f, 0.0f };
+	FakeShadow   f = MakeFake(cam, fwd);
+	ShadowParams p = MakeShadowParams(f.set, ShadowTuning{}, cam, fwd, true);
+	CHECK(p.fwd[3] == 1.0f);
+	NEAR(p.split[0], 10.0, 1e-3);  // camera-relative thresholds
+	NEAR(p.split[2], 85.0, 1e-3);
+	const float none[3] = { 0.0f, 0.0f, 0.0f };
+	// Points at various depths: the camera-relative float lookup matches GTA's absolute one.
+	const float pts[][3] = { { 3.0f, 4.0f, -1.5f }, { 1.0f, 15.0f, -1.0f }, { -6.0f, 50.0f, 3.0f }, { 50.0f, 90.0f, -10.0f }, { -2.0f, 0.5f, 0.2f } };
+	const int   expect[] = { 0, 1, 2, 3, 0 };
+	for (int i = 0; i < 5; ++i) {
+		const ShadowCoord c = ShadowLookup(p, pts[i], none);
+		const double      abs[3] = { cam[0] + pts[i][0], cam[1] + pts[i][1], cam[2] + pts[i][2] };
+		int               k = -1;
+		double            uv[2], zr;
+		GtaReference(f, fwd, abs, k, uv, zr);
+		CHECK(c.cascade == expect[i]);
+		CHECK(c.cascade == k);
+		NEAR(c.uv[0], uv[0], 2e-5);
+		NEAR(c.uv[1], uv[1], 2e-5);
+		NEAR(c.zr, zr, 1e-5);
+		// Inside its quarter of the atlas.
+		CHECK(c.uv[0] >= 0.25f * k && c.uv[0] <= 0.25f * (k + 1));
+		CHECK(c.uv[1] >= 0.0f && c.uv[1] <= 1.0f);
+		CHECK((k == 3 || c.clampU[1] <= 0.25f * (k + 1)) && (k == 0 || c.clampU[0] == 0.25f * k));  // the last one is open to the right
+	}
+	// Towards the sun means a smaller zr (nearer the light: what lies on the way to the sun shades).
+	const float  up[3] = { 3.0f, 4.0f, -1.5f };
+	const float  toward[3] = { up[0] + float(f.l[0]) * 2.0f, up[1] + float(f.l[1]) * 2.0f, up[2] + float(f.l[2]) * 2.0f };
+	const auto   a = ShadowLookup(p, up, none), b = ShadowLookup(p, toward, none);
+	CHECK(b.zr < a.zr);
+	NEAR(a.uv[0], b.uv[0], 1e-5);  // same texel: straight along the light
+	NEAR(a.uv[1], b.uv[1], 1e-5);
+	// The normal offset moves a sunlit receiver towards the sun.
+	const float n[3] = { 0.0f, 0.0f, 1.0f };
+	CHECK(ShadowLookup(p, up, n).zr < a.zr);
+	// Fade: none near the camera, full at the fade distance.
+	NEAR(a.fade, (std::sqrt(9.0 + 16.0 + 2.25) / 256.0) * (std::sqrt(9.0 + 16.0 + 2.25) / 256.0), 1e-6);
+	const float far[3] = { 0.0f, 300.0f, 0.0f };
+	NEAR(ShadowLookup(p, far, none).fade, 1.0, 1e-6);
+}
+
+static void TestShadowCasters()
+{
+	const double  cam[3] = { -120.0, 1450.5, 35.0 };
+	const float   fwd[3] = { -0.8f, 0.0f, -0.6f };
+	FakeShadow    f = MakeFake(cam, fwd);
+	ShadowParams  p = MakeShadowParams(f.set, ShadowTuning{}, cam, fwd, true);
+	const float   none[3] = { 0.0f, 0.0f, 0.0f };
+	std::uint32_t w = 4096, h = 1024;
+	// A point drawn into its cascade lands on the texel the lookup samples for it, and with zr as written.
+	const float pts[][3] = { { -4.0f, 1.0f, -3.0f }, { -16.0f, 2.0f, -12.0f }, { -40.0f, -5.0f, -30.0f }, { -150.0f, 20.0f, -100.0f } };
+	for (const auto& pt : pts) {
+		const ShadowCoord c = ShadowLookup(p, pt, none);
+		float             rows[3][4];
+		CasterRows(p, c.cascade, w, h, rows);
+		float uv[2];
+		CasterToUv(rows, pt, w, h, uv);
+		NEAR(uv[0], c.uv[0], 2e-5);
+		NEAR(uv[1], c.uv[1], 2e-5);
+		const float p4[4] = { pt[0], pt[1], pt[2], 1.0f };
+		const float zr = kZrBias + kZrScale * (p4[0] * rows[2][0] + p4[1] * rows[2][1] + p4[2] * rows[2][2] + rows[2][3]);
+		NEAR(zr, c.zr, 1e-6);
+		// The section culling agrees: a sphere around the point reaches its cascade.
+		CHECK(SphereInCascade(p, c.cascade, pt, 1.0f));
+		float lo, hi;
+		CascadeU(c.cascade, lo, hi);
+		CHECK(c.uv[0] >= lo && c.uv[0] <= hi);
+	}
+	// Far off to the side: in no cascade's quarter.
+	const float side[3] = { 0.0f, 5000.0f, 0.0f };
+	for (int k = 0; k < kCascades; ++k) {
+		CHECK(!SphereInCascade(p, k, side, 14.0f));
+	}
+}
+
+static void TestRayBasis()
+{
+	const float right[3] = { 0.6f, -0.8f, 0.0f }, fwdv[3] = { 0.8f, 0.6f, 0.0f }, up[3] = { 0, 0, 1 };
+	const Mat4  m = ClipFromBasis(right, fwdv, up, 55.0f * kDegToRad, 16.0f / 9.0f, 0.1f, 2000.0f);
+	float       ray[3][4];
+	CHECK(RayBasis(m.m, ray));
+	const float ndcs[][2] = { { 0.0f, 0.0f }, { 0.5f, -0.25f }, { -1.0f, 1.0f } };
+	for (const auto& n : ndcs) {
+		const float w = 37.0f;
+		float       rel[3];
+		for (int i = 0; i < 3; ++i) {
+			rel[i] = (n[0] * ray[0][i] + n[1] * ray[1][i] + ray[2][i]) * w;
+		}
+		float c[4];
+		Transform(m, rel, c);
+		NEAR(c[3], w, 1e-3);
+		NEAR(c[0] / c[3], n[0], 1e-5);
+		NEAR(c[1] / c[3], n[1], 1e-5);
+	}
+	Mat4 zero{};
+	CHECK(!RayBasis(zero.m, ray));
+}
+
+static void TestDarken()
+{
+	const float amb[3] = { 0.4f, 0.5f, 0.7f }, sun[3] = { 3.0f, 2.8f, 2.4f };
+	float       out[3];
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, out);  // no block shadow: unchanged
+	NEAR(out[0], 1.0, 1e-6);
+	DarkenFactor(amb, sun, 0.8f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // GTA already shades it: no double darkening
+	NEAR(out[1], 1.0, 1e-6);
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // the blocks shade a sunlit pixel
+	NEAR(out[0], 0.4 / (0.4 + 3.0 * 0.8), 1e-5);
+	CHECK(out[2] > out[0]);  // the shadow keeps the sky's blue
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 0.8f, 1.0f, out);  // GTA's tone mapping gamma
+	NEAR(out[0], std::pow(0.4 / (0.4 + 3.0 * 0.8), 0.8), 1e-5);
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, out);  // all fog: no shadow
+	NEAR(out[0], 1.0, 1e-6);
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, out);  // strength 0
+	NEAR(out[0], 1.0, 1e-6);
+	DarkenFactor(amb, sun, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // facing away from the sun
+	NEAR(out[0], 1.0, 1e-6);
+	const float none[3] = { 0, 0, 0 };
+	DarkenFactor(none, none, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // no light at all: left alone
+	NEAR(out[0], 1.0, 1e-6);
+	ShadowParams p;
+	p.ndl[0] = 4.0f / 3.0f, p.ndl[1] = -1.0f / 3.0f;
+	const float n[3] = { 0, 0, 1 }, l[3] = { 0, 0.6f, 0.8f };
+	NEAR(GtaNdl(p, n, l), 0.8 * 4.0 / 3.0 - 1.0 / 3.0, 1e-6);
+}
+
 int main()
 {
 	TestSectionKey();
@@ -464,6 +743,11 @@ int main()
 	TestAxes();
 	TestGtaLighting();
 	TestMountSplit();
+	TestShadowSet();
+	TestShadowLookup();
+	TestShadowCasters();
+	TestRayBasis();
+	TestDarken();
 	if (failures) {
 		std::fprintf(stderr, "render_test: %d failure(s)\n", failures);
 		return 1;

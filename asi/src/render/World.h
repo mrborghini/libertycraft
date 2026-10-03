@@ -12,6 +12,7 @@
 
 #include "render/Frame.h"
 #include "render/Lighting.h"
+#include "render/ShadowPass.h"
 
 #include <cstdint>
 
@@ -56,8 +57,11 @@ namespace lc::render
 		// Draws into the bound render target. The caller saves/restores device state. a_light: GTA's
 		// lighting for this frame (sunDir.w 0: Minecraft's own). a_mountFrom (kFrameMountShift):
 		// where Minecraft's scene has the rider's feet; the mount around them moves to a_frame.feet.
+		// a_shadows (null: none): this frame's sun shadows (render/ShadowPass.h): the blocks and entities
+		// cast into our atlas, GTA's world is darkened where they shade it, and the blocks take GTA's
+		// shadows and their own.
 		void Draw(IDirect3DDevice9* a_device, const FrameSnapshot& a_frame, const TargetInfo& a_target, const LightingParams& a_light,
-			const double* a_mountFrom);
+			const double* a_mountFrom, const ShadowFrame* a_shadows);
 
 		WorldStats TakeStats();
 

@@ -464,7 +464,9 @@ namespace lc::Game
 				loggedFn = fn;
 				LC_LOG("puppet move: ped %d (vtable %p) moves through %p", a_ped, *reinterpret_cast<void**>(obj), fn);
 			}
-			reinterpret_cast<SetPosition>(fn)(obj, pos, -10.0f, false);
+			// Keep the player's tasks while GTA's phone is out (its task holds the phone; the move clears
+			// them otherwise, like SET_CHAR_COORDINATES does).
+			reinterpret_cast<SetPosition>(fn)(obj, pos, -10.0f, Input::PhoneOut());
 		}
 
 		// Puppet mode lets go: GTA's physics takes the ped back. Minecraft's feet are often a few cm

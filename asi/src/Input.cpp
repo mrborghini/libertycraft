@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace lc::Input
@@ -57,6 +59,60 @@ namespace lc::Input
 		bool IsFunctionKey(std::uint32_t a_dik) { return (a_dik >= 0x3B && a_dik <= 0x44) || a_dik == 0x57 || a_dik == 0x58; }
 		// Keys the game's window procedure still gets while Minecraft drives the player.
 		bool IsGameKey(std::uint32_t a_dik) { return a_dik == kDikEscape || a_dik == kDikGrave || IsFunctionKey(a_dik); }
+
+		// ---- GTA's phone (PhoneKeys) ------------------------------------------------------------------
+		// The arrow keys are always GTA's (Up takes the phone out or answers a call, the arrows
+		// navigate); while the phone is out Enter, Backspace and the number keys are GTA's too
+		// (select, back, dialling). Minecraft gets none of them then, except key-ups (it may have
+		// seen the key go down before the phone came out).
+		std::atomic<bool> phoneOut{ false };
+
+		bool IsArrowKey(std::uint32_t a_dik) { return a_dik == 0xC8 || a_dik == 0xD0 || a_dik == 0xCB || a_dik == 0xCD; }
+		bool IsPhoneKey(std::uint32_t a_dik)
+		{
+			if (!Config::Get().phoneKeys) {
+				return false;
+			}
+			if (IsArrowKey(a_dik)) {
+				return true;
+			}
+			if (!phoneOut.load(std::memory_order_relaxed)) {
+				return false;
+			}
+			const bool digit = (a_dik >= 0x02 && a_dik <= 0x0B) || (a_dik >= 0x47 && a_dik <= 0x53 && a_dik != 0x4A && a_dik != 0x4E);
+			return a_dik == 0x1C || a_dik == 0x9C || a_dik == 0x0E || digit;  // Enter, keypad Enter, Backspace, 0 to 9
+		}
+
+		// The pad controls GTA's phone reads, kept while puppet mode zeroes the pad. Measured in game
+		// (DebugPhone): Up feeds PHONE_TAKE_OUT, FRONTEND_UP and KB_UP; the other arrows FRONTEND_ and
+		// KB_ DOWN/LEFT/RIGHT; Enter FRONTEND_ACCEPT and KB_PHONE_ACCEPT; Backspace FRONTEND_CANCEL and
+		// KB_PHONE_CANCEL (mouse buttons feed nothing while puppet mode holds the raw mouse). The
+		// arrows' controls and the phone's own accept/cancel always (an incoming call is answered or
+		// declined before the phone is out; nothing but the phone reads them), the frontend
+		// accept/cancel only while the phone is out.
+		bool IsPhoneControl(int a_control, bool a_out)
+		{
+			switch (a_control) {
+			case INPUT_PHONE_TAKE_OUT:
+			case INPUT_PHONE_PUT_AWAY:
+			case INPUT_KB_UP:
+			case INPUT_KB_DOWN:
+			case INPUT_KB_LEFT:
+			case INPUT_KB_RIGHT:
+			case INPUT_FRONTEND_UP:
+			case INPUT_FRONTEND_DOWN:
+			case INPUT_FRONTEND_LEFT:
+			case INPUT_FRONTEND_RIGHT:
+			case INPUT_KB_PHONE_ACCEPT:
+			case INPUT_KB_PHONE_CANCEL:
+				return true;
+			case INPUT_FRONTEND_ACCEPT:
+			case INPUT_FRONTEND_CANCEL:
+				return a_out;
+			default:
+				return false;
+			}
+		}
 
 		HWND                       window = nullptr;
 		WNDPROC                    originalProc = nullptr;
@@ -171,6 +227,14 @@ namespace lc::Input
 				}
 				if (dik == kDikEscape || dik == kDikGrave) {
 					return false;  // the game's (pause menu, console mods)
+				}
+				if (IsPhoneKey(dik)) {
+					if (!down) {
+						if (const auto sdl = kDikToSdl[dik & 0xFF]) {
+							Push(proto::kInKey, sdl, 0);
+						}
+					}
+					return false;  // GTA's phone
 				}
 			}
 			// Held keys repeat only into Minecraft screens (text fields); in the world MC keeps state.
@@ -450,6 +514,201 @@ namespace lc::Input
 			return 0;
 		}
 
+		// ---- GTA's phone state ------------------------------------------------------------------------
+		// CREATE_MOBILE_PHONE / DESTROY_MOBILE_PHONE (the phone scripts take it out and put it away,
+		// for the player's own use and for calls) set a byte the game's own code checks (1.0.8.0:
+		// 0x1792CB5, written at 0x4BF967); SCRIPT_IS_USING_MOBILE_PHONE sets the next one (0x4C05AD).
+		// Their addresses are read from those instructions, which are checked first.
+		const volatile std::uint8_t* phoneFlags = nullptr;
+		bool                         phoneFlagsChecked = false;
+		int                          lastPhoneState = -1;
+
+		const volatile std::uint8_t* PhoneFlags()
+		{
+			if (!phoneFlagsChecked) {
+				phoneFlagsChecked = true;
+				if (plugin::gameVer == plugin::VERSION_1080) {
+					const auto*   base = reinterpret_cast<const std::uint8_t*>(AddressSetter::gBaseAddress);
+					std::uint32_t created = 0, using_ = 0;
+					std::memcpy(&created, base + 0xBF969, 4);
+					std::memcpy(&using_, base + 0xC05AE, 4);
+					if (base[0xBF967] == 0x88 && base[0xBF968] == 0x1D && base[0xC05AD] == 0xA2 && using_ == created + 1) {
+						phoneFlags = reinterpret_cast<const volatile std::uint8_t*>(static_cast<std::uintptr_t>(created));
+					}
+				}
+				LC_LOG("phone: %s", phoneFlags ? "the game's phone flags found (PhoneKeys follow the phone)" : "WARNING: the phone flags aren't where 1.0.8.0 has them; Enter/Backspace stay Minecraft's");
+			}
+			return phoneFlags;
+		}
+
+		void UpdatePhone()
+		{
+			const volatile std::uint8_t* f = PhoneFlags();
+			const bool created = f && f[0] != 0, using_ = f && f[1] != 0;
+			const bool out = created || using_;
+			if (out != phoneOut.load(std::memory_order_relaxed)) {
+				phoneOut.store(out, std::memory_order_relaxed);
+			}
+			const int state = (created ? 1 : 0) | (using_ ? 2 : 0);
+			if (state != lastPhoneState) {
+				int ped = 0, sub = -1;
+				::Scripting::GET_PLAYER_CHAR(static_cast<int>(::Scripting::GET_PLAYER_ID()), &ped);
+				const bool task = ped && ::Scripting::GET_MOBILE_PHONE_TASK_SUB_TASK(ped, &sub);
+				LC_LOG("phone: %s (phone created %d, script using it %d, on screen %d, Niko's phone task %d sub %d)", out ? "out" : "away", created, using_,
+					static_cast<int>(::Scripting::CAN_PHONE_BE_SEEN_ON_SCREEN()), static_cast<int>(task), sub);
+				lastPhoneState = state;
+			}
+		}
+
+		// ---- DebugPhone (test hook) ------------------------------------------------------------------
+		// Real key events (SendInput, through Wine's DirectInput like a keyboard): first a probe of which
+		// pad controls each key feeds (logged), then the phone: Up takes it out, Enter opens the first
+		// entry (the phone book), Down twice scrolls, Backspace backs out and puts it away.
+		constexpr std::uint32_t kMouseLeft = 0x100, kMouseRight = 0x101, kWheelUp = 0x102, kWheelDown = 0x103;
+
+		void SendKey(std::uint32_t a_key, bool a_down)
+		{
+			INPUT in{};
+			if (a_key >= 0x100) {
+				in.type = INPUT_MOUSE;
+				switch (a_key) {
+				case kMouseLeft: in.mi.dwFlags = a_down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP; break;
+				case kMouseRight: in.mi.dwFlags = a_down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP; break;
+				default:
+					if (!a_down) {
+						return;
+					}
+					in.mi.dwFlags = MOUSEEVENTF_WHEEL;
+					in.mi.mouseData = static_cast<DWORD>(a_key == kWheelUp ? WHEEL_DELTA : -WHEEL_DELTA);
+					break;
+				}
+			} else {
+				in.type = INPUT_KEYBOARD;
+				in.ki.wScan = static_cast<WORD>(a_key & 0x7F);
+				in.ki.dwFlags = KEYEVENTF_SCANCODE | ((a_key & 0x80) ? KEYEVENTF_EXTENDEDKEY : 0) | (a_down ? 0 : KEYEVENTF_KEYUP);
+			}
+			::SendInput(1, &in, sizeof(in));
+		}
+
+		struct PhoneTest
+		{
+			struct Step
+			{
+				char          kind;  // 'p' probe a key, 't' tap a key, 'w' wait, 'l' log the state (a screenshot moment)
+				std::uint32_t key;
+				float         seconds;
+				const char*   label;
+			};
+			int   step = -1;  // -1 waiting for puppet mode
+			int   sub = 0;
+			float t = 0.0f;
+			bool  capture = false;  // Pad: record the raw pad
+			std::array<std::uint8_t, 192> base{}, raw{};
+			std::array<bool, 192>         changed{};
+		} phoneTest;
+
+		const PhoneTest::Step kPhoneSteps[] = {
+			{ 'p', 0x11, 0, "W" }, { 'p', 0x02, 0, "1" }, { 'p', 0x1C, 0, "Enter" }, { 'p', 0x0E, 0, "Backspace" }, { 'p', kMouseLeft, 0, "left mouse" },
+			{ 'p', 0xCB, 0, "Left" }, { 'p', 0xCD, 0, "Right" }, { 'p', 0xD0, 0, "Down" }, { 'p', 0xC8, 0, "Up (takes the phone out)" },
+			{ 'w', 0, 2.5f, nullptr }, { 'l', 0, 0, "phone out (home screen)" },
+			{ 't', 0x1C, 0, "Enter" }, { 'w', 0, 2.0f, nullptr }, { 'l', 0, 0, "menu" },
+			{ 't', 0x1C, 0, "Enter" }, { 'w', 0, 2.5f, nullptr }, { 'l', 0, 0, "phone book" },
+			{ 't', 0xD0, 0, "Down" }, { 'w', 0, 0.6f, nullptr }, { 't', 0xD0, 0, "Down" }, { 'w', 0, 2.0f, nullptr }, { 'l', 0, 0, "phone book, two down" },
+			{ 't', 0x0E, 0, "Backspace" }, { 'w', 0, 1.5f, nullptr }, { 't', 0x0E, 0, "Backspace" }, { 'w', 0, 1.5f, nullptr },
+			{ 'l', 0, 0, "after two Backspaces" }, { 't', 0x0E, 0, "Backspace" }, { 'w', 0, 2.5f, nullptr }, { 'l', 0, 0, "after three Backspaces" },
+		};
+
+		void PhoneTestTick(float a_dt)
+		{
+			auto& pt = phoneTest;
+			if (!Config::Get().debugPhone || pt.step >= static_cast<int>(sizeof(kPhoneSteps) / sizeof(kPhoneSteps[0]))) {
+				return;
+			}
+			pt.t += a_dt;
+			if (pt.step < 0) {
+				// (Niko mode too: the same keys in plain GTA IV, for comparison)
+				const bool niko = Game::State().nikoMode.load(std::memory_order_relaxed) && !Game::State().gtaMenuOpen.load(std::memory_order_relaxed);
+				if ((!captured && !niko) || !focused.load()) {
+					pt.t = 0.0f;
+				} else if (pt.t >= 15.0f) {
+					pt.step = 0;
+					pt.sub = 0;
+					pt.t = 0.0f;
+					LC_LOG("DebugPhone: starting (%s for 15 s)", captured ? "puppet mode" : "Niko mode");
+				}
+				return;
+			}
+			const auto& s = kPhoneSteps[pt.step];
+			bool        next = false;
+			switch (s.kind) {
+			case 'p':
+				// 0: baseline 0.15 s; 1: key down, hold 0.25 s while recording; 2: key up, 0.35 s gap
+				if (pt.sub == 0) {
+					pt.capture = true;
+					if (pt.t >= 0.15f) {
+						pt.base = pt.raw;
+						pt.changed.fill(false);
+						SendKey(s.key, true);
+						pt.sub = 1;
+						pt.t = 0.0f;
+					}
+				} else if (pt.sub == 1) {
+					for (std::size_t i = 0; i < pt.raw.size(); ++i) {
+						pt.changed[i] = pt.changed[i] || pt.raw[i] != pt.base[i];
+					}
+					if (pt.t >= 0.25f) {
+						SendKey(s.key, false);
+						pt.capture = false;
+						char text[512];
+						int  n = 0;
+						for (std::size_t i = 0; i < pt.changed.size() && n < 480; ++i) {
+							if (pt.changed[i]) {
+								n += std::snprintf(text + n, sizeof(text) - n, " %u", static_cast<unsigned>(i));
+							}
+						}
+						text[n] = 0;
+						LC_LOG("DebugPhone: key %s feeds pad controls:%s", s.label, n ? text : " none");
+						pt.sub = 2;
+						pt.t = 0.0f;
+					}
+				} else if (pt.t >= 0.35f) {
+					next = true;
+				}
+				break;
+			case 't':
+				if (pt.sub == 0) {
+					SendKey(s.key, true);
+					LC_LOG("DebugPhone: tap %s", s.label);
+					pt.sub = 1;
+					pt.t = 0.0f;
+				} else if (pt.t >= 0.12f) {
+					SendKey(s.key, false);
+					next = true;
+				}
+				break;
+			case 'w':
+				next = pt.t >= s.seconds;
+				break;
+			default: {
+				int ped = 0, sub = -1;
+				::Scripting::GET_PLAYER_CHAR(static_cast<int>(::Scripting::GET_PLAYER_ID()), &ped);
+				const bool task = ped && ::Scripting::GET_MOBILE_PHONE_TASK_SUB_TASK(ped, &sub);
+				LC_LOG("DebugPhone: SCREENSHOT %s: phone %s, on screen %d, Niko's phone task %d sub %d", s.label, phoneOut.load() ? "out" : "away",
+					static_cast<int>(::Scripting::CAN_PHONE_BE_SEEN_ON_SCREEN()), static_cast<int>(task), sub);
+				next = true;
+				break;
+			}
+			}
+			if (next) {
+				++pt.step;
+				pt.sub = 0;
+				pt.t = 0.0f;
+				if (pt.step >= static_cast<int>(sizeof(kPhoneSteps) / sizeof(kPhoneSteps[0]))) {
+					LC_LOG("DebugPhone: done");
+				}
+			}
+		}
+
 		void FocusTestTick(float a_dt)
 		{
 			auto& ft = focusTest;
@@ -629,8 +888,20 @@ namespace lc::Input
 		// isn't enough: clear the controls after the pad update. The pause control stays unless a
 		// Minecraft screen is open (then Esc closes that screen instead).
 		const bool keepPause = !st.mcScreenOpen.load(std::memory_order_relaxed);
-		for (int i = 0; i < static_cast<int>(sizeof(a_pad->m_aValues) / sizeof(a_pad->m_aValues[0])); ++i) {
+		constexpr int kControls = static_cast<int>(sizeof(a_pad->m_aValues) / sizeof(a_pad->m_aValues[0]));
+		if (phoneTest.capture) {
+			for (int i = 0; i < kControls && i < static_cast<int>(phoneTest.raw.size()); ++i) {
+				phoneTest.raw[i] = a_pad->m_aValues[i].m_nCurrentValue;
+			}
+		}
+		// GTA's phone (PhoneKeys): its controls stay (no Minecraft screen open: then every key is Minecraft's).
+		const bool phone = Config::Get().phoneKeys && !st.mcScreenOpen.load(std::memory_order_relaxed);
+		const bool out = phoneOut.load(std::memory_order_relaxed);
+		for (int i = 0; i < kControls; ++i) {
 			if (keepPause && i == INPUT_FRONTEND_PAUSE) {
+				continue;
+			}
+			if (phone && IsPhoneControl(i, out)) {
 				continue;
 			}
 			a_pad->m_aValues[i].m_nCurrentValue = 0;
@@ -643,6 +914,13 @@ namespace lc::Input
 	{
 		Watchdog(a_dt);
 		FocusTestTick(a_dt);
+		UpdatePhone();
+		PhoneTestTick(a_dt);
+	}
+
+	bool PhoneOut()
+	{
+		return phoneOut.load(std::memory_order_relaxed);
 	}
 
 	void ConsumeLook(float& a_dx, float& a_dy)

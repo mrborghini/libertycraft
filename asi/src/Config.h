@@ -92,6 +92,29 @@ namespace lc
 		// every 8, logging each switch.
 		bool        debugSeatAB = false;
 
+		// ---- sun shadows (render/Shadows.h, render/ShadowPass.*) ----
+		// The blocks take GTA IV's sun shadows (its cascade atlas) and cast their own, on themselves and
+		// on GTA's world. 0: no shadows.
+		bool  renderShadows = true;
+		// Not in the default ini: the blocks cast shadows (0: they only take GTA's).
+		bool  renderShadowCast = true;
+		// How dark GTA's world gets in the blocks' shadow (1: as GTA shades its own shadows).
+		float renderShadowStrength = 1.0f;
+		// Metres the blocks' shadow-casting surfaces move away from the sun (against self-shadowing acne).
+		float renderShadowBias = 0.05f;
+		// Blocks farther than this (m) from the camera cast no shadows.
+		float renderShadowDistance = 128.0f;
+		// Test hooks (not in the default ini): log GTA's shadow constants (on changes and every 10 s);
+		// switch the shadows off and on every N s (DebugShadowsAB=N), logging each switch.
+		bool  debugShadows = false;
+		float debugShadowsAB = 0.0f;
+		// Test hook (not in the default ini): the blocks show their sun shadow term instead of their
+		// colour (red GTA's, green GTA's and the blocks', blue 0.5).
+		bool  debugShadowView = false;
+		// Test hook (not in the default ini): "x,y,z,heading" (GTA): 12 s after the blocks are first
+		// drawn, put the player there once (a sunny spot for shadow tests).
+		std::string debugShadowSpot;
+
 		// ---- combat (Combat.h) ----
 		// Minecraft and GTA IV fight each other: the actor table, Minecraft's hits/explosions/death,
 		// GTA damage to the puppeted player as Minecraft damage. 0: events are drained and ignored.
@@ -167,6 +190,13 @@ namespace lc
 		bool debugFocusCycle = false;
 		// Test hook: the vehicle key's taps of GTA's enter control as real key events (SendInput).
 		bool debugInjectEnterKey = false;
+		// GTA's phone in Minecraft mode: the arrow keys are GTA's (Up takes the phone out or answers
+		// a call, the arrows navigate), and while the phone is out also Enter, Backspace and the
+		// number keys; Minecraft doesn't get them. Input.cpp.
+		bool phoneKeys = true;
+		// Test hook (not in the default ini): real key events that take the phone out, open the
+		// contacts, scroll and put it away again, and a log of which pad controls each key feeds.
+		bool debugPhone = false;
 		// A car running into the puppeted player (or one of GTA's explosions hurting them) knocks
 		// them over: GTA ragdolls Niko along the hit and keeps him until he is back on his feet,
 		// the hit hurts the Minecraft player. HostDrive.cpp.
