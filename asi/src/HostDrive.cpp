@@ -46,6 +46,7 @@ namespace lc::HostDrive
 		float debugCooldown = 12.0f;  // after a load Niko may still be falling into place
 		float debugInCarT = 0.0f;
 		float exitPressT = 0.0f;
+		float debugExitCheckT = 0.0f;  // DebugAutoVehicle: seconds until it checks the exit press worked
 		int   debugCar = 0;  // DebugAutoVehicle: the empty test car it parked next to Niko
 		bool  debugCarRequested = false;
 		float debugIndoorT = 0.0f;  // seconds puppeting indoors / off the ground without a car near
@@ -298,7 +299,21 @@ namespace lc::HostDrive
 			if (debugCooldown <= 0.0f && a_f.inCar && debugInCarT >= kDebugExitAfter) {
 				LC_LOG("DebugAutoVehicle: %.0f s in a vehicle; pressing GTA's exit control", debugInCarT);
 				exitNow = true;
+				debugExitCheckT = 3.0f;
 				debugCooldown = kDebugCooldown;
+			}
+			// A parked test car can have its doors against a wall: out through the roof, then.
+			if (debugExitCheckT > 0.0f && (debugExitCheckT -= a_f.dt) <= 0.0f && a_f.inCar) {
+				int veh = 0;
+				S::GET_CAR_CHAR_IS_USING(a_f.ped, &veh);
+				float cx = 0, cy = 0, cz = 0, h = 0;
+				if (veh && S::DOES_VEHICLE_EXIST(veh)) {
+					S::GET_CAR_COORDINATES(veh, &cx, &cy, &cz);
+					S::GET_CAR_HEADING(veh, &h);
+					const float x = cx - std::cos(h * kDegToRad) * 2.5f, y = cy - std::sin(h * kDegToRad) * 2.5f;
+					S::WARP_CHAR_FROM_CAR_TO_COORD(a_f.ped, x, y, cz + 0.5f);
+					LC_LOG("DebugAutoVehicle: still in the vehicle 3 s after the exit press; WARP_CHAR_FROM_CAR_TO_COORD %.1f %.1f %.1f", x, y, cz + 0.5f);
+				}
 			}
 		}
 		if (exitNow) {
