@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # tools/launch.sh - start Minecraft (hidden, via Prism) and then GTA IV (via Steam).
 #
-# Minecraft goes first: it owns the world and opens the shared-memory file that
-# LibertyCraft.asi connects to; the plugin retries, so the order is not critical.
+# Minecraft goes first and GTA IV only starts once Minecraft has created and hidden its window:
+# a window appearing while GTA IV loads takes the focus, and GTA IV stops loading without it.
+# (Minecraft ignores a stale bridge header from an earlier GTA IV run, so this order is safe.)
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
@@ -28,6 +29,50 @@ done
 INST=$(lc_instance_dir 2>/dev/null || true)
 GAME=$(find_gta_dir 2>/dev/null || true)
 
+if (( MC )); then
+  step "Minecraft (Prism instance $LC_INSTANCE_NAME)"
+  [[ -n $INST && -d $INST ]] || die "Prism instance not found - run tools/install.sh"
+  compgen -G "$INST/minecraft/mods/libertycraft-*.jar" >/dev/null \
+    || warn "no libertycraft-*.jar in the instance's mods/ - run tools/build.sh --fabric --install"
+  PRISM=""
+  for c in prismlauncher org.prismlauncher.PrismLauncher; do
+    command -v "$c" >/dev/null 2>&1 && { PRISM=$c; break; }
+  done
+  if [[ -z $PRISM ]] && command -v flatpak >/dev/null 2>&1 && flatpak info org.prismlauncher.PrismLauncher >/dev/null 2>&1; then
+    PRISM="flatpak run org.prismlauncher.PrismLauncher"
+  fi
+  [[ -n $PRISM ]] || die "Prism Launcher not found (paru -S prismlauncher)"
+  # -l/--launch starts the instance directly (and hands over to an already running Prism).
+  # shellcheck disable=SC2086
+  MCLOG="$INST/minecraft/logs/latest.log"
+  if pgrep -f '[-]Dlibertycraft\.startHidden' >/dev/null 2>&1; then
+    ok "Minecraft is already running"
+  elif (( DRY_RUN )); then
+    plan "$PRISM --launch $LC_INSTANCE_NAME &"
+    (( GTA )) && plan "wait until Minecraft has hidden its window (latest.log), then start GTA IV"
+  else
+    started=$(date +%s)
+    nohup $PRISM --launch "$LC_INSTANCE_NAME" >/dev/null 2>&1 &
+    disown
+    ok "started (Minecraft runs hidden: -Dlibertycraft.startHidden=true)"
+    # Wait for Minecraft to create *and hide* its window before GTA IV starts: a window popping up
+    # takes the focus, and GTA IV stops loading while it isn't the focused window (seen in testing).
+    if (( GTA )); then
+      info "waiting for Minecraft to finish starting (up to 3 minutes)..."
+      ready=0
+      for _ in $(seq 1 180); do
+        if [[ -f $MCLOG && $(stat -c %Y "$MCLOG") -ge $started ]] && grep -q 'game window hidden' "$MCLOG"; then
+          ready=1; break
+        fi
+        sleep 1
+      done
+      if (( ready )); then ok "Minecraft is up ($(( $(date +%s) - started )) s)"
+      else warn "Minecraft didn't report its hidden window in time; starting GTA IV anyway"; fi
+      sleep 2   # let the focus settle
+    fi
+  fi
+fi
+
 if (( GTA )); then
   step "GTA IV (Steam app $LC_STEAM_APPID)"
   if [[ -n $GAME ]]; then
@@ -44,32 +89,6 @@ if (( GTA )); then
       run xdg-open "$url"
     fi
     ok "asked Steam to start the game (launch options set in Steam apply)"
-  fi
-fi
-
-if (( MC )); then
-  # GTA IV first: it (re)writes the bridge header, so Minecraft finds a live host instead of a
-  # stale one from an earlier run. Both load in parallel anyway; GTA's intro takes longer.
-  (( GTA )) && { if (( DRY_RUN )); then plan "sleep 3"; else sleep 3; fi; }
-  step "Minecraft (Prism instance $LC_INSTANCE_NAME)"
-  [[ -n $INST && -d $INST ]] || die "Prism instance not found - run tools/install.sh"
-  compgen -G "$INST/minecraft/mods/libertycraft-*.jar" >/dev/null \
-    || warn "no libertycraft-*.jar in the instance's mods/ - run tools/build.sh --fabric --install"
-  PRISM=""
-  for c in prismlauncher org.prismlauncher.PrismLauncher; do
-    command -v "$c" >/dev/null 2>&1 && { PRISM=$c; break; }
-  done
-  if [[ -z $PRISM ]] && command -v flatpak >/dev/null 2>&1 && flatpak info org.prismlauncher.PrismLauncher >/dev/null 2>&1; then
-    PRISM="flatpak run org.prismlauncher.PrismLauncher"
-  fi
-  [[ -n $PRISM ]] || die "Prism Launcher not found (paru -S prismlauncher)"
-  # -l/--launch starts the instance directly (and hands over to an already running Prism).
-  # shellcheck disable=SC2086
-  if (( DRY_RUN )); then plan "$PRISM --launch $LC_INSTANCE_NAME &"
-  else
-    nohup $PRISM --launch "$LC_INSTANCE_NAME" >/dev/null 2>&1 &
-    disown
-    ok "started (Minecraft runs hidden: -Dlibertycraft.startHidden=true)"
   fi
 fi
 
