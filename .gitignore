@@ -1,0 +1,22 @@
+# build outputs
+/dist/
+/asi/build/
+/asi/build-*/
+/fabric/build/
+/fabric/.gradle/
+/fabric/run/
+/fabric/out/
+# toolchain cache (xwin splat, downloads)
+/.tools/
+# downloaded installer assets
+/tools/cache/
+# editors
+.idea/
+.vscode/
+*.swp
+# python
+__pycache__/
+*.pyc
+# logs / dumps
+*.log
+*.dmp
