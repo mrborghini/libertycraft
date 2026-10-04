@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "Coords.h"
 #include "Doors.h"
+#include "Hazards.h"
 #include "HostDrive.h"
 #include "Input.h"
 #include "Link.h"
@@ -1068,6 +1069,7 @@ namespace lc::Game
 			cf.mc = haveMc ? &mc : nullptr;
 			cf.dt = dt;
 			stats.events += Combat::Tick(cf);
+			Hazards::Tick(cf);  // Minecraft's fire, lava and magma burn GTA's peds
 		}
 
 		// ---- collision --------------------------------------------------------------------------------

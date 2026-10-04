@@ -50,6 +50,8 @@ namespace lc::HostDrive
 	// enter / exit controls while an action asks for it. (GTA hands the player's ped its pad only
 	// while player control is on: during puppet mode this isn't called.)
 	void Pad(CPad* a_pad);
+	// Test hooks: move Niko to the nearest road (out of an interior) at the next Tick while puppeting.
+	void DebugRequestRoad(const char* a_who);
 	// Knocks the player over (RagdollOnVehicleHit; Combat calls it when one of GTA's explosions hurt
 	// the puppeted player): GTA takes Niko, ragdolls him along (a_gx, a_gy) with a_force for
 	// a_ragdollMs and keeps him until he is back on his feet. Game thread.

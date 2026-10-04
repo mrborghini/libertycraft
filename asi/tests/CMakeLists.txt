@@ -44,3 +44,9 @@ add_executable(body_test body_test.cpp)
 target_include_directories(body_test PRIVATE ../src ../../protocol)
 target_compile_options(body_test PRIVATE -Wall -Wextra -O2)
 add_test(NAME body_test COMMAND body_test)
+
+# hazard/HazardGrid.h (Stream K): Minecraft's fire, lava and magma for GTA's peds.
+add_executable(hazard_test hazard_test.cpp)
+target_include_directories(hazard_test PRIVATE ../src ../../protocol)
+target_compile_options(hazard_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME hazard_test COMMAND hazard_test)

@@ -24,6 +24,7 @@
 #include "NpcBlocks.cpp"
 #include "Doors.cpp"
 #include "NikoBody.cpp"
+#include "Hazards.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

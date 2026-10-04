@@ -403,7 +403,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		// The mount the player rides while GTA IV drives a car is hidden unless showVehicleMount=true.
 		Entity hiddenMount = HostDriveClient.riding(player) && !HostDrive.showVehicleMount() ? player.getVehicle() : null;
 		for (Entity e : level.entitiesForRendering()) {
-			if (e == player || e == hiddenMount || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof HostActorEntity
+			if (e == player || e == hiddenMount || (!HostDrive.showVehicleMount() && HostDrive.isMount(e)) || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof HostActorEntity
 				|| e.distanceToSqr(cam) > SCENE_RANGE * SCENE_RANGE || entities >= SCENE_MAX_ENTITIES) {
 				continue;
 			}

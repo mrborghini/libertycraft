@@ -8,11 +8,13 @@
 #include "Combat.h"
 #include "Config.h"
 #include "Coords.h"
+#include "Link.h"
 #include "Log.h"
 #include "combat/BlockPush.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -52,7 +54,9 @@ namespace lc::NpcBlocks
 		std::uint32_t               pendingDropped = 0;
 
 		// ---- game thread -------------------------------------------------------------------------------
-		blocks::SolidGrid grid;
+		blocks::SolidGrid           grid;
+		std::recursive_mutex        gridLock;  // the grid: the game thread, and GTA's bullets (BulletProbe)
+		std::atomic<bool>           anySolids{ false };
 		std::vector<PendingSection> applying;
 
 		struct Detour
@@ -109,12 +113,14 @@ namespace lc::NpcBlocks
 			}
 			if (clear) {
 				grid.Clear();
+				anySolids = false;
 				detours.clear();
 				++counters.clears;
 			}
 			for (const auto& p : applying) {
 				grid.Set(p.sx, p.sy, p.sz, p.remove ? nullptr : p.bits.data());
 			}
+			anySolids = !grid.Empty();
 			counters.sectionsIn += static_cast<std::uint32_t>(applying.size());
 			applying.clear();
 			if (!loggedFirstSolids && !grid.Empty()) {
@@ -328,6 +334,294 @@ namespace lc::NpcBlocks
 			}
 		}
 
+		// ---- bullets --------------------------------------------------------------------------------------
+		// Minecraft's blocks stop GTA IV's gunfire. GTA IV 1.0.8.0 traces every instant-hit shot (and
+		// the delayed-hit ones) through 0x92DAA0 (cdecl, 13 arguments: the shot's start and end
+		// first, the end in the caller's frame; returns how many things it hit, 0: nothing). Its first
+		// instruction is a jump to BulletProbe, which marches the shot through Minecraft's solid blocks
+		// first (blocks::RayFirstSolid): when a block comes first, the shot's end is moved to that
+		// block's face before GTA traces it, so GTA only finds what lies in front of the blocks (no
+		// damage behind them, for the player, peds and vehicles alike) and its tracer and end point
+		// stop at the wall. If nothing is in front, an impact effect is queued at the face (spawned
+		// by Tick: TRIGGER_PTFX imp_bullet_concrete, GTA's own concrete bullet impact).
+		using BulletProbeFn = int(__cdecl*)(float*, float*, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t,
+			std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t);
+		BulletProbeFn bulletOriginal = nullptr;
+		int           bulletHook = -1;  // -1 not tried, 0 not hooked, 1 hooked
+
+		struct Impact
+		{
+			float at[3], n[3];
+			int   face;  // Minecraft's Direction (0 down, 1 up, 2 north, 3 south, 4 west, 5 east), -1 none
+		};
+		std::mutex          impactLock;
+		std::vector<Impact> impacts;
+
+		struct BulletCounters
+		{
+			std::atomic<std::uint32_t> probes{ 0 }, stopped{ 0 }, nearerHit{ 0 }, forPlayer{ 0 }, inside{ 0 };
+		} bullets;
+		std::uint32_t impactsSpawned = 0;
+
+		// GTA space. True if a solid block comes first on a_from -> a_to: where (a_at, nudged a
+		// little out of the face), its face's normal and the fraction along the shot.
+		bool ClipShot(const float a_from[3], const float a_to[3], float a_at[3], float a_n[3], float& a_t, int& a_face)
+		{
+			if (!anySolids.load(std::memory_order_relaxed)) {
+				return false;
+			}
+			const McVec f = GtaToMc(a_from[0], a_from[1], a_from[2]), t = GtaToMc(a_to[0], a_to[1], a_to[2]);
+			const double from[3] = { f.x, f.y, f.z }, to[3] = { t.x, t.y, t.z };
+			double frac = 0.0;
+			int    axis = -1, sign = 0;
+			{
+				std::lock_guard lock(gridLock);
+				if (!blocks::RayFirstSolid(grid, from, to, frac, axis, sign)) {
+					return false;
+				}
+			}
+			const double len = std::sqrt((to[0] - from[0]) * (to[0] - from[0]) + (to[1] - from[1]) * (to[1] - from[1]) + (to[2] - from[2]) * (to[2] - from[2]));
+			const double back = len > 1e-6 ? std::min(frac, 0.02 / len) : 0.0;  // 2 cm in front of the face
+			a_t = static_cast<float>(frac);
+			double mc[3], mn[3] = { 0.0, 0.0, 0.0 };
+			for (int k = 0; k < 3; ++k) {
+				mc[k] = from[k] + (to[k] - from[k]) * (frac - back);
+			}
+			a_face = axis < 0 ? -1 : axis == 1 ? (sign > 0 ? 1 : 0) : axis == 2 ? (sign > 0 ? 3 : 2) : (sign > 0 ? 5 : 4);
+			if (axis >= 0) {
+				mn[axis] = sign;
+			} else {
+				// Started inside a block: facing back along the shot.
+				for (int k = 0; k < 3; ++k) {
+					mn[k] = len > 1e-6 ? -(to[k] - from[k]) / len : 0.0;
+				}
+			}
+			const GtaVec g = McToGta(mc[0], mc[1], mc[2]), gn = McToGta(mn[0], mn[1], mn[2]);
+			a_at[0] = static_cast<float>(g.x), a_at[1] = static_cast<float>(g.y), a_at[2] = static_cast<float>(g.z);
+			a_n[0] = static_cast<float>(gn.x), a_n[1] = static_cast<float>(gn.y), a_n[2] = static_cast<float>(gn.z);
+			return true;
+		}
+
+		// How close (m) the part of a shot from a_a to a_b passes to the player's chest.
+		float MissDistanceToPlayer(const float a_a[3], const float a_b[3])
+		{
+			CPed* p = FindPlayerPed();
+			if (!p || !p->m_pMatrix) {
+				return 1e9f;
+			}
+			const float c[3] = { p->m_pMatrix->pos.x, p->m_pMatrix->pos.y, p->m_pMatrix->pos.z + 0.3f };
+			float       d[3], w[3], dd = 0.0f, wd = 0.0f;
+			for (int k = 0; k < 3; ++k) {
+				d[k] = a_b[k] - a_a[k];
+				w[k] = c[k] - a_a[k];
+				dd += d[k] * d[k];
+				wd += w[k] * d[k];
+			}
+			const float u = dd > 1e-8f ? std::clamp(wd / dd, 0.0f, 1.0f) : 0.0f;
+			float       r = 0.0f;
+			for (int k = 0; k < 3; ++k) {
+				const float e = a_a[k] + d[k] * u - c[k];
+				r += e * e;
+			}
+			return std::sqrt(r);
+		}
+
+		int __cdecl BulletProbe(float* a_from, float* a_to, std::uint32_t a3, std::uint32_t a4, std::uint32_t a5, std::uint32_t a6, std::uint32_t a7, std::uint32_t a8,
+			std::uint32_t a9, std::uint32_t a10, std::uint32_t a11, std::uint32_t a12, std::uint32_t a13)
+		{
+			bullets.probes.fetch_add(1, std::memory_order_relaxed);
+			float at[3], n[3], t = 1.0f, end[3] = { 0.0f, 0.0f, 0.0f };
+			int   face = -1;
+			const bool blocked = a_from && a_to && Config::Get().npcBlocks && ClipShot(a_from, a_to, at, n, t, face);
+			if (blocked) {
+				std::copy(a_to, a_to + 3, end);
+				std::copy(at, at + 3, a_to);  // GTA traces (and draws) the shot only up to the blocks
+			}
+			const int hits = bulletOriginal(a_from, a_to, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+			if (blocked) {
+				if (hits > 0) {
+					bullets.nearerHit.fetch_add(1, std::memory_order_relaxed);  // something in front of the blocks took it
+				} else {
+					bullets.stopped.fetch_add(1, std::memory_order_relaxed);
+					if (t <= 0.0f) {
+						bullets.inside.fetch_add(1, std::memory_order_relaxed);
+					}
+					const float miss = MissDistanceToPlayer(at, end);
+					if (miss < 0.6f) {
+						bullets.forPlayer.fetch_add(1, std::memory_order_relaxed);
+					}
+					if (Config::Get().diagnostics) {
+						LC_LOG_EVERY(250, "a GTA bullet stopped at a Minecraft block: from %.2f %.2f %.2f toward %.2f %.2f %.2f, at %.2f %.2f %.2f (face %+.0f %+.0f %+.0f), "
+										  "%.1f m short of its end%s",
+							a_from[0], a_from[1], a_from[2], end[0], end[1], end[2], at[0], at[1], at[2], n[0], n[1], n[2],
+							std::sqrt((end[0] - at[0]) * (end[0] - at[0]) + (end[1] - at[1]) * (end[1] - at[1]) + (end[2] - at[2]) * (end[2] - at[2])),
+							miss < 0.6f ? "; it was headed for the player" : "");
+					}
+					std::lock_guard lock(impactLock);
+					if (impacts.size() < 64) {
+						impacts.push_back({ { at[0], at[1], at[2] }, { n[0], n[1], n[2] }, face });
+					}
+				}
+			}
+			return hits;
+		}
+
+		void HookBullets()
+		{
+			if (bulletHook >= 0) {
+				return;
+			}
+			bulletHook = 0;
+			if (plugin::gameVer != plugin::VERSION_1080) {
+				LC_LOG("bullets: not GTA IV 1.0.8.0: Minecraft's blocks don't stop GTA's gunfire");
+				return;
+			}
+			auto* at = reinterpret_cast<std::uint8_t*>(AddressSetter::gBaseAddress) + (0x92DAA0 - 0x400000);
+			// push ebp; mov ebp, esp; and esp, -16; mov eax, 0x87D4; call (the stack probe)
+			static constexpr std::uint8_t kExpect[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0xB8, 0xD4, 0x87, 0x00, 0x00, 0xE8 };
+			if (std::memcmp(at, kExpect, sizeof(kExpect)) != 0) {
+				LC_LOG("bullets: GTA's bullet trace isn't as expected: Minecraft's blocks don't stop GTA's gunfire");
+				return;
+			}
+			auto* tramp = static_cast<std::uint8_t*>(::VirtualAlloc(nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+			if (!tramp) {
+				LC_LOG("bullets: can't allocate the trampoline (error %lu)", ::GetLastError());
+				return;
+			}
+			const auto abs32 = [](const void* a_p) { return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(a_p)); };
+			// The first 11 bytes (no relative addresses among them), then on into the original.
+			std::memcpy(tramp, at, 11);
+			tramp[11] = 0xE9;
+			const std::uint32_t back = abs32(at + 11) - (abs32(tramp) + 16u);
+			std::memcpy(tramp + 12, &back, 4);
+			::FlushInstructionCache(::GetCurrentProcess(), tramp, 16);
+			bulletOriginal = reinterpret_cast<BulletProbeFn>(tramp);
+			std::uint8_t patch[11];
+			std::memset(patch, 0x90, sizeof(patch));
+			patch[0] = 0xE9;
+			const std::uint32_t to = abs32(reinterpret_cast<const void*>(&BulletProbe)) - (abs32(at) + 5u);
+			std::memcpy(patch + 1, &to, 4);
+			DWORD old = 0;
+			if (!::VirtualProtect(at, sizeof(patch), PAGE_EXECUTE_READWRITE, &old)) {
+				LC_LOG("bullets: can't hook GTA's bullet trace (VirtualProtect error %lu)", ::GetLastError());
+				return;
+			}
+			std::memcpy(at, patch, sizeof(patch));
+			::VirtualProtect(at, sizeof(patch), old, &old);
+			::FlushInstructionCache(::GetCurrentProcess(), at, sizeof(patch));
+			bulletHook = 1;
+			LC_LOG("bullets: Minecraft's solid blocks stop GTA's gunfire (bullet trace hooked)");
+		}
+
+		// Game thread (script): the impacts the bullets left on the blocks since last frame.
+		void SpawnImpacts()
+		{
+			std::vector<Impact> now;
+			{
+				std::lock_guard lock(impactLock);
+				now.swap(impacts);
+			}
+			for (const Impact& i : now) {
+				// The effect's up axis along the face's normal: pitched up 90 degrees and turned to face
+				// it for a wall, upright on a top face, upside down under a block.
+				float rx = 0.0f, rz = 0.0f;
+				if (i.n[2] > 0.5f) {
+					rx = 0.0f;
+				} else if (i.n[2] < -0.5f) {
+					rx = 180.0f;
+				} else {
+					rx = -90.0f;
+					rz = std::atan2(-i.n[0], i.n[1]) * kRadToDeg;
+				}
+				const float scale = 1.0f;  // (the native's last argument is a float scale; the SDK types it unsigned)
+				unsigned    scaleBits = 0;
+				std::memcpy(&scaleBits, &scale, sizeof(scaleBits));
+				S::TRIGGER_PTFX("imp_bullet_concrete", i.at[0], i.at[1], i.at[2], rx, 0.0f, rz, scaleBits);
+				// GTA's effects are drawn before Minecraft's blocks (and don't write depth), so the block
+				// itself would hide this one: Minecraft shows the block's own hit particles too.
+				if (i.face >= 0) {
+					const McVec m = GtaToMc(i.at[0], i.at[1], i.at[2]);
+					Link::Get().PushInput(proto::kInBulletImpact, static_cast<std::uint16_t>(i.face), static_cast<std::int32_t>(std::lround(m.x * 256.0)),
+						static_cast<std::int32_t>(std::lround(m.y * 256.0)), static_cast<std::int32_t>(std::lround(m.z * 256.0)));
+				}
+				++impactsSpawned;
+			}
+		}
+
+		// DebugBulletWall=N (not in the default ini): N s into play, a ped with a pistol stands 1.5 m to
+		// the player's right and another 6 m ahead of the player; every 1.2 s the first shoots at the
+		// second (tools/fake_minecraft.py --wall-ring puts a wall of blocks between them): its shots
+		// must stop at the wall's inner face, in front of the player's camera, and the second ped
+		// must stay unhurt (its health is logged).
+		struct WallShooter
+		{
+			float timer = 0.0f, shootTimer = 0.0f;
+			int   stage = 0;  // 0 waiting, 1 standing there, 2 gone
+			int   ped = 0, target = 0;
+		} wallShooter;
+
+		int PlacePed(float a_x, float a_y, float a_z, float a_heading)
+		{
+			int ped = 0;
+			S::CREATE_RANDOM_CHAR(a_x, a_y, a_z, &ped);
+			if (!ped) {
+				return 0;
+			}
+			float ground = a_z - 1.0f;
+			S::GET_GROUND_Z_FOR_3D_COORD(a_x, a_y, a_z + 1.0f, &ground);
+			S::SET_CHAR_COORDINATES(ped, a_x, a_y, ground);
+			S::SET_CHAR_HEADING(ped, a_heading);
+			S::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(ped, true);
+			return ped;
+		}
+
+		void WallShooterHook(const Combat::Frame& a_frame)
+		{
+			auto& w = wallShooter;
+			if (Config::Get().debugBulletWall <= 0 || w.stage >= 2 || !a_frame.exists || a_frame.loading || a_frame.dead || !a_frame.mc) {
+				return;
+			}
+			w.timer += a_frame.dt;
+			if (w.stage == 0) {
+				if (w.timer < static_cast<float>(Config::Get().debugBulletWall)) {
+					return;
+				}
+				float x = 0, y = 0, z = 0;
+				S::GET_CHAR_COORDINATES(a_frame.ped, &x, &y, &z);
+				const float hd = McYawToGtaHeading(a_frame.mc->yaw), h = hd * kDegToRad;
+				const float fx = -std::sin(h), fy = std::cos(h), rx = std::cos(h), ry = std::sin(h);
+				w.ped = PlacePed(x + rx * 1.5f, y + ry * 1.5f, z, hd);
+				w.target = PlacePed(x + fx * 6.0f, y + fy * 6.0f, z, hd + 180.0f);
+				if (!w.ped || !w.target) {
+					LC_LOG("DebugBulletWall: CREATE_RANDOM_CHAR failed");
+					w.stage = 2;
+					return;
+				}
+				S::FREEZE_CHAR_POSITION(w.target, true);
+				S::GIVE_WEAPON_TO_CHAR(w.ped, 7, 1000, false);  // a pistol
+				S::SET_CURRENT_CHAR_WEAPON(w.ped, 7, true);
+				S::SET_CHAR_ACCURACY(w.ped, 100);
+				LC_LOG("DebugBulletWall: ped %d with a pistol 1.5 m right of the player, ped %d 6 m ahead (player at GTA %.2f %.2f %.2f, heading %.0f)", w.ped,
+					w.target, x, y, z, hd);
+				w.stage = 1;
+				w.shootTimer = 1.0f;
+				return;
+			}
+			if (!S::DOES_CHAR_EXIST(w.ped) || S::IS_CHAR_DEAD(w.ped) || !S::DOES_CHAR_EXIST(w.target)) {
+				LC_LOG("DebugBulletWall: a ped is gone");
+				w.stage = 2;
+				return;
+			}
+			if ((w.shootTimer -= a_frame.dt) > 0.0f) {
+				return;
+			}
+			w.shootTimer = 1.2f;
+			unsigned health = 0;
+			S::GET_CHAR_HEALTH(w.target, &health);
+			S::TASK_SHOOT_AT_CHAR(w.ped, w.target, 2000, 2);
+			LC_LOG("DebugBulletWall: ped %d shoots at ped %d (health %u%s)", w.ped, w.target, health, S::IS_CHAR_DEAD(w.target) ? ", dead" : "");
+		}
+
 		void LogStats()
 		{
 			const auto now = ::GetTickCount64();
@@ -342,6 +636,14 @@ namespace lc::NpcBlocks
 			const double secs = double(now - lastStatsMs) / 1000.0;
 			lastStatsMs = now;
 			const auto& c = counters;
+			const std::uint32_t shots = bullets.probes.exchange(0), stopped = bullets.stopped.exchange(0), nearer = bullets.nearerHit.exchange(0),
+								forPlayer = bullets.forPlayer.exchange(0), inside = bullets.inside.exchange(0);
+			if (stopped || (diag && shots)) {
+				LC_LOG("bullets %.0fs: %u traced, %u stopped by Minecraft's blocks (%u headed for the player, %u fired from inside one), %u hit something in "
+					   "front of them first; %u impacts shown",
+					secs, shots, stopped, forPlayer, inside, nearer, impactsSpawned);
+			}
+			impactsSpawned = 0;
 			if (diag || c.pedsPushed || c.carsTouching || c.clears) {
 				std::uint32_t dropped = 0;
 				{
@@ -396,7 +698,13 @@ namespace lc::NpcBlocks
 
 	void Tick(const Combat::Frame& a_frame)
 	{
+		std::lock_guard lock(gridLock);
 		ApplyPending();
+		if (Config::Get().npcBlocks) {
+			HookBullets();
+			SpawnImpacts();
+		}
+		WallShooterHook(a_frame);
 		if (!Config::Get().npcBlocks || grid.Empty() || !a_frame.exists || a_frame.loading) {
 			LogStats();
 			return;

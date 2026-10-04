@@ -12,6 +12,7 @@
 #include "Coords.h"
 #include "Link.h"
 #include "Log.h"
+#include "Hazards.h"
 #include "NpcBlocks.h"
 
 #include <algorithm>
@@ -540,7 +541,7 @@ namespace lc::render
 		const double t0 = NowMs();
 		stats.drainedBytes += Link::Get().DrainRender(
 			[](std::uint32_t a_type, const std::uint8_t* a_data, std::uint32_t a_bytes) {
-				if (a_type < 12) {
+				if (a_type < 13) {
 					++stats.messages[a_type];
 					stats.messageBytes[a_type] += a_bytes;
 				} else {
@@ -561,6 +562,13 @@ namespace lc::render
 					ClearSections();
 					ClearEntities();
 					NpcBlocks::Clear();  // the blocks GTA's peds and vehicles collide with (NpcBlocks.h)
+					Hazards::Clear();    // Minecraft's fire, lava and magma (Hazards.h)
+					break;
+				case proto::kRenLights:
+					Hazards::OnLights(a_data, a_bytes);  // the hazards among them burn GTA's peds (Hazards.h)
+					break;
+				case proto::kRenLiquids:
+					Hazards::OnLiquids(a_data, a_bytes);  // water and lava: vehicles struggle in them (Hazards.h)
 					break;
 				case proto::kRenSolids:
 					NpcBlocks::OnSolids(a_data, a_bytes);
@@ -578,7 +586,7 @@ namespace lc::render
 					OnRagdoll(a_data, a_bytes);
 					break;
 				default:
-					break;  // kRenLights, kRenDug: not used yet (counted)
+					break;  // kRenDug: not used yet (counted)
 				}
 			},
 			64ull << 20);

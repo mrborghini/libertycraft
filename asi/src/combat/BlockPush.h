@@ -250,4 +250,58 @@ namespace lc::blocks
 		a_vz -= (1.0 + a_bounce) * vn * a_nz;
 		return true;
 	}
+
+	// ---- bullets ------------------------------------------------------------------------------------
+	// Where the segment a_from -> a_to (Minecraft space) first enters a solid block: its fraction
+	// along the segment (0 if it starts inside one) and the face it went in through (a_axis 0 x,
+	// 1 y, 2 z, -1 when it started inside; a_sign +1 when that face looks toward +axis). Voxel
+	// traversal (Amanatides and Woo), at most a_maxSteps blocks. False if it reaches a_to clear.
+	inline bool RayFirstSolid(const SolidGrid& a_grid, const double a_from[3], const double a_to[3], double& a_t, int& a_axis, int& a_sign,
+		int a_maxSteps = 2048)
+	{
+		double        d[3], tMax[3], tDelta[3];
+		std::int32_t  cell[3], step[3], last[3];
+		for (int k = 0; k < 3; ++k) {
+			d[k] = a_to[k] - a_from[k];
+			cell[k] = static_cast<std::int32_t>(std::floor(a_from[k]));
+			last[k] = static_cast<std::int32_t>(std::floor(a_to[k]));
+			if (d[k] > 0.0) {
+				step[k] = 1;
+				tDelta[k] = 1.0 / d[k];
+				tMax[k] = (std::floor(a_from[k]) + 1.0 - a_from[k]) / d[k];
+			} else if (d[k] < 0.0) {
+				step[k] = -1;
+				tDelta[k] = -1.0 / d[k];
+				tMax[k] = (a_from[k] - std::floor(a_from[k])) / -d[k];
+			} else {
+				step[k] = 0;
+				tDelta[k] = tMax[k] = 1e300;
+			}
+		}
+		if (a_grid.Solid(cell[0], cell[1], cell[2])) {
+			a_t = 0.0;
+			a_axis = -1;
+			a_sign = 0;
+			return true;
+		}
+		for (int i = 0; i < a_maxSteps; ++i) {
+			if (cell[0] == last[0] && cell[1] == last[1] && cell[2] == last[2]) {
+				return false;
+			}
+			const int k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+			const double t = tMax[k];
+			if (t > 1.0) {
+				return false;
+			}
+			cell[k] += step[k];
+			tMax[k] += tDelta[k];
+			if (a_grid.Solid(cell[0], cell[1], cell[2])) {
+				a_t = t;
+				a_axis = k;
+				a_sign = -step[k];  // the face looks back toward where the ray came from
+				return true;
+			}
+		}
+		return false;
+	}
 }

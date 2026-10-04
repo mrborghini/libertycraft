@@ -1365,9 +1365,9 @@ namespace lc::Render
 			if (ws.drainedBytes || overlayFrames || diag) {
 				char        line[600];
 				int         n = std::snprintf(line, sizeof(line), "render ring %llu KiB in %.1fs:", static_cast<unsigned long long>(ws.drainedBytes >> 10), secs);
-				static const char* kNames[12] = { "pad", "atlas", "section", "clearAll", "texture", "avatar", "scene", "atlasRegion", "lights", "ragdoll",
-					"solids", "dug" };
-				for (int t = 0; t < 12 && n > 0 && n < int(sizeof(line)); ++t) {
+				static const char* kNames[13] = { "pad", "atlas", "section", "clearAll", "texture", "avatar", "scene", "atlasRegion", "lights", "ragdoll",
+					"solids", "dug", "liquids" };
+				for (int t = 0; t < 13 && n > 0 && n < int(sizeof(line)); ++t) {
 					if (ws.messages[t]) {
 						n += std::snprintf(line + n, sizeof(line) - n, " %s %u", kNames[t], ws.messages[t]);
 					}

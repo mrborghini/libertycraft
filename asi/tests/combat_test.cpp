@@ -3,6 +3,7 @@
 #include "combat/BlockPush.h"
 #include "combat/CombatMath.h"
 
+#include <array>
 #include <vector>
 
 #include <cmath>
@@ -534,6 +535,44 @@ static void TestBlockPush()
 	CHECK(g.Empty() && !g.Solid(5, 64, 3));
 }
 
+static void TestBulletRays()
+{
+	lc::blocks::SolidGrid g;
+	std::array<std::uint8_t, 512> bits{};
+	auto set = [&](int a_x, int a_y, int a_z) {
+		const int b = (a_x & 15) + 16 * (a_z & 15) + 256 * (a_y & 15);
+		bits[b >> 3] |= static_cast<std::uint8_t>(1u << (b & 7));
+	};
+	// A wall at x = 5 (y 64..66, z 0..4), in section (0, 4, 0).
+	for (int y = 64; y <= 66; ++y) {
+		for (int z = 0; z <= 4; ++z) {
+			set(5, y, z);
+		}
+	}
+	g.Set(0, 4, 0, bits.data());
+	double t = 0.0;
+	int    axis = 0, sign = 0;
+	// Straight at it along +x: enters at x = 5, through the face looking toward -x.
+	const double a0[3] = { 1.5, 65.2, 2.5 }, a1[3] = { 9.5, 65.2, 2.5 };
+	CHECK(lc::blocks::RayFirstSolid(g, a0, a1, t, axis, sign) && Near(static_cast<float>(t), 3.5f / 8.0f, 1e-5f) && axis == 0 && sign == -1);
+	// From the other side, along -x: the face at x = 6, looking toward +x.
+	CHECK(lc::blocks::RayFirstSolid(g, a1, a0, t, axis, sign) && Near(static_cast<float>(t), 3.5f / 8.0f, 1e-5f) && axis == 0 && sign == 1);
+	// Over the wall (y 67.5), and stopping short of it: clear.
+	const double o0[3] = { 1.5, 67.5, 2.5 }, o1[3] = { 9.5, 67.5, 2.5 }, s1[3] = { 4.9, 65.2, 2.5 };
+	CHECK(!lc::blocks::RayFirstSolid(g, o0, o1, t, axis, sign) && !lc::blocks::RayFirstSolid(g, a0, s1, t, axis, sign));
+	// Diagonal, down onto the top of the wall: the face at y = 67 looking up.
+	const double d0[3] = { 5.5, 70.0, 2.5 }, d1[3] = { 5.5, 60.0, 2.5 };
+	CHECK(lc::blocks::RayFirstSolid(g, d0, d1, t, axis, sign) && Near(static_cast<float>(t), 0.3f, 1e-5f) && axis == 1 && sign == 1);
+	// Starting inside a block: t 0.
+	const double i0[3] = { 5.5, 65.5, 2.5 };
+	CHECK(lc::blocks::RayFirstSolid(g, i0, a1, t, axis, sign) && t == 0.0 && axis == -1);
+	// A long shot at an angle, crossing section borders and negative coordinates, finds it too.
+	const double l0[3] = { -40.3, 65.5, -30.7 }, l1[3] = { 45.0, 65.5, 33.6 };
+	const bool hit = lc::blocks::RayFirstSolid(g, l0, l1, t, axis, sign);
+	const double hx = l0[0] + (l1[0] - l0[0]) * t, hz = l0[2] + (l1[2] - l0[2]) * t;
+	CHECK(hit && hx >= 4.99 && hx <= 6.01 && hz >= -0.01 && hz <= 5.01);
+}
+
 static void TestCrimes()
 {
 	// Hurting a cop: 1 star, killing one 2, whoever watches.
@@ -548,6 +587,16 @@ static void TestCrimes()
 	CHECK(WantedAfterAttack(0, false, true, 0, 0) == 0);
 	// Never lowers what the player has.
 	CHECK(WantedAfterAttack(4, true, true, 3, 3) == 4);
+	// Killing police escalates: 1 kill 2 stars, 3 kills 3, 6 kills 4, 10 kills 5, 15 kills 6.
+	CHECK(WantedForCopKills(0) == 0 && WantedForCopKills(1) == 2 && WantedForCopKills(2) == 2 && WantedForCopKills(3) == 3);
+	CHECK(WantedForCopKills(6) == 4 && WantedForCopKills(10) == 5 && WantedForCopKills(15) == 6 && WantedForCopKills(40) == 6);
+	CHECK(WantedAfterAttack(2, true, true, 1, 1, 3) == 3 && WantedAfterAttack(3, true, true, 1, 1, 6) == 4);
+	CHECK(WantedAfterAttack(5, true, true, 1, 1, 3) == 5);  // never lower
+	// The crime: bow hits are shooting, swords stabbing, fists hitting; cops apart.
+	CHECK(CrimeForAttack(proto::kHitProjectile, proto::kWeaponArrow, true) == kCrimeShootCop);
+	CHECK(CrimeForAttack(0, proto::kWeaponArrow, false) == kCrimeShootPed);
+	CHECK(CrimeForAttack(0, proto::kWeaponBlade, true) == kCrimeStabCop && CrimeForAttack(0, proto::kWeaponUnarmed, false) == kCrimeHitPed);
+	CHECK(CrimeForAttack(0, proto::kWeaponBlunt, true) == kCrimeHitCop && CrimeForAttack(proto::kHitExplosion, 0, true) == kCrimeCauseExplosion);
 	CHECK(ReactionOf(true, false, 7) == Reaction::kFight && ReactionOf(false, true, 7) == Reaction::kFight);
 	int fight = 0;
 	for (std::uint32_t seed = 0; seed < 3000; ++seed) {
@@ -646,6 +695,7 @@ int main()
 	TestCrimes();
 	TestVitals();
 	TestBlockPush();
+	TestBulletRays();
 	TestPacer();
 	if (failures) {
 		std::fprintf(stderr, "combat_test: %d failure(s)\n", failures);

@@ -118,6 +118,13 @@ public class HostActorEntity extends LivingEntity {
 		if (this.isInvulnerableTo(level, source) || dmg <= 0.0F) {
 			return;
 		}
+		// Only what something does to it (a hit, an arrow, a blast) is GTA IV's business: the stand-in
+		// sits in Minecraft's world, so its water (drowning: a car in a pool wrecked by its pieces
+		// "drowning"), fire, lava, walls and falls would hurt the real ped or car twice or for nothing.
+		// GTA IV handles its own world, and LibertyCraft's Hazards (host) Minecraft's fire, lava and water.
+		if (source.getEntity() == null && source.getDirectEntity() == null && !source.is(net.minecraft.tags.DamageTypeTags.IS_EXPLOSION)) {
+			return;
+		}
 		this.pendingDamage += dmg;
 		if (source.getDirectEntity() instanceof Projectile) {
 			this.pendingFlags |= Proto.HIT_PROJECTILE;

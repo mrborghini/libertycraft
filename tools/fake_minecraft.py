@@ -31,7 +31,8 @@ first teleport acknowledgement.
 NPCs vs blocks and vehicles (Stream Q2): --wall-ring R puts a square ring of stone blocks R blocks out
 around the player (as meshes and kRenSolids; it moves along when the player is teleported far), which
 GTA IV's peds and traffic should not get through; --hit-kind vehicle aims --hit-nearest-actor at the
-nearest vehicle piece, and --hit-projectile makes the hits arrows (they also reach the people inside).
+nearest vehicle piece, and --hit-projectile makes the hits arrows (they also reach the people inside);
+--hit-name NAME only hits actors whose name has NAME in it (e.g. Cop).
 --pick-test (with the host's DebugTestCar + DebugCarCover: a ped in cover beyond a car's bonnet)
 aims from the player's eye (1.62 above the ped's feet) at the nearest ped's chest and head every 2 s and says what Minecraft's
 pick (the nearest entity box along the look) would hit: the ped, or a piece of a vehicle (and, for
@@ -593,6 +594,8 @@ def combat_step(bridge, args, sky, t, t0, st):
         alive = [r for r in actors if not r[1] & ACTOR_DEAD]
         if args.hit_kind != "any":
             alive = [r for r in alive if bool(r[1] & ACTOR_VEHICLE) == (args.hit_kind == "vehicle")]
+        if args.hit_name:
+            alive = [r for r in alive if args.hit_name.lower() in r[9].lower()]
         if alive:
             r = min(alive, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
             dx, dz = r[2] - px, r[4] - pz
@@ -659,6 +662,7 @@ def main():
     ap.add_argument("--demo-avatar", action="store_true", help="with --demo-section: also a box body (kRenTexture + kRenAvatar) at the feet (use with --third-person)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every collision message")
     ap.add_argument("--actors", action="store_true", help="print the host's actor table every 2 s")
+    ap.add_argument("--hit-name", default="", metavar="NAME", help="--hit-nearest-actor: only actors whose name has NAME in it (e.g. Cop)")
     ap.add_argument("--pick-test", action="store_true", help="say what Minecraft's pick at the nearest ped would hit (DebugCarCover)")
     ap.add_argument("--hit-nearest-actor", type=float, default=0.0, metavar="DMG",
                     help="every --combat-interval s, hit the living actor nearest the player for DMG Minecraft damage")

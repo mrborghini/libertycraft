@@ -149,6 +149,7 @@ namespace lc
 		int debugTestCar = 0;
 		std::string debugTestCarModel = "admiral";  // its model (e.g. sabre: two doors, pcj: a motorbike)
 		bool debugCarCover = false;  // DebugTestCar parks it empty, front axle beside the player, a ped in cover beyond its bonnet
+		int debugBulletWall = 0;  // N s into play, a ped beside the player shoots across the blocks ahead of him (NpcBlocks)
 		// Minecraft's attacks are crimes in GTA IV: victims fight back or flee, police seeing it (or
 		// any witness of a killing) give the player a wanted level, hurting a cop always does.
 		bool gtaCrimes = true;
@@ -210,6 +211,20 @@ namespace lc
 		std::string debugCutscene;
 		// Test hook (not in the default ini): give Niko this GTA weapon (7 pistol) 10 s into play.
 		int debugGiveWeapon = 0;
+		// Minecraft's fire, lava and magma burn GTA's peds on foot (and lava sets vehicles alight). Hazards.h.
+		bool hazardsBurnPeds = true;
+		bool hazardsBurnVehicles = true;   // fire, lava and magma under a vehicle: engine fire, lava wrecks it
+		bool liquidsSlowVehicles = true;       // Minecraft water and lava slow vehicles (drag by depth; deep water stalls after a few s)
+		bool liquidsSlowPeds = true;           // peds wade slower in Minecraft water, the deeper the slower
+		// Experimental (not in the default ini): GTA's water level query (0x9AB6C0) answers Minecraft water. Measured: GTA's peds
+		// (swimming) and vehicle buoyancy don't use it, so it changes little; off.
+		bool minecraftWaterIsGtaWater = false;
+		// Test hooks (not in the default ini): to the street 15 s into puppet mode; "fire"/"lava": a
+		// 3 x 3 patch of it (in the plugin only) under the nearest walking ped every 20 s; "harbour": a
+		// test car with Niko in it dropped into GTA's own water, its engine timed (Hazards.cpp DebugHarbour).
+		bool        debugHazards = false;
+		float       debugDriveThrottle = 0.0f;  // test hook: in a car, hold GTA's accelerator this many seconds (from 1 s in)
+		std::string debugHazardInject;
 		// ---- the Minecraft body on Niko's skeleton (Body.h, render/Body.h) ----
 		// While GTA IV animates Niko itself, show the player's Minecraft body following his
 		// animation (Niko hidden): master switch, in cutscenes, getting into / driving / getting out

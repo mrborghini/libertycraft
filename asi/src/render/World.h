@@ -31,8 +31,8 @@ namespace lc::render
 	struct WorldStats
 	{
 		// since the last TakeStats
-		std::uint32_t messages[12]{};
-		std::uint64_t messageBytes[12]{};
+		std::uint32_t messages[13]{};
+		std::uint64_t messageBytes[13]{};
 		std::uint32_t otherMessages = 0;
 		std::uint64_t drainedBytes = 0;
 		std::uint32_t frames = 0;

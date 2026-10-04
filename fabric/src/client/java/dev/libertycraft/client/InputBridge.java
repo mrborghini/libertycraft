@@ -63,6 +63,7 @@ public final class InputBridge {
 			}
 			case Proto.IN_RELEASE_ALL -> releaseAll();
 			case Proto.IN_HURT -> hurt(minecraft, code, a / 100.0F, b, c);
+			case Proto.IN_BULLET_IMPACT -> HostImpactClient.impact(minecraft, code, a / 256.0, b / 256.0, c / 256.0);
 			case Proto.IN_OPEN_MENU -> {
 				if (minecraft.gui.screen() == null && minecraft.player != null) {
 					releaseAll();

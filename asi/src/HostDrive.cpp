@@ -42,6 +42,8 @@ namespace lc::HostDrive
 		// what Pad presses, set by Tick
 		std::atomic<bool> pressEnter{ false };
 		std::atomic<bool> pressExit{ false };
+		std::atomic<bool> pressThrottle{ false };  // DebugDriveThrottle
+		float             throttleT = 0.0f, throttleLogT = 0.0f;
 
 		int   hiddenPed = 0;  // the ped we made invisible in a vehicle (0: none)
 		int   seatLoggedFor = 0;
@@ -193,6 +195,7 @@ namespace lc::HostDrive
 			char  what[96] = "";
 		};
 		Knock knock;
+		const char* roadRequest = nullptr;  // DebugRequestRoad
 		int   knockdowns = 0;  // for DriveLogic, this frame
 		char  uprightWhy[96] = "";  // the standing check's parts (logged when a recovery runs out of time)
 		float recoverClock = 0.0f;
@@ -689,6 +692,9 @@ namespace lc::HostDrive
 			a_pad->m_aValues[INPUT_VEH_EXIT].m_nCurrentValue = 255;
 			a_pad->m_aValues[INPUT_ENTER].m_nCurrentValue = 255;
 		}
+		if (pressThrottle.load(std::memory_order_relaxed)) {
+			a_pad->m_aValues[INPUT_VEH_ACCELERATE].m_nCurrentValue = 255;  // DebugDriveThrottle: the player's W
+		}
 	}
 
 	void OnIngameStartup()
@@ -847,6 +853,31 @@ namespace lc::HostDrive
 		}
 		if (inGame) {
 			DebugCutsceneTick(a_f);
+		}
+		// DebugDriveThrottle: in a car, GTA's accelerator held from 1 s to 1 + N s (the player driving
+		// straight on), the car's speed logged.
+		throttleT = a_f.inCar && active ? throttleT + a_f.dt : 0.0f;
+		const bool throttle = Cfg().debugDriveThrottle > 0.0f && throttleT > 1.0f && throttleT < 1.0f + Cfg().debugDriveThrottle;
+		pressThrottle.store(throttle, std::memory_order_relaxed);
+		if (throttle && (throttleLogT -= a_f.dt) <= 0.0f) {
+			throttleLogT = 0.5f;
+			int veh = 0;
+			float speed = 0.0f;
+			S::GET_CAR_CHAR_IS_USING(a_f.ped, &veh);
+			if (veh && S::DOES_VEHICLE_EXIST(veh)) {
+				S::GET_CAR_SPEED(veh, &speed);
+			}
+			LC_LOG("DebugDriveThrottle: %.1f s on the accelerator, the car at %.1f m/s", throttleT - 1.0f, speed);
+		}
+		// Another module's test hook asked for the street (DebugRequestRoad).
+		if (roadRequest && a_f.puppeting && active) {
+			float aboveGround = 99.0f;
+			S::GET_CHAR_HEIGHT_ABOVE_GROUND(a_f.ped, &aboveGround);
+			int interior = 0;
+			S::GET_INTERIOR_FROM_CHAR(a_f.ped, &interior);
+			if (StartRelocation(a_f.ped, roadRequest, interior, aboveGround)) {
+				roadRequest = nullptr;
+			}
 		}
 		// DebugGiveWeapon: a GTA weapon for Niko, once (puppet mode holsters it, Game.cpp).
 		static float giveT = 0.0f;
@@ -1048,6 +1079,11 @@ namespace lc::HostDrive
 		if (hiddenPed) {
 			NikoBody::Hide(hiddenPed, true);
 		}
+	}
+
+	void DebugRequestRoad(const char* a_who)
+	{
+		roadRequest = a_who;
 	}
 
 	bool KnockedOver()

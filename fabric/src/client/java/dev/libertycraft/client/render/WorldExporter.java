@@ -68,6 +68,8 @@ public final class WorldExporter {
 	private static final LongOpenHashSet SENT = new LongOpenHashSet(); // sections GTA IV holds a mesh for
 	private static final LongOpenHashSet LIT = new LongOpenHashSet(); // sections GTA IV holds lights for
 	private static final LongOpenHashSet SOLID = new LongOpenHashSet(); // sections GTA IV holds NPC collision for
+	private static final LongOpenHashSet WET = new LongOpenHashSet(); // sections GTA IV holds water/lava for
+	private static final ByteBuffer LIQUIDS = ByteBuffer.allocate(16 * 16 * 16 * 4).order(ByteOrder.LITTLE_ENDIAN);
 	private static final long[] SOLID_BITS = new long[64]; // 4096 blocks: bit x + 16z + 256y
 	private static final LongOpenHashSet DUG = new LongOpenHashSet(); // sections GTA IV holds dug cells for
 	private static final ByteBuffer LIGHTS = ByteBuffer.allocate(16 * 16 * 16 * 8).order(ByteOrder.LITTLE_ENDIAN);
@@ -136,6 +138,7 @@ public final class WorldExporter {
 		SENT.clear();
 		LIT.clear();
 		SOLID.clear();
+		WET.clear();
 		DUG.clear();
 		dev.libertycraft.client.HostDigClient.resendAll();
 		// Everything already loaded needs meshing again; later chunk loads mark themselves dirty.
@@ -197,12 +200,14 @@ public final class WorldExporter {
 				dugCount += Long.bitCount(word);
 			}
 		}
-		if (empty && !SENT.contains(key) && !LIT.contains(key) && !SOLID.contains(key) && dugCount == 0 && !DUG.contains(key)) {
+		if (empty && !SENT.contains(key) && !LIT.contains(key) && !SOLID.contains(key) && !WET.contains(key) && dugCount == 0 && !DUG.contains(key)) {
 			return false; // nothing there and nothing to remove
 		}
 		MESH.reset();
 		LIGHTS.clear();
 		int lightCount = 0;
+		LIQUIDS.clear();
+		int liquidCount = 0;
 		java.util.Arrays.fill(SOLID_BITS, 0L);
 		int solidCount = 0;
 		MESH.cardinal = level.cardinalLighting();
@@ -231,6 +236,13 @@ public final class WorldExporter {
 						}
 						FluidState fluid = state.getFluidState();
 						if (!fluid.isEmpty()) {
+							// Water and lava for GTA IV's vehicles (they struggle in them): kind and surface height.
+							int kind = fluid.is(net.minecraft.tags.FluidTags.LAVA) ? Proto.LIQUID_LAVA : fluid.is(net.minecraft.tags.FluidTags.WATER) ? Proto.LIQUID_WATER : 0;
+							if (kind != 0) {
+								int surface = Math.max(1, Math.min(15, Math.round(fluid.getHeight(level, pos) * 15.0F)));
+								LIQUIDS.put((byte) x).put((byte) y).put((byte) z).put((byte) (surface | kind << 4));
+								liquidCount++;
+							}
 							// GTA IV ground in the cell: the fluid is drawn in the space above it.
 							MESH.fluidGround = dev.libertycraft.world.HostCollision.groundTop(pos);
 							MESH.fluidBaseY = y;
@@ -251,7 +263,8 @@ public final class WorldExporter {
 			Minecraft minecraft = Minecraft.getInstance();
 			DigWalls.add(level, sx, sy, sz, dug, digLookup, st -> cubeFaces(minecraft, st), MESH::wall);
 		}
-		if (MESH.vertexCount() == 0 && !SENT.contains(key) && lightCount == 0 && !LIT.contains(key) && solidCount == 0 && !SOLID.contains(key) && dugCount == 0
+		if (MESH.vertexCount() == 0 && !SENT.contains(key) && lightCount == 0 && !LIT.contains(key) && solidCount == 0 && !SOLID.contains(key) && liquidCount == 0
+			&& !WET.contains(key) && dugCount == 0
 			&& !DUG.contains(key)) {
 			return true;
 		}
@@ -286,6 +299,16 @@ public final class WorldExporter {
 					SOLID.add(key);
 				} else {
 					SOLID.remove(key);
+				}
+			}
+			if (liquidCount > 0 || WET.contains(key)) {
+				ByteBuffer liquidHeader = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).putInt(sx).putInt(sy).putInt(sz).putInt(liquidCount).flip();
+				if (!Link.writeRender(Proto.REN_LIQUIDS, liquidHeader, LIQUIDS.flip())) {
+					markDirty(sx, sy, sz);
+				} else if (liquidCount > 0) {
+					WET.add(key);
+				} else {
+					WET.remove(key);
 				}
 			}
 			// Cells dug out of Liberty City: its geometry there goes.

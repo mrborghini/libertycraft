@@ -100,7 +100,10 @@ public final class HostDriveClient {
 			HostDrive.place(vehicle, player, sky.x, sky.y, sky.z, sky.yaw);
 			vehicle.setOldPosAndRot(); // rendered where GTA IV's seat is now, not a tick behind
 		} else {
-			HostDrive.clientMount = null;
+			// (Still in GTA IV's vehicle but off the mount for a moment: it stays our mount, so it stays hidden.)
+			if (!inVehicle) {
+				HostDrive.clientMount = null;
+			}
 			if (vehicle == null) {
 				player.setPos(sky.x, sky.y, sky.z);
 			}

@@ -109,6 +109,19 @@ namespace lc::Combat
 			int   variant;     // how the force was applied (see Knock)
 		};
 		std::vector<Shove> shoves;
+
+		// A lethal hit's killing damage, after the ragdoll it was given (ApplyHit, PendingKills).
+		struct PendingKill
+		{
+			int             ped;
+			proto::McEvent  ev;
+			unsigned        before;
+			float           age;
+			int             frames;
+			float           x, y, z;  // where it stood when hit
+			float           gx, gy;   // the push
+		};
+		std::vector<PendingKill> pendingKills;
 		int knockVariantNext = -1;  // DebugKnockbackVariant: the next variant to try
 		struct VariantStats
 		{
@@ -869,25 +882,106 @@ namespace lc::Combat
 			}
 		}
 
-		// After Minecraft hurt or killed a_ped (of GET_PED_TYPE a_type; a_driving: it sits at the wheel of a_vehicle).
-		void AfterAttack(int a_ped, unsigned a_type, bool a_killed, const Frame& a_frame, int a_vehicle = 0)
+		// GTA IV 1.0.8.0's CCrime::ReportCrime(eCrimeType, CEntity* victim, CPed* criminal) at 0xA503E0
+		// (cdecl): what the game calls when the player hurts someone (CombatMath.h GtaCrime). With the
+		// player as the criminal, GTA's own wanted system takes it from there: who saw it, the points
+		// toward each star, escalation as the crimes go on, the police response and the decay.
+		using ReportCrimeFn = void(__cdecl*)(int, void*, void*);
+		ReportCrimeFn reportCrime = nullptr;
+		int           reportCrimeState = -1;  // -1 not checked, 0 unavailable, 1 ok
+		unsigned      copKills = 0;           // (the fallback's escalation) police killed in this wanted episode
+
+		bool ReportGtaCrime(int a_crime, void* a_victim)
+		{
+			if (reportCrimeState < 0) {
+				reportCrimeState = 0;
+				if (plugin::gameVer == plugin::VERSION_1080) {
+					auto* at = reinterpret_cast<const std::uint8_t*>(AddressSetter::gBaseAddress) + (0xA503E0 - 0x400000);
+					// push ebp; mov ebp, esp; and esp, -16; sub esp, 0x24; mov eax, [ebp+0x10] (the criminal)
+					static constexpr std::uint8_t kExpect[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x83, 0xEC, 0x24, 0x8B, 0x45, 0x10 };
+					if (std::memcmp(at, kExpect, sizeof(kExpect)) == 0) {
+						reportCrime = reinterpret_cast<ReportCrimeFn>(const_cast<std::uint8_t*>(at));
+						reportCrimeState = 1;
+						LC_LOG("crimes: Minecraft's attacks go to GTA IV's own crime reports (CCrime::ReportCrime): vanilla wanted levels");
+					}
+				}
+				if (reportCrimeState == 0) {
+					LC_LOG("crimes: GTA IV's crime report isn't as expected: wanted levels follow LibertyCraft's own rules");
+				}
+			}
+			CPed* player = FindPlayerPed();
+			if (reportCrimeState != 1 || !player) {
+				return false;
+			}
+			reportCrime(a_crime, a_victim, player);
+			return true;
+		}
+
+		const char* CrimeName(int a_crime)
+		{
+			switch (a_crime) {
+			case kCrimeHitPed: return "HIT_PED";
+			case kCrimeHitCop: return "HIT_COP";
+			case kCrimeShootPed: return "SHOOT_PED";
+			case kCrimeShootCop: return "SHOOT_COP";
+			case kCrimeCauseExplosion: return "CAUSE_EXPLOSION";
+			case kCrimeStabPed: return "STAB_PED";
+			case kCrimeStabCop: return "STAB_COP";
+			case kCrimeDestroyVehicle: return "DESTROY_VEHICLE";
+			case kCrimeDamageToProperty: return "DAMAGE_TO_PROPERTY";
+			default: return "?";
+			}
+		}
+
+		// After Minecraft hurt or killed a_ped (of GET_PED_TYPE a_type; a_driving: it sits at the wheel of a_vehicle),
+		// a_crime (CombatMath.h CrimeForAttack) with it as the victim (or a_vehicle, for damage to property).
+		void AfterAttack(int a_ped, unsigned a_type, bool a_killed, const Frame& a_frame, int a_vehicle, int a_crime)
 		{
 			if (!Cfg().gtaCrimes || !a_frame.ped) {
 				return;
 			}
 			const bool cop = a_type == kPedTypeCop;
 			unsigned   cops = 0, witnesses = 0, wanted = 0;
-			CountWitnesses(a_ped, a_frame.ped, cops, witnesses);
 			S::STORE_WANTED_LEVEL(a_frame.player, &wanted);
-			const unsigned want = WantedAfterAttack(wanted, cop, a_killed, cops, witnesses);
-			if (want > wanted) {
-				S::ALTER_WANTED_LEVEL_NO_DROP(a_frame.player, want);
-				S::APPLY_WANTED_LEVEL_CHANGE_NOW(a_frame.player);
-				unsigned now = 0;
-				S::STORE_WANTED_LEVEL(a_frame.player, &now);
+			if (wanted == 0) {
+				copKills = 0;  // a new wanted episode
+			}
+			if (cop && a_killed) {
+				++copKills;
+			}
+			void* victim = nullptr;
+			if (a_crime == kCrimeDamageToProperty || a_crime == kCrimeDestroyVehicle) {
+				victim = a_vehicle && CPools::ms_pVehiclePool ? static_cast<void*>(CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(a_vehicle))) : nullptr;
+			} else {
+				victim = CPools::ms_pPedPool ? static_cast<void*>(CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(a_ped))) : nullptr;
+			}
+			if (ReportGtaCrime(a_crime, victim)) {
 				++counters.crimes;
-				LC_LOG("crime: Minecraft %s a %s (%u cops, %u witnesses near): wanted level %u -> %u", a_killed ? "killed" : "hurt", PedTypeName(a_type), cops,
-					witnesses, wanted, now);
+				// GTA's own points stop climbing at some point (4 stars after a dozen police in tests);
+				// the police killed this episode keep raising it as players expect (WantedForCopKills).
+				unsigned now = 0, max = 0;
+				S::STORE_WANTED_LEVEL(a_frame.player, &now);
+				S::GET_MAX_WANTED_LEVEL(&max);
+				const unsigned floor = std::min(WantedForCopKills(copKills), max ? max : 6u);
+				if (cop && a_killed && floor > now) {
+					S::ALTER_WANTED_LEVEL_NO_DROP(a_frame.player, floor);
+					S::APPLY_WANTED_LEVEL_CHANGE_NOW(a_frame.player);
+					S::STORE_WANTED_LEVEL(a_frame.player, &now);
+				}
+				LC_LOG("crime: Minecraft %s a %s -> GTA IV's report %s: wanted level %u -> %u (max %u; %u police killed this episode)", a_killed ? "killed" : "hurt",
+					PedTypeName(a_type), CrimeName(a_crime), wanted, now, max, copKills);
+			} else {
+				CountWitnesses(a_ped, a_frame.ped, cops, witnesses);
+				const unsigned want = WantedAfterAttack(wanted, cop, a_killed, cops, witnesses, copKills);
+				if (want > wanted) {
+					S::ALTER_WANTED_LEVEL_NO_DROP(a_frame.player, want);
+					S::APPLY_WANTED_LEVEL_CHANGE_NOW(a_frame.player);
+					unsigned now = 0;
+					S::STORE_WANTED_LEVEL(a_frame.player, &now);
+					++counters.crimes;
+					LC_LOG("crime: Minecraft %s a %s (%u cops, %u witnesses near, %u police killed this episode): wanted level %u -> %u",
+						a_killed ? "killed" : "hurt", PedTypeName(a_type), cops, witnesses, copKills, wanted, now);
+				}
 			}
 			if (a_killed) {
 				return;
@@ -936,14 +1030,40 @@ namespace lc::Combat
 				return;
 			}
 			++counters.hits;
+			const bool crit = (a_ev.flags & proto::kHitCritical) != 0;
+			float      gx = 0.0f, gy = 0.0f;
+			// A killing blow on a ped on foot: GTA starts its scripted death clip as soon as the health
+			// runs out, and a dead ped takes no ragdoll or push. So the ped goes limp and is shoved along
+			// the knockback first, and the killing damage follows a couple of frames later (PendingKills),
+			// once the ragdoll has it: it dies inside the ragdoll and flies, as from a gunshot. (In a
+			// vehicle the occupant path keeps its seated death.)
+			const unsigned wouldDo = PedDamageFromMc(a_ev.a, Cfg().pedDamageScale);
+			const bool     lethal = wouldDo > 0 && before <= wouldDo + static_cast<unsigned>(kDeathHealth);
+			if (lethal && Cfg().ragdollOnHit && PushDirToGta(a_ev.b, a_ev.c, gx, gy) && !S::IS_CHAR_IN_ANY_CAR(ped) && pendingKills.size() < 16) {
+				float x = 0, y = 0, z = 0, heading = 0;
+				S::GET_CHAR_COORDINATES(ped, &x, &y, &z);
+				S::GET_CHAR_HEADING(ped, &heading);
+				S::UNLOCK_RAGDOLL(ped, true);  // (some peds, gang members in their scenarios among them, have it locked)
+				bool switched = S::SWITCH_PED_TO_RAGDOLL(ped, 4000, 4000, false, false, false, false);
+				if (!switched) {
+					// Refused (a scenario such as leaning or sitting holds it): out of it, then again.
+					S::CLEAR_CHAR_TASKS_IMMEDIATELY(ped);
+					switched = S::SWITCH_PED_TO_RAGDOLL(ped, 4000, 4000, false, false, false, false);
+				}
+				const float force = 4.0f + 8.0f * std::clamp(a_ev.d, 0.0f, 2.0f);
+				Knock(ped, gx, gy, force, heading, kKnockVariant);
+				++counters.ragdolls;
+				pendingKills.push_back({ ped, a_ev, before, 0.0f, 0, x, y, z, gx, gy });
+				LC_LOG("hit on %08X is lethal (%u of %u health): ragdolled (%s) and shoved (force %.1f) first, the killing damage follows", a_ev.formId, wouldDo,
+					before, switched ? "switched" : "the switch was refused twice", force);
+				return;
+			}
 			const char* how = DamagePed(ped, a_ev.a, before, after, damage);
 			const bool  killed = S::IS_CHAR_DEAD(ped) || (damage > 0 && after == 0);  // GTA zeroes a ped's health as it dies
 			if (killed) {
 				++counters.kills;
 			}
-			const bool crit = (a_ev.flags & proto::kHitCritical) != 0;
-			int        ragdollMs = 0;
-			float      gx = 0.0f, gy = 0.0f;
+			int ragdollMs = 0;
 			if (Cfg().ragdollOnHit && !killed && PushDirToGta(a_ev.b, a_ev.c, gx, gy)) {
 				ragdollMs = RagdollMs(a_ev.d, crit);
 				if (ragdollMs > 0) {
@@ -974,7 +1094,49 @@ namespace lc::Combat
 				before, after, killed ? ", killed" : "", crit ? ", critical" : "", (a_ev.flags & proto::kHitProjectile) ? ", projectile" : "",
 				ragdollMs ? ", ragdoll" : "");
 			if (damage > 0) {
-				AfterAttack(ped, type, killed, a_frame);
+				AfterAttack(ped, type, killed, a_frame, 0, CrimeForAttack(a_ev.flags, a_ev.weapon, type == kPedTypeCop));
+			}
+		}
+
+		// The killing damage of lethal hits, once the ragdoll has the ped (at least 2 frames, then as
+		// soon as IS_PED_RAGDOLL says so, at most 0.3 s).
+		void PendingKills(const Frame& a_frame)
+		{
+			for (auto it = pendingKills.begin(); it != pendingKills.end();) {
+				PendingKill& k = *it;
+				k.age += a_frame.dt;
+				++k.frames;
+				const bool exists = S::DOES_CHAR_EXIST(k.ped);
+				if (exists && !S::IS_CHAR_DEAD(k.ped) && (k.frames < 2 || (!S::IS_PED_RAGDOLL(k.ped) && k.age < 0.3f))) {
+					++it;
+					continue;
+				}
+				if (exists && !S::IS_CHAR_DEAD(k.ped)) {
+					const bool ragdolled = S::IS_PED_RAGDOLL(k.ped);
+					unsigned   before = 0, after = 0, damage = 0;
+					S::GET_CHAR_HEALTH(k.ped, &before);
+					const char* how = DamagePed(k.ped, k.ev.a, before ? before : k.before, after, damage);
+					const bool  killed = S::IS_CHAR_DEAD(k.ped) || (damage > 0 && after == 0);
+					if (killed) {
+						++counters.kills;
+					}
+					float x = 0, y = 0, z = 0;
+					S::GET_CHAR_COORDINATES(k.ped, &x, &y, &z);
+					unsigned type = 0;
+					S::GET_PED_TYPE(k.ped, &type);
+					LC_LOG("hit %s %08X for %.2f Minecraft -> %u GTA damage (%s) %.2f s after its ragdoll (%s): health %u -> %u%s%s; moved %.2f m along the push "
+						   "so far",
+						PedTypeName(type), k.ev.formId, k.ev.a, damage, how, k.age, ragdolled ? "ragdolled" : "NOT ragdolled", before, after, killed ? ", killed" : "",
+						(k.ev.flags & proto::kHitProjectile) ? ", projectile" : "", (x - k.x) * k.gx + (y - k.y) * k.gy);
+					if (shoves.size() < 16) {
+						const float force = 4.0f + 8.0f * std::clamp(k.ev.d, 0.0f, 2.0f);
+						shoves.push_back({ k.ped, k.x, k.y, k.z, kKnockbackCheckSeconds, force, k.gx, k.gy, 0.0f, kKnockVariant });
+					}
+					if (damage > 0) {
+						AfterAttack(k.ped, type, killed, a_frame, 0, CrimeForAttack(k.ev.flags, k.ev.weapon, type == kPedTypeCop));
+					}
+				}
+				it = pendingKills.erase(it);
 			}
 		}
 
@@ -1216,7 +1378,7 @@ namespace lc::Combat
 						++counters.kills;
 					}
 					if (pedDamage > 0) {
-						AfterAttack(occupant, type, killed, a_frame, strike.seat == kSeatDriver ? veh : 0);
+						AfterAttack(occupant, type, killed, a_frame, strike.seat == kSeatDriver ? veh : 0, CrimeForAttack(a_ev.flags, a_ev.weapon, type == kPedTypeCop));
 					}
 					if (killed && seatWatch.size() < 8) {
 						float sp = 0.0f;
@@ -1234,7 +1396,8 @@ namespace lc::Combat
 				if (const int driver = Occupant(veh, kSeatDriver, a_frame.ped)) {
 					unsigned type = 0;
 					S::GET_PED_TYPE(driver, &type);
-					AfterAttack(driver, type, false, a_frame, veh);
+					// (Its car took the hit: a police car's is an attack on the police, anyone else's damage to property.)
+					AfterAttack(driver, type, false, a_frame, veh, type == kPedTypeCop ? kCrimeHitCop : kCrimeDamageToProperty);
 				}
 			}
 			char where[112];
@@ -1379,6 +1542,11 @@ namespace lc::Combat
 			++counters.explosions;
 			LC_LOG("Minecraft explosion (radius %.1f blocks) -> ADD_EXPLOSION type %d radius %.1f m at GTA %.1f %.1f %.1f, %.1f m from the player, shake %.2f%s",
 				a_ev.d, Cfg().explosionType, radius, c.x, c.y, c.z, dist, shake, proofSet ? " (player explosion-proof)" : "");
+			// (Only a blast near the player is his doing as far as GTA's police can tell.)
+			if (Cfg().gtaCrimes && a_frame.exists && dist < 40.0f && ReportGtaCrime(kCrimeCauseExplosion, nullptr)) {
+				++counters.crimes;
+				LC_LOG("crime: Minecraft's explosion -> GTA IV's report CAUSE_EXPLOSION");
+			}
 		}
 
 		// ---- the player's health while puppeting -----------------------------------------------------------
@@ -2302,6 +2470,7 @@ namespace lc::Combat
 		testCar = TestCar{};
 		seenVehicles.clear();
 		shield = Shield{};  // (the ped is going away)
+		pendingKills.clear();
 		ClearActorTable();
 	}
 
@@ -2393,6 +2562,7 @@ namespace lc::Combat
 		}
 		UpdateShield(a_frame);
 		UpdateHudHealth(a_frame);
+		PendingKills(a_frame);
 		UpdateKill(a_frame);
 		CheckShoves(a_frame.dt);
 		CheckSeats(a_frame.dt);

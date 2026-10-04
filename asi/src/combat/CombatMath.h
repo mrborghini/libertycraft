@@ -608,17 +608,55 @@ namespace lc::combat
 	inline constexpr float kCopSightMetres = 40.0f;
 	inline constexpr float kWitnessMetres = 25.0f;
 
-	inline unsigned WantedAfterAttack(unsigned a_wanted, bool a_victimCop, bool a_killed, unsigned a_copsNear, unsigned a_witnessesNear)
+	// Killing police keeps raising it, as GTA IV does: a_copKills police killed in this wanted
+	// episode (the one just killed included): 1 for 2 stars, 3 for 3, 6 for 4, 10 for 5, 15 for 6.
+	inline unsigned WantedForCopKills(unsigned a_copKills)
+	{
+		return a_copKills >= 15 ? 6u : a_copKills >= 10 ? 5u : a_copKills >= 6 ? 4u : a_copKills >= 3 ? 3u : a_copKills >= 1 ? 2u : 0u;
+	}
+
+	inline unsigned WantedAfterAttack(unsigned a_wanted, bool a_victimCop, bool a_killed, unsigned a_copsNear, unsigned a_witnessesNear, unsigned a_copKills = 0)
 	{
 		unsigned w = 0;
 		if (a_victimCop) {
-			w = a_killed ? 2u : 1u;
+			w = a_killed ? std::max(2u, WantedForCopKills(a_copKills)) : 1u;
 		} else if (a_killed) {
 			w = a_copsNear ? 2u : a_witnessesNear ? 1u : 0u;
 		} else if (a_copsNear) {
 			w = 1u;
 		}
 		return std::max(a_wanted, w);
+	}
+
+	// GTA IV's own crime types (1.0.8.0: eCrimeType, the order of the police scanner's CRIME_ names),
+	// for CCrime::ReportCrime. Points toward the wanted level as RegisterCrime adds them.
+	enum GtaCrime : int
+	{
+		kCrimeHitPed = 11,          // 5 points
+		kCrimeHitCop = 12,          // 20
+		kCrimeShootPed = 13,        // 30
+		kCrimeShootCop = 14,        // 80
+		kCrimeCauseExplosion = 22,
+		kCrimeStabPed = 23,
+		kCrimeStabCop = 24,
+		kCrimeDestroyVehicle = 25,
+		kCrimeDamageToProperty = 26,
+	};
+
+	// The crime a Minecraft attack on a ped is (a_flags: proto::HitFlags, a_weapon: proto::HitWeapon):
+	// arrows and other projectiles are shooting, a blade, axe or spear stabbing, anything else a hit.
+	inline int CrimeForAttack(std::uint32_t a_flags, std::uint32_t a_weapon, bool a_cop)
+	{
+		if (a_flags & proto::kHitExplosion) {
+			return kCrimeCauseExplosion;
+		}
+		if ((a_flags & proto::kHitProjectile) || a_weapon == proto::kWeaponArrow) {
+			return a_cop ? kCrimeShootCop : kCrimeShootPed;
+		}
+		if (a_weapon == proto::kWeaponBlade || a_weapon == proto::kWeaponAxe || a_weapon == proto::kWeaponPierce) {
+			return a_cop ? kCrimeStabCop : kCrimeStabPed;
+		}
+		return a_cop ? kCrimeHitCop : kCrimeHitPed;
 	}
 
 	// How a ped Minecraft hurt (and that survived) reacts: cops and gang members fight back, of the

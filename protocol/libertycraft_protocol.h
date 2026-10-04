@@ -231,6 +231,11 @@ namespace libertycraft::proto
 		kInReleaseAll = 6,   // release every held key/button (input focus left MC)
 		kInHurt = 7,         // Skyrim hit the player: code = HurtKind, a = Skyrim damage * 100, b = attacker FormID, c = HurtFlags
 		kInOpenMenu = 8,     // open Minecraft's pause/options menu
+		// LibertyCraft addition (a new type only; the layout and kVersion stay): one of GTA IV's bullets
+		// stopped at a Minecraft block. code = the face it hit (0 down, 1 up, 2 north, 3 south, 4 west,
+		// 5 east: Minecraft's Direction order), a, b, c = where, Minecraft coordinates * 256. Minecraft
+		// shows the block's hit particles there.
+		kInBulletImpact = 9,
 	};
 
 	enum HurtKind : std::uint16_t
@@ -426,6 +431,9 @@ namespace libertycraft::proto
 		                      // section NPCs collide with (sent after its kRenSection; 0 = none)
 		kRenDug = 11,         // RenDug + 512-byte bitset (bit x + 16z + 256y): which blocks of a section
 		                      // were dug out of Skyrim's world (its geometry there is gone); 0 = none
+		kRenLiquids = 12,     // LibertyCraft addition (a new type; the layout and kVersion stay SkyCraft's;
+		                      // a host that doesn't know it ignores it): RenLiquids + RenLiquid[count], a
+		                      // section's water and lava blocks (sent after its kRenSection; 0 = none)
 		kRenRagdoll = 9,      // RenAvatar + RenBatch[] + RenVertex[]: the player's body standing still,
 		                      // relative to the feet and facing +Z, split into its parts (RenBatch
 		                      // flags bits 8-11: RagdollPart; bit 12 kRagdollHeld: a held item, on its
@@ -514,6 +522,28 @@ namespace libertycraft::proto
 		kHazardLava = 2,   // lava: burns hard
 		kHazardMagma = 3,  // magma block: hurts what stands on top of it
 	};
+
+	// kRenLiquids: water and lava (vehicles struggle in them; lava also burns, see RenLight).
+	struct RenLiquids
+	{
+		std::int32_t  sx, sy, sz;  // section coords, as in RenSection
+		std::uint32_t count;       // liquid blocks (0: none)
+	};
+
+	enum LiquidKind : std::uint8_t
+	{
+		kLiquidNone = 0,
+		kLiquidWater = 1,
+		kLiquidLava = 2,
+	};
+
+	struct RenLiquid
+	{
+		std::uint8_t x, y, z;  // block within the section
+		std::uint8_t info;     // bits 0-3: the liquid's surface in the block, in fifteenths of a block (15: full,
+		                       // e.g. under more of it; a lone source is 13); bits 4-5: LiquidKind
+	};
+	static_assert(sizeof(RenLiquid) == 4);
 
 	struct RenLight
 	{

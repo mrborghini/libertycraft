@@ -119,9 +119,12 @@ Minecraft's `config/libertycraft.properties`.
 - [x] **M8**: blocks and your Minecraft body take and cast GTA's sun shadows (same cascades and filtering as GTA),
   both HUDs at once with GTA's health and armour mirroring Minecraft, shields block GTA hits, GTA's phone works in
   Minecraft mode
+- [x] **M9**: Minecraft blocks stop GTA's bullets, Minecraft attacks feed GTA's own crime system (wanted levels
+  escalate), killing blows ragdoll, Minecraft fire and lava burn peds and cars, cars slow and stall in Minecraft
+  water, a trimmed Minecraft HUD in vehicles
 
-Known gaps: no shadows on blocks indoors; cutscene support needs 1.0.8.0; peds take double damage from
-Minecraft explosions. (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
+Known gaps: no shadows on blocks indoors; peds wade instead of swim in Minecraft water; cutscene support needs
+1.0.8.0; peds take double damage from Minecraft explosions. (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
 
 ## Licenses
 

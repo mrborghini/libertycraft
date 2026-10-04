@@ -43,6 +43,8 @@ public final class Proto {
 	// Input types added in v5
 	public static final int IN_HURT = 7;
 	public static final int IN_OPEN_MENU = 8;
+	/** LibertyCraft: a GTA IV bullet stopped at a block (kInBulletImpact): code = face, a, b, c = position * 256. */
+	public static final int IN_BULLET_IMPACT = 9;
 	public static final int HURT_MELEE = 0;
 	public static final int HURT_PROJECTILE = 1;
 	public static final int HURT_MAGIC = 2;
@@ -138,6 +140,9 @@ public final class Proto {
 	public static final int REN_RAGDOLL = 9;
 	public static final int REN_SOLIDS = 10;
 	public static final int REN_DUG = 11;
+	/** LibertyCraft: RenLiquids (sx, sy, sz, count) + count x {x, y, z, info}: info bits 0-3 the surface in fifteenths, bits 4-5 LIQUID_*. */
+	public static final int REN_LIQUIDS = 12;
+	public static final int LIQUID_WATER = 1, LIQUID_LAVA = 2;
 	public static final int PART_HEAD = 1, PART_BODY = 2, PART_RIGHT_ARM = 3, PART_LEFT_ARM = 4, PART_RIGHT_LEG = 5, PART_LEFT_LEG = 6;
 	/** kRenRagdoll RenBatch flags bit 12: a held item (on its arm's part). */
 	public static final int RAGDOLL_HELD = 1 << 12;
