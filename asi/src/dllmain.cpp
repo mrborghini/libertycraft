@@ -29,6 +29,7 @@
 #include "Hazards.cpp"
 #include "ViewportRoom.cpp"
 #include "BlockyCity.cpp"
+#include "PauseMenu.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

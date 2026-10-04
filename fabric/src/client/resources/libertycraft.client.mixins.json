@@ -9,6 +9,7 @@
     "ClientLevelDigMixin",
     "EntityCollideMixin",
     "GameRendererHandMixin",
+    "GtaMenuPauseMixin",
     "HudWhileGtaDrivesMixin",
     "FramerateLimitTrackerMixin",
     "InputConstantsMixin",

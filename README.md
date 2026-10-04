@@ -101,7 +101,7 @@ as usual (`E` inventory, `T` chat, `F5` third person). GTA IV only keeps a few k
 | `F` | enter or steal the nearest car the GTA way. You drive with GTA's controls and the Minecraft player rides a boat in the seat; `F` again gets out and Minecraft takes over. Minecraft keeps your health in the car too (creative stays immortal, in survival crashes, gunfire and a car blowing up cost hearts); in creative peds can't drag you out |
 | `\` (Backslash) | switch between Minecraft mode and **Niko mode** (plain GTA IV, e.g. if something misbehaves); the Minecraft player follows Niko and takes over where he stands |
 | `O` | Minecraft's pause / options menu |
-| `Esc`, `F1` to `F12`, `` ` `` | GTA IV's own (pause menu, ...) |
+| `Esc`, `F1` to `F12`, `` ` `` | GTA IV's own (pause menu, ...). GTA IV's pause menu pauses a singleplayer Minecraft world and its sounds too, until the menu closes |
 
 Keys and the boat/horse/minecart mount can be changed in `GTAIV/plugins/LibertyCraft.ini` and
 Minecraft's `config/libertycraft.properties`.

@@ -51,6 +51,9 @@ namespace lc::Combat
 		bool                  vehicle = false;
 		bool                  seated = false;  // in a vehicle right now (IS_CHAR_IN_ANY_CAR)
 		bool                  mcInWorld = false;
+		// GTA's pause menu is open: Minecraft's events wait (the player's death, /time, /weather) or are
+		// dropped (hits, blasts, mob reports, bumps), and nothing acts on GTA's world meanwhile.
+		bool                  paused = false;
 		const proto::McState* mc = nullptr;  // this frame's McState, null if it couldn't be read
 		float                 dt = 0.0f;
 	};

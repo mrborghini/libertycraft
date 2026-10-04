@@ -313,6 +313,9 @@ namespace lc
 		if (auto v = get("liquidsslowpeds")) liquidsSlowPeds = ToBool(*v, liquidsSlowPeds);
 		if (auto v = get("debughazards")) debugHazards = ToBool(*v, debugHazards);
 		if (auto v = get("debugdrivethrottle")) debugDriveThrottle = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugpausemenu")) debugPauseMenu = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugpausemenucycles")) debugPauseMenuCycles = std::atoi(v->c_str());
+		if (auto v = get("debugdrivewander")) debugDriveWander = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debughazardinject")) debugHazardInject = Lower(*v);
 		if (auto v = get("citymaterials")) cityMaterials = ToBool(*v, cityMaterials);
 		if (auto v = get("debugmaterials")) debugMaterials = std::atoi(v->c_str());

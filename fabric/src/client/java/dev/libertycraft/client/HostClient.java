@@ -98,6 +98,7 @@ public final class HostClient {
 				unlinkedHold = player != null ? player.position() : null;
 			}
 		}
+		GtaMenuPause.frame(Minecraft.getInstance(), linked, sky);  // GTA IV's pause menu pauses Minecraft too
 		if (!linked) {
 			return;
 		}

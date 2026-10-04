@@ -601,6 +601,37 @@ namespace lc::Combat
 			return e.shape;
 		}
 
+		// Minecraft's events that wait while GTA's pause menu is open, and how many were dropped (Tick).
+		std::vector<proto::McEvent> heldEvents;
+		std::uint32_t               droppedWhilePaused = 0;
+
+		// Someone sits in it (Minecraft's hostile mobs go for it: kActorOccupied), read off the vehicle itself:
+		// its driver, its passengers, or the driver GTA creates for it when one is asked for (traffic that
+		// has none yet: 1.0.8.0's flag byte +0xF6D bit 6, what the vehicle's own +0x144 virtual tests).
+		// Never GET_DRIVER_OF_CAR here: on such a car that native creates the driver (the +0x14C virtual,
+		// 0x8F3560). Asked every frame for every car within the table's reach, it forced drivers into the
+		// traffic around the player, and after one to two minutes of driving GTA's pause menu could no
+		// longer load its own textures: a white map, then a crash closing the menu (PauseMenu.cpp). Measured
+		// with DebugPauseMenu and DebugDriveWander: with the native every session (9 of 9) had a menu whose
+		// textures failed by its 2nd to 4th opening; without it, or without the vehicle records, Combat=0 or
+		// Minecraft, none did in 7 openings (11 sessions).
+		constexpr std::size_t   kVehicleFlags3Byte1 = 0xF6D;
+		constexpr std::uint8_t  kDriverOnDemand = 0x40;
+
+		bool Occupied(const CVehicle* a_veh)
+		{
+			if (a_veh->m_pDriver) {
+				return true;
+			}
+			const unsigned seats = std::min<unsigned>(a_veh->m_nMaxPassengers, 8u);
+			for (unsigned i = 0; i < seats; ++i) {
+				if (a_veh->m_pPassengers[i]) {
+					return true;
+				}
+			}
+			return (reinterpret_cast<const std::uint8_t*>(a_veh)[kVehicleFlags3Byte1] & kDriverOnDemand) != 0;
+		}
+
 		// Vehicles near the player, nearest first, as pieces along their length (proto::kActorVehicle)
 		// in whatever room the peds left. The one the player uses (sits in or is getting into) goes too, as
 		// kActorPlayerVehicle: no stand-in in Minecraft, only what runs Minecraft's mobs over.
@@ -677,13 +708,7 @@ namespace lc::Combat
 				const bool     dead = S::IS_CAR_DEAD(handle);
 				unsigned       health = 0;
 				S::GET_CAR_HEALTH(handle, &health);
-				int      driver = 0;
-				unsigned passengers = 0;
-				if (!dead) {
-					S::GET_DRIVER_OF_CAR(handle, &driver);
-					S::GET_NUMBER_OF_PASSENGERS(handle, &passengers);
-				}
-				const bool occupied = driver != 0 || passengers > 0;  // (Minecraft's mobs go for it: kActorOccupied)
+				const bool     occupied = !dead && Occupied(veh);  // (Minecraft's mobs go for it: kActorOccupied)
 				unsigned model = 0;
 				S::GET_CAR_MODEL(handle, &model);
 				const char* name = S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model);
@@ -3820,10 +3845,37 @@ namespace lc::Combat
 		++counters.frames;
 		const bool playable = a_frame.exists && !a_frame.loading;
 
-		// Minecraft's events: always drained (stale hits mustn't land later), applied while in play.
+		// Minecraft's events: always drained (stale hits mustn't land later), applied while in play. While
+		// GTA's pause menu is open nothing acts on GTA's world (Minecraft pauses with it, GtaMenuPause.java,
+		// but a world open to friends keeps running, and the events of its last tick still come): the
+		// player's death, /time and /weather wait for the menu to close, the rest is dropped.
 		std::uint32_t   popped = 0;
 		proto::McEvent  ev{};
-		for (; popped < 64 && link.PopEvent(ev); ++popped) {
+		if (!a_frame.paused && !heldEvents.empty()) {
+			LC_LOG("GTA's pause menu closed: %zu Minecraft event(s) held meanwhile applied, %u dropped", heldEvents.size(), droppedWhilePaused);
+		} else if (!a_frame.paused && droppedWhilePaused) {
+			LC_LOG("GTA's pause menu closed: %u Minecraft event(s) dropped meanwhile (hits, blasts, mob reports)", droppedWhilePaused);
+		}
+		if (!a_frame.paused) {
+			droppedWhilePaused = 0;
+		}
+		for (; popped < 64; ++popped) {
+			if (!a_frame.paused && !heldEvents.empty()) {
+				ev = heldEvents.front();
+				heldEvents.erase(heldEvents.begin());
+			} else if (!link.PopEvent(ev)) {
+				break;
+			}
+			if (a_frame.paused) {
+				if (ev.type == proto::kEvPlayerDied || ev.type == proto::kEvSetTime || ev.type == proto::kEvSetWeather) {
+					if (heldEvents.size() < 16) {
+						heldEvents.push_back(ev);
+					}
+				} else {
+					++droppedWhilePaused;
+				}
+				continue;
+			}
 			if (ev.type == proto::kEvSetTime || ev.type == proto::kEvSetWeather) {
 				if (playable) {
 					SkyControl::OnEvent(ev);  // Minecraft's /time and /weather (not combat: Combat=0 or not)
@@ -3876,6 +3928,9 @@ namespace lc::Combat
 			}
 		}
 		counters.events += popped;
+		if (a_frame.paused) {
+			return popped;  // (GTA's pause menu: nothing acts on its world, see above)
+		}
 		NpcBlocks::Tick(a_frame);  // Minecraft's blocks stop GTA's peds and vehicles (its own NpcBlocks=1)
 		if (!Cfg().combat) {
 			return popped;

@@ -13,6 +13,7 @@
 #include "Doors.h"
 #include "Hazards.h"
 #include "HostDrive.h"
+#include "PauseMenu.h"
 #include "Input.h"
 #include "Link.h"
 #include "Log.h"
@@ -827,6 +828,16 @@ namespace lc::Game
 			wasMenuOpen = menuOpen;
 		}
 		shared.gtaMenuOpen = menuOpen;
+		{
+			PauseMenu::Frame pf;  // the pause menu's test hooks (PauseMenu.h)
+			pf.ped = exists ? ped : 0;
+			pf.exists = exists;
+			pf.inCar = inCar;
+			pf.paused = paused;
+			pf.loading = loading;
+			pf.dt = dt;
+			PauseMenu::Tick(pf);
+		}
 		onFootForCamera = inGame && !inCar && !cutscene && !dead;
 		// GTA IV brought the player back after "wasted" (at a hospital): Minecraft heals him and fills his
 		// food bar too. (Minecraft respawns at once with both full when it died first, but GTA can kill him
@@ -1148,10 +1159,13 @@ namespace lc::Game
 			cf.vehicle = HostDrive::VehicleInMinecraftMode();        // ...and in a vehicle (getting in, seated, getting out)
 			cf.seated = inCar;
 			cf.mcInWorld = mcInWorld;
+			cf.paused = paused;  // GTA's pause menu: nothing acts on its world (Combat.h)
 			cf.mc = haveMc ? &mc : nullptr;
 			cf.dt = dt;
 			stats.events += Combat::Tick(cf);
-			Hazards::Tick(cf);  // Minecraft's fire, lava and magma burn GTA's peds
+			if (!paused) {
+				Hazards::Tick(cf);  // Minecraft's fire, lava and magma burn GTA's peds
+			}
 		}
 
 		// ---- collision --------------------------------------------------------------------------------

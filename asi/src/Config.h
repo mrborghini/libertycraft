@@ -255,6 +255,12 @@ namespace lc
 		// test car with Niko in it dropped into GTA's own water, its engine timed (Hazards.cpp DebugHarbour).
 		bool        debugHazards = false;
 		float       debugDriveThrottle = 0.0f;  // test hook: in a car, hold GTA's accelerator this many seconds (from 1 s in)
+		// Test hooks (not in the default ini, PauseMenu.cpp): GTA's pause menu opened and closed with real Esc
+		// key events DebugPauseMenuCycles times, each DebugPauseMenu s after the player is in game (on foot in
+		// puppet mode or seated in a vehicle); GTA's AI drives the player's vehicle at DebugDriveWander m/s.
+		float debugPauseMenu = 0.0f;
+		int   debugPauseMenuCycles = 3;
+		float debugDriveWander = 0.0f;
 		std::string debugHazardInject;
 		// ---- the Minecraft body on Niko's skeleton (Body.h, render/Body.h) ----
 		// While GTA IV animates Niko itself, show the player's Minecraft body following his
