@@ -115,7 +115,13 @@ namespace lc
 			"; vehicles struggle in Minecraft water and lava (slower the deeper; deep water stalls the engine)\n"
 			"LiquidsSlowVehicles=1\n"
 			"; peds wade slower in Minecraft water\n"
-			"LiquidsSlowPeds=1\n";
+			"LiquidsSlowPeds=1\n"
+			"; a mission script that takes the player over on foot (its camera, his control off, its tasks, a minigame) gets him until it lets go\n"
+			"ScriptScenes=1\n"
+			"; Minecraft's mobs leave mission characters alone (no hunting them, no mob's hit or blast reaches them)\n"
+			"MissionPedsSafe=1\n"
+			"; GTA's cutscenes and the scripts' cameras pause Minecraft (its mobs and sounds)\n"
+			"ScenesPauseMinecraft=1\n";
 
 		std::string Lower(std::string a_s)
 		{
@@ -304,6 +310,7 @@ namespace lc
 		if (auto v = get("debuginjectenterkey")) debugInjectEnterKey = ToBool(*v, debugInjectEnterKey);
 		if (auto v = get("phonekeys")) phoneKeys = ToBool(*v, phoneKeys);
 		if (auto v = get("debugphone")) debugPhone = ToBool(*v, debugPhone);
+		if (auto v = get("debuginputscript")) debugInputScript = *v;
 		if (auto v = get("ragdollonvehiclehit")) ragdollOnVehicleHit = ToBool(*v, ragdollOnVehicleHit);
 		if (auto v = get("debugbailout")) debugBailOut = ToBool(*v, debugBailOut);
 		if (auto v = get("debugrunover")) debugRunOver = ToBool(*v, debugRunOver);
@@ -324,6 +331,13 @@ namespace lc
 		if (auto v = get("debughazardinject")) debugHazardInject = Lower(*v);
 		if (auto v = get("citymaterials")) cityMaterials = ToBool(*v, cityMaterials);
 		if (auto v = get("debugmaterials")) debugMaterials = std::atoi(v->c_str());
+		if (auto v = get("scriptscenes")) scriptScenes = ToBool(*v, scriptScenes);
+		if (auto v = get("missionpedssafe")) missionPedsSafe = ToBool(*v, missionPedsSafe);
+		if (auto v = get("scenespauseminecraft")) scenesPauseMinecraft = ToBool(*v, scenesPauseMinecraft);
+		if (auto v = get("debugmissionprobe")) debugMissionProbe = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugmissionprobeab")) debugMissionProbeAB = ToBool(*v, debugMissionProbeAB);
+		if (auto v = get("debugmissionblips")) debugMissionBlips = ToBool(*v, debugMissionBlips);
+		if (auto v = get("debugmissionwarp")) debugMissionWarp = Lower(*v);
 		if (auto v = get("minecraftbody")) minecraftBody = ToBool(*v, minecraftBody);
 		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
 		if (auto v = get("minecraftbodyvehicles")) minecraftBodyVehicles = ToBool(*v, minecraftBodyVehicles);
@@ -331,6 +345,10 @@ namespace lc
 		if (auto v = get("minecraftbodyhide")) minecraftBodyHide = Lower(*v) == "alpha" ? "alpha" : "visible";
 		if (auto v = get("minecraftbodyscale")) minecraftBodyScale = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.5f, 2.0f);
 		if (auto v = get("debugbody")) debugBody = ToBool(*v, debugBody);
+		if (auto v = get("debugbodyview")) debugBodyView = *v;
+		if (auto v = get("debugbodyviewseconds")) debugBodyViewSeconds = std::max(0.5f, static_cast<float>(std::atof(v->c_str())));
+		if (auto v = get("debugbodyab")) debugBodyAB = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugtrainride")) debugTrainRide = static_cast<float>(std::atof(v->c_str()));
 
 		LC_LOG("config: Puppet=%d CameraMode=%s FovMode=%s MenuKey=%s (dik 0x%02X) Diagnostics=%d LogPerf=%d FreezePed=%d RootToFeet=%.2f (measure %d) ProbeFrom=%s ProbeHeight=%.1f CameraRows=%s",
 			puppet, cameraMode == CameraMode::kScripted ? "scripted" : "final", fovMode == FovMode::kHorizontal43 ? "horizontal43" : "vertical",
@@ -383,8 +401,16 @@ namespace lc
 		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
 			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyScale, minecraftBodyHide.c_str(),
 			debugBody ? " DebugBody=1" : "");
+		LC_LOG("config: ScriptScenes=%d MissionPedsSafe=%d ScenesPauseMinecraft=%d%s%s%s", scriptScenes, missionPedsSafe, scenesPauseMinecraft,
+			debugMissionBlips ? " DebugMissionBlips=1" : "", debugMissionWarp.empty() ? "" : " DebugMissionWarp=", debugMissionWarp.c_str());
+		if (debugMissionProbe > 0.0f) {
+			LC_LOG("config: DebugMissionProbe=%.0f%s", debugMissionProbe, debugMissionProbeAB ? " DebugMissionProbeAB=1" : "");
+		}
 		if (debugViewportRoom) {
 			LC_LOG("config: DebugViewportRoom=%d", debugViewportRoom);
+		}
+		if (!debugBodyView.empty() || debugBodyAB > 0.0f || debugTrainRide > 0.0f) {
+			LC_LOG("config: DebugBodyView=%s (%.1f s each) DebugBodyAB=%.1f DebugTrainRide=%.1f", debugBodyView.c_str(), debugBodyViewSeconds, debugBodyAB, debugTrainRide);
 		}
 	}
 

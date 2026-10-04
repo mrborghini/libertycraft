@@ -17,6 +17,8 @@
 #include "Input.h"
 #include "Link.h"
 #include "Log.h"
+#include "Missions.h"
+#include "NikoBody.h"
 #include "Perf.h"
 #include "SkyControl.h"
 #include "ViewportRoom.h"
@@ -404,17 +406,31 @@ namespace lc::Game
 			camPose.valid = false;
 			if (a_restore) {
 				if (puppetPed && S::DOES_CHAR_EXIST(puppetPed)) {
-					SettleOnGround(puppetPed);
+					// (Not for a mission script's scene: setting him down is a move that clears his tasks, the
+					// script's own among them.)
+					if (!Missions::Current().scripted) {
+						SettleOnGround(puppetPed);
+					}
 					S::FREEZE_CHAR_POSITION(puppetPed, false);
 					S::SET_CHAR_COLLISION(puppetPed, true);
-					S::SET_CHAR_INVINCIBLE(puppetPed, false);
+					// (Not for a mission script's scene: GTA makes the player safe itself while his control is
+					// off, with the same flag.)
+					if (!Missions::Current().scripted) {
+						S::SET_CHAR_INVINCIBLE(puppetPed, false);
+					}
 					if (!a_keepHidden) {
 						S::SET_CHAR_VISIBLE(puppetPed, true);
 					}
 				}
-				S::SET_PLAYER_CONTROL(puppetPlayer, true);
-				S::DISPLAY_HUD(true);
-				S::DISPLAY_RADAR(true);
+				// Only what puppet mode changed goes back: a mission script that switched the player's control
+				// off or hid GTA's HUD for its scene (and took the player over for it, Missions.h) keeps them.
+				if (!Cfg().puppetPlayerControl) {
+					S::SET_PLAYER_CONTROL(puppetPlayer, true);
+				}
+				if (!Cfg().gtaHud) {
+					S::DISPLAY_HUD(true);
+					S::DISPLAY_RADAR(true);
+				}
 				DestroyScriptCam();
 			} else {
 				scriptCam = 0;  // the game is reloading: its cameras are gone anyway
@@ -706,6 +722,7 @@ namespace lc::Game
 		LeavePuppet("the game is loading a save", false);
 		Combat::OnIngameStartup();
 		HostDrive::OnIngameStartup();
+		Missions::OnIngameStartup();
 		ViewportRoom::OnIngameStartup();
 		BlockyCity::OnIngameStartup();
 		teleportPending = true;
@@ -870,6 +887,23 @@ namespace lc::Game
 		BlockyCity::Tick(mcCity && mcAlive && !loading, dt);
 		const McVec feetMc = GtaToMc(feet);
 
+		// ---- mission scripts: a scene that has the player on foot, cutscenes, phone calls (Missions.h) ------
+		Missions::Frame missionFrame;
+		missionFrame.player = player;
+		missionFrame.ped = exists ? ped : 0;
+		missionFrame.exists = exists;
+		missionFrame.loading = loading;
+		missionFrame.paused = paused;
+		missionFrame.dead = dead;
+		missionFrame.inCar = inCar;
+		missionFrame.cutscene = cutscene;
+		missionFrame.puppeting = puppeting;
+		missionFrame.minecraftMode = !shared.nikoMode;
+		missionFrame.mcInWorld = mcInWorld;
+		missionFrame.ownScriptCam = scriptCam;
+		missionFrame.dt = dt;
+		const Missions::State mission = Missions::Tick(missionFrame);
+
 		// ---- who drives: Minecraft, or GTA IV (Niko mode, vehicles, cutscenes; HostDrive.h) -------------
 		HostDrive::Frame driveFrame;
 		driveFrame.player = player;
@@ -880,6 +914,7 @@ namespace lc::Game
 		driveFrame.dead = dead;
 		driveFrame.inCar = inCar;
 		driveFrame.cutscene = cutscene;
+		driveFrame.scripted = mission.scripted;
 		driveFrame.puppeting = puppeting;
 		driveFrame.mcInWorld = mcInWorld;
 		driveFrame.haveMc = haveMc;
@@ -1119,7 +1154,10 @@ namespace lc::Game
 		proto::SkyState sky{};
 		sky.flags = (inGame ? proto::kSkyInGame : 0u) | (paused ? proto::kSkyMenuOpen : 0u) | (loading ? proto::kSkyLoading : 0u)
 		          | (drive.hostDrives ? proto::kSkyHostDrives : 0u) | (drive.inVehicle ? proto::kSkyInVehicle : 0u)
-		          | (inGame ? SkyControl::WeatherBits() : 0u);  // GTA IV's weather, for Minecraft's (SkyControl)
+		          | (inGame ? SkyControl::WeatherBits() : 0u)  // GTA IV's weather, for Minecraft's (SkyControl)
+		          | (inGame && Input::PhoneOut() ? proto::kSkyPhoneOut : 0u)
+		          | (inGame && mission.scene ? proto::kSkyScene : 0u)            // a cutscene or a script's camera: Minecraft pauses
+		          | (inGame && mission.phoneCall ? proto::kSkyPhoneCall : 0u);   // a phone call: Minecraft's sounds duck
 		SkyControl::Tick(dt, inGame && !loading && !paused);
 		sky.worldId = worldId;
 		sky.collisionEpoch = epoch;
@@ -1160,6 +1198,7 @@ namespace lc::Game
 			cf.seated = inCar;
 			cf.mcInWorld = mcInWorld;
 			cf.paused = paused;  // GTA's pause menu: nothing acts on its world (Combat.h)
+			cf.scene = mission.scene;  // a cutscene or a script's camera: Minecraft's mobs rest (Combat.h)
 			cf.mc = haveMc ? &mc : nullptr;
 			cf.dt = dt;
 			stats.events += Combat::Tick(cf);
@@ -1223,6 +1262,9 @@ namespace lc::Game
 			cam->m_fFOV = GtaFov(camPose.fovDeg);
 			++stats.cameraWrites;
 			return;
+		}
+		if (!puppeting && rows.known && NikoBody::DebugCamera(m)) {
+			return;  // the DebugBodyView test hook
 		}
 		if ((!rows.known || (rowsPinned && !rowsChecked)) && !puppeting) {
 			DiscoverRows(m);

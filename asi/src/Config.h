@@ -230,6 +230,9 @@ namespace lc
 		// Test hook (not in the default ini): real key events that take the phone out, open the
 		// contacts, scroll and put it away again, and a log of which pad controls each key feeds.
 		bool debugPhone = false;
+		// Test hook: input events for Minecraft at set times after puppet mode first starts, '|'
+		// separated "seconds:kSCANCODE:1|0" (an SDL key down/up) or "seconds:mBUTTON:1|0" (SDL mouse button).
+		std::string debugInputScript;
 		// Any vehicle running into the puppeted player (cars, bikes, boats, helicopters and their
 		// spinning rotors, planes, trains; or one of GTA's explosions hurting them) knocks them over:
 		// GTA ragdolls Niko along the hit and keeps him until he is back on his feet, the hit hurts
@@ -286,12 +289,39 @@ namespace lc
 		// (DebugBody: once a second, plus a ped scan in cutscenes).
 		std::string minecraftBodyHide = "visible";
 		bool        debugBody = false;
+		// Test hook: while GTA drives the player, the camera looks at him from these views in turn,
+		// each "angle,distance,height" (degrees counter-clockwise from his front: 90 his left side;
+		// metres), separated by '|', DebugBodyViewSeconds each.
+		std::string debugBodyView;
+		float       debugBodyViewSeconds = 5.0f;
+		// Test hook: N s with the Minecraft body, N s without it (Niko, or Minecraft's rider), in turn.
+		float debugBodyAB = 0.0f;
+		// Test hook: N s into play the player is put into the nearest train carriage as a passenger
+		// (WARP_CHAR_INTO_CAR_AS_PASSENGER), and the ride is logged every 2 s.
+		float debugTrainRide = 0.0f;
 		// ---- the blocky city (BlockyCity.h; collision/Rays.h) ----
 		// Collision triangles carry GTA's material of the surface they were probed on (kTriGtaMaterial),
 		// for the blocky city's blocks. Not in the default ini: DebugMaterials=1 logs the line probes'
 		// raw result fields (finding where the material is).
 		bool cityMaterials = true;
 		int  debugMaterials = 0;
+		// ---- mission scripts (Missions.h, drive/SceneLogic.h) ----
+		// A mission script that takes the player over on foot (his control off, its camera, its tasks, a
+		// minigame) gets him: GTA IV drives him until it lets go, the Minecraft body on Niko (0: puppet mode
+		// fights the script, as before).
+		bool scriptScenes = true;
+		// Minecraft's mobs leave mission characters (and the vehicles they sit in) alone: no hunting them,
+		// no mob's hit or blast reaches them; GTA's peds who are on a mission never fight or flee mobs.
+		bool missionPedsSafe = true;
+		// GTA's cutscenes and the scripts' cameras pause Minecraft like GTA's pause menu (kSkyScene).
+		bool scenesPauseMinecraft = true;
+		// Test hooks (not in the default ini): a mission scene as a script plays one, N s into play
+		// (DebugMissionProbe); the radar's blips logged once (DebugMissionBlips); the player put at a
+		// contact's blip 20 s into play, e.g. "roman,vlad" or "any" (DebugMissionWarp).
+		float       debugMissionProbe = 0.0f;
+		bool        debugMissionProbeAB = false;  // ...twice: first with ScriptScenes off, then on
+		bool        debugMissionBlips = false;
+		std::string debugMissionWarp;
 
 		static Config& Get();
 		// Loads <asi dir>/LibertyCraft.ini (creating it with defaults if absent). Logs what it got.

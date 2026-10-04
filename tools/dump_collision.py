@@ -45,12 +45,14 @@ def load():
         if typ == 0:
             pos += DATA - p
             continue
-        if typ > 3 or n > DATA:
+        if typ > 4 or n > DATA:
             pos += 8
             continue
         body = OFF_COL + 0x80 + p + 8
         msgs += 1
-        if typ == 1:
+        if typ == 4:
+            pass  # kColForget: a far column GTA IV no longer tracks (Minecraft drops it once the player is far)
+        elif typ == 1:
             epoch = struct.unpack_from("<I", m, body)[0]
             tris.clear()
             vox.clear()

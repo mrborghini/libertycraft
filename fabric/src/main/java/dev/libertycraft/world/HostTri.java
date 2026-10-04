@@ -1,13 +1,17 @@
 package dev.libertycraft.world;
 
-/** One exact GTA IV collision triangle in Minecraft space, with precomputed plane and bounds. */
+/**
+ * One exact GTA IV collision triangle in Minecraft space, with precomputed plane and bounds. Kept as
+ * floats (GTA IV sends floats; the normal is worked out in double and rounded once): a long drive holds
+ * hundreds of thousands of these, so each one is 96 bytes instead of 168.
+ */
 public final class HostTri {
 	/** Surfaces at most ~45 degrees from flat can be walked on. */
 	public static final double WALKABLE_NY = 0.7;
 
-	public final double ax, ay, az, bx, by, bz, cx, cy, cz;
-	public final double nx, ny, nz; // unit normal (winding is not trusted; use |ny|)
-	public final double minX, minY, minZ, maxX, maxY, maxZ;
+	public final float ax, ay, az, bx, by, bz, cx, cy, cz;
+	public final float nx, ny, nz; // unit normal (winding is not trusted; use |ny|)
+	public final float minX, minY, minZ, maxX, maxY, maxZ;
 	public final boolean stairHelper;
 	public final boolean walkable;
 	/** Ground, rock, trees...: can be dug into. Its normal then faces out of the solid side. */
@@ -39,8 +43,8 @@ public final class HostTri {
 		this.cx = v[o + 6];
 		this.cy = v[o + 7];
 		this.cz = v[o + 8];
-		double ux = this.bx - this.ax, uy = this.by - this.ay, uz = this.bz - this.az;
-		double wx = this.cx - this.ax, wy = this.cy - this.ay, wz = this.cz - this.az;
+		double ux = (double) this.bx - this.ax, uy = (double) this.by - this.ay, uz = (double) this.bz - this.az;
+		double wx = (double) this.cx - this.ax, wy = (double) this.cy - this.ay, wz = (double) this.cz - this.az;
 		double qx = uy * wz - uz * wy, qy = uz * wx - ux * wz, qz = ux * wy - uy * wx;
 		double len = Math.sqrt(qx * qx + qy * qy + qz * qz);
 		if (len < 1e-12) {
@@ -48,9 +52,9 @@ public final class HostTri {
 			this.ny = 1;
 			this.nz = 0;
 		} else {
-			this.nx = qx / len;
-			this.ny = qy / len;
-			this.nz = qz / len;
+			this.nx = (float) (qx / len);
+			this.ny = (float) (qy / len);
+			this.nz = (float) (qz / len);
 		}
 		this.minX = Math.min(this.ax, Math.min(this.bx, this.cx));
 		this.minY = Math.min(this.ay, Math.min(this.by, this.cy));

@@ -54,6 +54,9 @@ namespace lc::Combat
 		// GTA's pause menu is open: Minecraft's events wait (the player's death, /time, /weather) or are
 		// dropped (hits, blasts, mob reports, bumps), and nothing acts on GTA's world meanwhile.
 		bool                  paused = false;
+		// A cutscene or a mission script's camera is shown (Missions.h): Minecraft pauses, and what its mobs
+		// still do (a world open to friends keeps running) is dropped: their hits, blasts and reports.
+		bool                  scene = false;
 		const proto::McState* mc = nullptr;  // this frame's McState, null if it couldn't be read
 		float                 dt = 0.0f;
 	};

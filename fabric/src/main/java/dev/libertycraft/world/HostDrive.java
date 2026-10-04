@@ -154,6 +154,13 @@ public final class HostDrive {
 		MountType type = (flags & FLAG_IN_VEHICLE) != 0 ? mountType : MountType.NONE;
 		if (type == MountType.NONE) {
 			dropMount(player, st);
+			// Riding something of Minecraft's own (a horse) when GTA IV took Niko (Niko mode, a knockdown, a
+			// cutscene): off it, so the player follows him; the horse stays where it is.
+			Entity own = player.getVehicle();
+			if (own != null && !isMount(own)) {
+				player.stopRiding();
+				LibertyCraft.LOG.info("[LibertyCraft] {} got off the {}: GTA IV drives Niko", player.getPlainTextName(), own.getType().toShortString());
+			}
 			return;
 		}
 		Entity mount = st.mount;

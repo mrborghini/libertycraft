@@ -5,16 +5,17 @@
 // Minecraft sends its player's body standing still (kRenRagdoll): blocks relative to the feet,
 // facing +Z with +X the player's left and +Y up, split into Minecraft's six parts (RenBatch flags
 // bits 8-11, proto::RagdollPart; held items ride their arm). Each part stays a rigid piece hung at
-// its joint, sized to Niko: Minecraft's upper body (torso, arms; 1.17 m from the hips to the top
-// of the head, Niko's is about 0.85 m) is scaled by Niko's hips -> neck length over Minecraft's,
-// the head so that its top is where Niko's is (Minecraft's head is twice a person's), so the body
-// covers Niko and stays inside a car, and the legs keep the torso's thickness but take Niko's leg
-// length (thigh + shin + ankle height), so the feet reach the ground. MinecraftBodyScale scales
-// all but the legs' length on top. GTA's bones turn and place the parts:
-//  - the body (torso) leans and turns with GTA's hips -> neck line and its shoulder line,
-//  - each leg points along GTA's hip -> ankle line (the hips' sideways line keeps its roll),
-//  - the whole figure moves up or down so that its lower sole meets GTA's lower sole (a bent knee
-//    makes the straight Minecraft leg reach further: the figure rises a little),
+// its joint, and the whole figure keeps Minecraft's own proportions: every part is scaled by the
+// same factor, Niko's height over the Minecraft player's (kNikoFit, times MinecraftBodyScale), so
+// it looks like a Minecraft player of his size, never stretched to his bones (his legs are longer,
+// his head half the size). GTA's bones turn and place the parts:
+//  - the body (torso) leans and turns with GTA's hips -> neck line and its shoulder line, from
+//    Minecraft's hips, which sit lower than Niko's (his legs are longer),
+//  - seated (a car seat, a sofa: SeatedAmount) the figure is smaller (kSeatFit), as the Minecraft
+//    torso and head are taller than Niko's, so its head stays under the roof and its hips on the seat,
+//  - the whole figure moves up or down so that its lower sole meets GTA's lower sole, but never so
+//    high that the top of its head is over Niko's (kHeadRoom; then it sinks into the seat),
+//  - each leg points from its (Minecraft) hip at GTA's sole, so the feet stay where his are,
 //  - each arm points from its (Minecraft) shoulder at GTA's hand, so hands meet a steering wheel,
 //  - the head turns with GTA's head bone (its axes named by a HeadMap: kNikoHead, or CalibrateHead).
 //
@@ -127,10 +128,21 @@ namespace lc::render::body
 	// ---- GTA's skeleton ----------------------------------------------------------------------------
 	inline constexpr float kAnkleHeight = 0.11f;  // GTA's ankle (foot bone) above its sole, metres (measured standing: 0.10 to 0.12)
 	inline constexpr float kMaxLift = 0.6f;       // the sole match moves the figure at most this far
-	inline constexpr float kMinScale = 0.6f, kMaxScale = 1.2f;  // the upper body's size against Minecraft's
 	inline constexpr float kSkullTop = 0.2f;  // GTA's head bone (the skull's base) to the top of the head, metres
 	inline constexpr float kHeadPx = 8.0f;    // Minecraft's head: 8 model pixels
-	inline constexpr float kMaxLegStretch = 2.0f;  // legs at most this much longer than the upper body's scale makes them
+	inline constexpr float kHeadRoom = 0.03f;  // the top of the Minecraft head at most this far over Niko's (metres)
+	// The Minecraft player's height (soles to the top of the head, 32 model pixels) and Niko's,
+	// measured standing (the first pose in the log: ankles 0.80 m under the hips, 0.11 m over the
+	// soles; the head bone 0.66 m over the hips, kSkullTop under the top): 1.77 m.
+	inline constexpr float kModelHeight = kNeckY + kHeadPx * kPx;
+	inline constexpr float kNikoHeight = 1.77f;
+	inline constexpr float kNikoFit = kNikoHeight / kModelHeight;  // about 0.94
+	// Seated (a car seat, a chair) the Minecraft torso and head are taller than Niko's: from his hips
+	// to the top of his head he is 0.86 m (measured), Minecraft's 20 model pixels over its hips,
+	// 1.17 m. Seated the whole figure is this size instead, so its head stays under the roof and its
+	// hips on the seat (sinking it into the seat instead put its legs under the car's floor).
+	inline constexpr float kNikoSeatedTop = 0.86f;
+	inline constexpr float kSeatFit = (kNikoSeatedTop + 0.03f) / (20.0f * kPx);  // about 0.76
 
 	// Joint positions (GTA axes, relative to the caller's origin) and the head bone's axes.
 	struct Skeleton
@@ -267,13 +279,37 @@ namespace lc::render::body
 		// identity (as Minecraft holds them), or collapsed (HideHeld). A batch with no valid part is
 		// drawn as the body.
 		Part  part[proto::kPartCount];
-		float lift = 0.0f;              // metres the sole match moved the figure (up positive)
-		float scale = 1.0f;             // the upper body's size against Minecraft's
-		float headScale = 1.0f;         // the head's
-		float legScale = 1.0f;          // the legs' length against Minecraft's
+		float lift = 0.0f;              // metres the figure moved from Niko's hips (up positive)
+		float sink = 0.0f;              // of that, how far under the sole match the head room took it (seated)
+		float scale = 1.0f;             // every part's size against Minecraft's
 		M3    torso;                    // the body's frame (GTA axes)
 		bool  headFromBone = false;
+		bool  hideBack = false;         // the cape and elytra (kRagdollBack) out of sight: seated they hung through the seat
 	};
+
+	// How much a_s sits (0 standing, 1 seated): both thighs (hip -> knee) raised from the pelvis's down
+	// line, from 40 degrees (a stride, a crouch) to 70 (seated). A running stride has a thigh behind,
+	// so only both raised counts.
+	inline float SeatedAmount(const Skeleton& a_s)
+	{
+		if (!a_s.knees) {
+			return 0.0f;
+		}
+		const V3 hipC = (a_s.hipL + a_s.hipR) * 0.5f;
+		const M3 pelvis = Frame(a_s.hipL - a_s.hipR, a_s.neck - hipC);
+		const V3 down = pelvis.c[1] * -1.0f;
+		float    amount = 1.0f;
+		for (int side = 0; side < 2; ++side) {
+			const V3    thigh = Normalize(side ? a_s.kneeL - a_s.hipL : a_s.kneeR - a_s.hipR, down);
+			const float deg = std::acos(std::clamp(Dot(thigh, down), -1.0f, 1.0f)) * 57.29578f;
+			const float t = std::clamp((deg - 40.0f) / 30.0f, 0.0f, 1.0f);
+			amount = std::min(amount, t * t * (3.0f - 2.0f * t));
+		}
+		return amount;
+	}
+
+	// The body's size for a_seated (SeatedAmount, smoothed): kNikoFit standing, kSeatFit seated.
+	inline float ScaleFor(float a_seated) { return kNikoFit + (kSeatFit - kNikoFit) * std::clamp(a_seated, 0.0f, 1.0f); }
 
 	// Niko's leg, hip to sole (thigh + shin + ankle height; hip to ankle without knees).
 	inline float LegLength(const Skeleton& a_s, bool a_left)
@@ -282,9 +318,10 @@ namespace lc::render::body
 		return (a_s.knees ? Length(knee - hip) + Length(ankle - knee) : Length(ankle - hip)) + kAnkleHeight;
 	}
 
-	// The standing body's parts onto a_s. a_map: the head bone's axes (invalid: the head turns with
-	// the body).
-	inline Pose Solve(const Skeleton& a_s, const HeadMap& a_map, float a_userScale = 1.0f)
+	// The standing body's parts onto a_s, every part a_scale times Minecraft's size (kNikoFit: Niko's
+	// height; ScaleFor). a_map: the head bone's axes (invalid: the head turns with the body). a_seated
+	// (SeatedAmount): how much the hips stay where Niko's are instead of the soles meeting his.
+	inline Pose Solve(const Skeleton& a_s, const HeadMap& a_map, float a_scale = kNikoFit, float a_seated = 0.0f)
 	{
 		Pose      out;
 		const V3  hipC = (a_s.hipL + a_s.hipR) * 0.5f;
@@ -293,35 +330,58 @@ namespace lc::render::body
 		const M3  torso = Frame(a_s.shoulderL - a_s.shoulderR, up, pelvis.c[0]);
 		const V3  down = pelvis.c[1] * -1.0f;
 		out.torso = torso;
-		// Sizes: the upper body by Niko's hips -> neck, the legs by his leg length.
-		const float user = std::clamp(a_userScale, 0.5f, 2.0f);
-		const float k = std::clamp(Length(up) / (kNeckY - kHipY), kMinScale, kMaxScale) * user;
-		const float legs = 0.5f * (LegLength(a_s, true) + LegLength(a_s, false)) / kLegLength;
-		const float ls = std::clamp(legs, k, k * kMaxLegStretch);
-		const V3    sk{ k, k, k }, sLeg{ k, ls, k };
+		const float k = std::clamp(a_scale, 0.3f, 2.0f);
+		const V3    sk{ k, k, k };
 		out.scale = k;
-		out.legScale = ls;
 
-		// Legs: along GTA's hip -> ankle lines, from Minecraft's hips.
-		M3 leg[2];
-		V3 legJoint[2];
+		// Head: GTA's head bone (or the body's turn), on Minecraft's neck.
+		M3 head = torso;
+		if (a_s.headOk && a_map.Valid()) {
+			const M3 h = HeadFrame(a_s.headAxes, a_map);
+			// A head turned further than a person can turn one: the map is wrong for this skeleton.
+			if (Dot(h.c[1], torso.c[1]) > 0.0f && Dot(h.c[2], torso.c[2]) > -0.2f) {
+				head = h;
+				out.headFromBone = true;
+			}
+		}
+
+		// Up or down: the lower sole onto GTA's lower sole, Minecraft's (shorter) legs along GTA's hip
+		// -> ankle lines; but the top of the head no higher than Niko's.
 		float mcSole = 1e9f;
 		for (int side = 0; side < 2; ++side) {
 			const bool left = side == 1;
 			const V3   dir = Normalize((left ? a_s.ankleL : a_s.ankleR) - (left ? a_s.hipL : a_s.hipR), down);
-			leg[side] = Then(Arc(down, dir, pelvis.c[0]), pelvis);
-			legJoint[side] = hipC + Apply(pelvis, (HipJoint(left) - HipCentre()) * k);
-			mcSole = std::min(mcSole, (legJoint[side] + Apply(leg[side], LegEnd() * ls)).z);
+			const V3   joint = hipC + Apply(pelvis, (HipJoint(left) - HipCentre()) * k);
+			mcSole = std::min(mcSole, (joint + dir * (kLegLength * k)).z);
 		}
-		// The lower sole onto GTA's lower sole.
+		// Seated the hips stay on the seat: the shorter Minecraft legs dangle short of the floor.
 		const float gtaSole = std::min(a_s.ankleL.z, a_s.ankleR.z) - kAnkleHeight;
-		out.lift = std::clamp(gtaSole - mcSole, -kMaxLift, kMaxLift);
-		const V3 lift{ 0.0f, 0.0f, out.lift };
-		const V3 hip = hipC + lift;
+		const float soleLift = (gtaSole - mcSole) * (1.0f - std::clamp(a_seated, 0.0f, 1.0f));
+		float       lift = soleLift;
+		if (a_s.headPos) {
+			const V3    neck = hipC + Apply(torso, (NeckJoint() - HipCentre()) * k);
+			const float mcTop = (neck + head.c[1] * (kHeadPx * kPx * k)).z;
+			const float nikoTop = (a_s.head + head.c[1] * kSkullTop).z;
+			lift = std::min(lift, nikoTop + kHeadRoom - mcTop);
+		}
+		out.lift = std::clamp(lift, -kMaxLift, kMaxLift);
+		out.sink = std::max(0.0f, std::clamp(soleLift, -kMaxLift, kMaxLift) - out.lift);
+		const V3 hip = hipC + V3{ 0.0f, 0.0f, out.lift };
 
 		out.part[proto::kPartBody] = MakePart(torso, HipCentre(), hip, sk);
-		out.part[proto::kPartRightLeg] = MakePart(leg[0], HipJoint(false), legJoint[0] + lift, sLeg);
-		out.part[proto::kPartLeftLeg] = MakePart(leg[1], HipJoint(true), legJoint[1] + lift, sLeg);
+
+		// Legs: from Minecraft's hips at GTA's soles (the hips' sideways line keeps its roll).
+		for (int side = 0; side < 2; ++side) {
+			const bool left = side == 1;
+			const V3   joint = hip + Apply(pelvis, (HipJoint(left) - HipCentre()) * k);
+			const V3   sole = (left ? a_s.ankleL : a_s.ankleR) - V3{ 0.0f, 0.0f, kAnkleHeight };
+			V3         to = sole - joint;
+			if (Length(to) < 0.05f) {
+				to = (left ? a_s.ankleL : a_s.ankleR) - (left ? a_s.hipL : a_s.hipR);
+			}
+			const M3 leg = Then(Arc(down, Normalize(to, down), pelvis.c[0]), pelvis);
+			out.part[left ? proto::kPartLeftLeg : proto::kPartRightLeg] = MakePart(leg, HipJoint(left), joint, sk);
+		}
 
 		// Arms: from Minecraft's shoulders at GTA's hands.
 		for (int side = 0; side < 2; ++side) {
@@ -337,24 +397,7 @@ namespace lc::render::body
 			out.part[left ? proto::kPartLeftArm : proto::kPartRightArm] = MakePart(arm, ShoulderJoint(left), joint, sk);
 		}
 
-		// Head: GTA's head bone, on Minecraft's neck, its top where Niko's is.
-		M3 head = torso;
-		if (a_s.headOk && a_map.Valid()) {
-			const M3 h = HeadFrame(a_s.headAxes, a_map);
-			// A head turned further than a person can turn one: the map is wrong for this skeleton.
-			if (Dot(h.c[1], torso.c[1]) > 0.0f && Dot(h.c[2], torso.c[2]) > -0.2f) {
-				head = h;
-				out.headFromBone = true;
-			}
-		}
-		float kh = k;
-		if (a_s.headPos) {
-			const float nikoTop = Dot(a_s.head + head.c[1] * kSkullTop - hipC, torso.c[1]);  // above the hips, along the body
-			const float mcNeck = k * (kNeckY - kHipY);
-			kh = std::clamp((nikoTop - mcNeck) / (kHeadPx * kPx), 0.6f * k, k);
-		}
-		out.headScale = kh;
-		out.part[proto::kPartHead] = MakePart(head, NeckJoint(), hip + Apply(torso, (NeckJoint() - HipCentre()) * k), V3{ kh, kh, kh });
+		out.part[proto::kPartHead] = MakePart(head, NeckJoint(), hip + Apply(torso, (NeckJoint() - HipCentre()) * k), sk);
 		out.part[proto::kPartNone] = IdentityPart();
 		return out;
 	}
@@ -455,12 +498,16 @@ namespace lc::render::body
 			const std::uint32_t part = PartOf(b.flags);
 			const Part&         p = a_pose.part[part == proto::kPartNone ? proto::kPartBody : part];
 			const bool          held = (b.flags & proto::kRagdollHeld) != 0;
+			const bool          gone = a_pose.hideBack && (b.flags & proto::kRagdollBack) != 0;
 			const std::size_t   end = std::min<std::size_t>(a_in.size(), std::size_t(b.first) + b.count);
 			for (std::size_t i = b.first; i < end; ++i) {
 				Vertex   v = a_in[i];
 				V3       s{ v.x, v.y, v.z };
 				if (held) {
 					s = Transform(a_pose.part[proto::kPartNone], s);
+				}
+				if (gone) {
+					s = NeckJoint();  // every vertex on one point: nothing drawn
 				}
 				const V3 g = Transform(p, s);
 				v.x = g.x;

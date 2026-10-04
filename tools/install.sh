@@ -424,7 +424,7 @@ if (( MINECRAFT )); then
     fi
     defaults=(ConfigVersion=1.3 "name=$LC_INSTANCE_NAME" iconKey=default
       "notes=Managed by LibertyCraft (tools/install.sh). Started by tools/launch.sh; runs hidden while GTA IV shows the game."
-      MinMemAlloc=1024 MaxMemAlloc=4096 OverrideConsole=true ShowConsole=false AutoCloseConsole=false ShowConsoleOnError=true)
+      MinMemAlloc=1024 MaxMemAlloc=8192 OverrideConsole=true ShowConsole=false AutoCloseConsole=false ShowConsoleOnError=true)
     if (( DRY_RUN )); then
       plan "instance.cfg [General]: ${enforce[*]}"
       plan "instance.cfg defaults (if unset): ${defaults[*]}"

@@ -98,7 +98,8 @@ public final class HostClient {
 				unlinkedHold = player != null ? player.position() : null;
 			}
 		}
-		GtaMenuPause.frame(Minecraft.getInstance(), linked, sky);  // GTA IV's pause menu pauses Minecraft too
+		GtaMenuPause.frame(Minecraft.getInstance(), linked, sky);  // GTA IV's pause menu (and its scenes) pause Minecraft too
+		SoundDuck.frame(Minecraft.getInstance(), linked, sky);     // GTA IV's phone calls duck Minecraft's sounds
 		if (!linked) {
 			return;
 		}
@@ -220,6 +221,7 @@ public final class HostClient {
 		}
 		publishTick(minecraft);
 		DevAutorun.tick(minecraft, linked);
+		CrouchWatch.tick(minecraft);  // (why the player crouches, when it isn't the sneak key: log only)
 	}
 
 	/**

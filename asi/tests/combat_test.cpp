@@ -423,6 +423,18 @@ static void TestVehicles()
 
 	CHECK(Near(VehicleDamageFromMc(7.0f, 15.0f), 105.0f));
 	CHECK(VehicleDamageFromMc(0.0f, 15.0f) == 0.0f && VehicleDamageFromMc(5.0f, 0.0f) == 0.0f);
+	// Sword blows dent: a Sharpness V netherite crit (15) twenty times leaves the engine smoking, never burning.
+	float engine = 1000.0f;
+	for (int i = 0; i < 20; ++i) {
+		engine = EngineAfterVehicleHit(engine, VehicleDamageFromMc(15.0f, 15.0f), true);
+	}
+	CHECK(Near(engine, kMeleeEngineFloor));
+	CHECK(Near(EngineAfterVehicleHit(1000.0f, 180.0f, true), 910.0f));
+	CHECK(Near(EngineAfterVehicleHit(200.0f, 180.0f, true), 200.0f));  // already under the floor: left as it is
+	CHECK(Near(EngineAfterVehicleHit(-100.0f, 180.0f, true), -100.0f));  // burning: a blow doesn't finish it
+	// Arrows and rockets keep their full damage.
+	CHECK(Near(EngineAfterVehicleHit(100.0f, 180.0f, false), -80.0f));
+	CHECK(Near(EngineAfterVehicleHit(500.0f, 0.0f, false), 500.0f));
 }
 
 // Where a hit lands on a car (ADMIRAL-like model box: 1.98 x 5.0 x 1.5 m, origin 0.6 m above ground).

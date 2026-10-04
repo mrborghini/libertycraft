@@ -30,6 +30,7 @@
 #include "ViewportRoom.cpp"
 #include "BlockyCity.cpp"
 #include "PauseMenu.cpp"
+#include "Missions.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

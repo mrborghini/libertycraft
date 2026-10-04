@@ -10,6 +10,7 @@
 #include "Coords.h"
 #include "Link.h"
 #include "Log.h"
+#include "Missions.h"
 #include "combat/CombatMath.h"
 
 #include <algorithm>
@@ -113,9 +114,12 @@ namespace lc::MobFight
 			return 0;
 		}
 
+		// (Never a mission character: a script runs it, and told to run or shoot it walked out of its mission,
+		// the date ran off. Missions.h)
 		bool Usable(int a_ped, int a_player)
 		{
-			return a_ped && a_ped != a_player && S::DOES_CHAR_EXIST(a_ped) && !S::IS_CHAR_DEAD(a_ped) && !S::IS_CHAR_IN_ANY_CAR(a_ped) && !S::IS_PED_RAGDOLL(a_ped);
+			return a_ped && a_ped != a_player && S::DOES_CHAR_EXIST(a_ped) && !S::IS_CHAR_DEAD(a_ped) && !S::IS_CHAR_IN_ANY_CAR(a_ped) && !S::IS_PED_RAGDOLL(a_ped) &&
+			       !Missions::IsMissionPed(a_ped);
 		}
 
 		void Order(int a_ped, const Mob& a_mob, bool a_cop, const char* a_why)
@@ -409,7 +413,8 @@ namespace lc::MobFight
 
 	void Attacked(int a_ped, bool a_killed, int a_vehicle, float a_pushX, float a_pushY)
 	{
-		if (a_vehicle && !a_killed && Cfg().pedsFightMobs && a_ped && S::DOES_CHAR_EXIST(a_ped) && !S::IS_CHAR_DEAD(a_ped) && S::DOES_VEHICLE_EXIST(a_vehicle)) {
+		if (a_vehicle && !a_killed && Cfg().pedsFightMobs && a_ped && S::DOES_CHAR_EXIST(a_ped) && !S::IS_CHAR_DEAD(a_ped) && S::DOES_VEHICLE_EXIST(a_vehicle) &&
+			!Missions::IsMissionPed(a_ped)) {
 			// A mob is at the car: its driver drives off (not the player, whom GTA IV's own controls drive).
 			CPed* player = FindPlayerPed();
 			const int playerPed = player && CPools::ms_pPedPool ? static_cast<int>(CPools::ms_pPedPool->GetIndex(player)) : 0;

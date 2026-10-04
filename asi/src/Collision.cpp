@@ -62,6 +62,7 @@ namespace lc
 			int                                  rx = 0, rz = 0;
 			std::uint32_t                        epoch = 0;
 			bool                                 clear = false;
+			bool                                 forget = false;  // kColForget for the column (rx, rz)
 			std::shared_ptr<const col::Column>   data;
 			std::shared_ptr<const std::vector<col::Tri>> objTris;  // street furniture merged into the regions
 			std::vector<int>                     rys;
@@ -903,16 +904,33 @@ namespace lc
 			perf.objMaxMs = std::max(perf.objMaxMs, oms);
 		}
 
-		// Bound memory: forget columns well outside the harvest area.
+		// Bound memory: forget columns well outside the harvest area, and tell Minecraft (kColForget, through
+		// the worker so it follows every region already queued for them): it may drop them too, as they are
+		// probed and sent again before the player gets near.
 		if (frameNo % 120 == 0 && columns.size() > std::size_t((2 * kRadius + 5) * (2 * kRadius + 5))) {
+			std::vector<std::uint64_t> forgotten;
 			for (auto it = columns.begin(); it != columns.end();) {
 				const int cx = static_cast<int>(static_cast<std::int32_t>(it->first >> 32)), cz = static_cast<int>(static_cast<std::int32_t>(it->first & 0xFFFFFFFF));
 				if ((std::abs(cx - prx) > kRadius + 2 || std::abs(cz - prz) > kRadius + 2) && !(active && activeKey == it->first)) {
 					refreshLeft -= it->second.stale && refreshLeft ? 1 : 0;
+					forgotten.push_back(it->first);
 					it = columns.erase(it);
 				} else {
 					++it;
 				}
+			}
+			if (!forgotten.empty()) {
+				std::lock_guard lock(mutex);
+				for (const auto key : forgotten) {
+					Job job{};
+					job.rx = static_cast<int>(static_cast<std::int32_t>(key >> 32));
+					job.rz = static_cast<int>(static_cast<std::int32_t>(key & 0xFFFFFFFF));
+					job.epoch = epoch;
+					job.forget = true;
+					queue.push_back(std::move(job));
+				}
+				cv.notify_one();
+				LC_LOG_EVERY(30000, "collision: %zu far columns forgotten (kColForget), %zu kept", forgotten.size(), columns.size());
 			}
 		}
 
@@ -944,6 +962,16 @@ namespace lc
 				Send(payload, proto::kColClear, job.epoch);
 				counters.clears.fetch_add(1, std::memory_order_relaxed);
 				LC_LOG("kColClear epoch %u sent", job.epoch);
+				continue;
+			}
+			if (job.forget) {
+				if (job.epoch == currentEpoch.load()) {
+					proto::ColRegion h = RegionHeader(job.rx, 0, job.rz, job.epoch, 0);
+					h.minY = h.maxY = 0;  // every height
+					std::vector<std::uint8_t> payload(sizeof(h));
+					std::memcpy(payload.data(), &h, sizeof(h));
+					Send(payload, proto::kColForget, job.epoch);
+				}
 				continue;
 			}
 			if (job.epoch != currentEpoch.load() || !job.data) {

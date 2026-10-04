@@ -50,3 +50,9 @@ add_executable(hazard_test hazard_test.cpp)
 target_include_directories(hazard_test PRIVATE ../src ../../protocol)
 target_compile_options(hazard_test PRIVATE -Wall -Wextra -O2)
 add_test(NAME hazard_test COMMAND hazard_test)
+
+# drive/SceneLogic.h (mission scripts): when a script has the player, and DriveLogic's Why::kScript.
+add_executable(scene_test scene_test.cpp)
+target_include_directories(scene_test PRIVATE ../src)
+target_compile_options(scene_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME scene_test COMMAND scene_test)

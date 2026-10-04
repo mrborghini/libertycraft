@@ -103,7 +103,7 @@ assert struct.calcsize(ACTOR_FMT) == 64
 
 INPUT_TYPES = {1: "Key", 2: "MouseButton", 3: "Scroll", 4: "Cursor", 5: "Text", 6: "ReleaseAll", 7: "Hurt", 8: "OpenMenu", 9: "BulletImpact",
                10: "Restore", 11: "MobHit"}
-COL_TYPES = {0: "Pad", 1: "Clear", 2: "Region", 3: "Tris"}
+COL_TYPES = {0: "Pad", 1: "Clear", 2: "Region", 3: "Tris", 4: "Forget"}
 
 # SDL3 scancodes -> names, for printing kInKey.
 SDL_NAMES = {i: chr(ord("A") + i - 4) for i in range(4, 30)}
@@ -244,6 +244,11 @@ class Bridge:
                         stats["last_tri"] = f"tri ({v[0]:.1f},{v[1]:.2f},{v[2]:.1f}) ({v[3]:.1f},{v[4]:.2f},{v[5]:.1f}) ({v[6]:.1f},{v[7]:.2f},{v[8]:.1f}) flags {v[9]:#x}"
                 if verbose:
                     print(f"  collision: {COL_TYPES[typ]} ({mnx},{mny},{mnz})..({mxx},{mxy},{mxz}) epoch {epoch} count {count}")
+            elif typ == 4:
+                mnx, mny, mnz, mxx, mxy, mxz, epoch, count = struct.unpack_from("<iiiiiiII", self.m, p)
+                stats["forgets"] += 1
+                if verbose:
+                    print(f"  collision: Forget column ({mnx},{mnz})..({mxx},{mxz}) epoch {epoch}")
             else:
                 print(f"  collision: unknown message type {typ} ({n} bytes)")
             tail += (8 + n + 7) & ~7
@@ -838,7 +843,7 @@ def main():
     demo_feet, demo_yaw = None, 0.0
     next_demo_mesh = 0.0
     last_host_pid = host_pid
-    stats = dict(clears=0, regions=0, blocks=0, tri_msgs=0, tris=0, pads=0, bytes=0, last="", last_tri="")
+    stats = dict(clears=0, regions=0, blocks=0, tri_msgs=0, tris=0, forgets=0, pads=0, bytes=0, last="", last_tri="")
     combat_t0 = None  # when combat flags start (first teleport ack + --combat-delay)
     walk_from, walk_t0 = None, None  # --walk-to: start point and start time
     combat_state = dict(next_hit=0.0, next_blast=0.0, next_actors=0.0, died_sent=False)
@@ -988,9 +993,9 @@ def main():
                     if line != last_sky:
                         print(line)
                         last_sky = line
-                if stats["regions"] or stats["tri_msgs"] or stats["clears"]:
+                if stats["regions"] or stats["tri_msgs"] or stats["clears"] or stats["forgets"]:
                     print(f"collision (1 s): {stats['regions']} regions / {stats['blocks']} blocks, {stats['tri_msgs']} tri msgs / "
-                          f"{stats['tris']} tris, {stats['pads']} pads, {stats['bytes'] >> 10} KiB")
+                          f"{stats['tris']} tris, {stats['forgets']} columns forgotten, {stats['pads']} pads, {stats['bytes'] >> 10} KiB")
                     if stats["last"]:
                         print(f"  last {stats['last']}")
                     if stats["last_tri"]:

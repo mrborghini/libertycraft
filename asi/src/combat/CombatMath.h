@@ -684,6 +684,27 @@ namespace lc::combat
 		return std::min(a_mcDamage * a_scale, 100000.0f);
 	}
 
+	// A blow (a sword, an axe, a fist: no arrow, rocket or fire) only dents a vehicle: the body takes
+	// all of it, the engine half, and never below kMeleeEngineFloor (GTA's engine smokes under 400
+	// and burns under 0), so no number of sword hits sets a car on fire or blows it up; a crit is
+	// just a bigger dent. Arrows and rockets keep their full damage (and can wreck it).
+	inline constexpr float kMeleeEngineShare = 0.5f;
+	inline constexpr float kMeleeEngineFloor = 300.0f;
+
+	inline float EngineAfterVehicleHit(float a_engine, float a_damage, bool a_melee)
+	{
+		if (!(a_damage > 0.0f)) {
+			return a_engine;
+		}
+		if (!a_melee) {
+			return a_engine - a_damage;
+		}
+		if (a_engine <= kMeleeEngineFloor) {
+			return a_engine;
+		}
+		return std::max(kMeleeEngineFloor, a_engine - a_damage * kMeleeEngineShare);
+	}
+
 	// ---- crimes (GtaCrimes) ----------------------------------------------------------------------
 	// Minecraft's hits never go through GTA IV's own damage path with the player as the attacker, so
 	// its crime system never sees them. The rules it would apply, roughly: hurting a cop is always a

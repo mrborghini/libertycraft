@@ -87,6 +87,14 @@ public class HostActorEntity extends LivingEntity {
 		return (this.hostFlags() & Proto.ACTOR_VEHICLE) != 0;
 	}
 
+	/**
+	 * A mission character (a ped a GTA IV mission script owns) or a vehicle one sits in (Proto.ACTOR_MISSION):
+	 * Minecraft's mobs leave it alone (PedTargets, {@link #canBeSeenAsEnemy}) and their hits don't reach it.
+	 */
+	public boolean isMission() {
+		return (this.hostFlags() & Proto.ACTOR_MISSION) != 0;
+	}
+
 	/** A dead ped's body on the ground (not a wreck): hit and pushed, never solid. */
 	public boolean isHostCorpse() {
 		return (this.hostFlags() & (Proto.ACTOR_DEAD | Proto.ACTOR_VEHICLE)) == Proto.ACTOR_DEAD;
@@ -128,6 +136,10 @@ public class HostActorEntity extends LivingEntity {
 		// knocks over and wrecks the real peds and vehicles itself: Minecraft's firework damage (and its
 		// push) on the stand-ins would hit them a second time.
 		if (source.is(net.minecraft.world.damagesource.DamageTypes.FIREWORKS) && dev.libertycraft.link.Link.active()) {
+			return false;
+		}
+		// A mob's blow, arrow or blast doesn't reach a mission's character (a creeper failed a date mission).
+		if (this.isMission() && source.getEntity() instanceof net.minecraft.world.entity.Mob) {
 			return false;
 		}
 		return super.hurtServer(level, source, amount);
@@ -310,6 +322,12 @@ public class HostActorEntity extends LivingEntity {
 		if (!this.isAlive() || other instanceof HostActorEntity || this.isHostCorpse()) {
 			return false;
 		}
+		// Dropped items and experience aren't pushed around by GTA IV's peds and cars: a ped stepping
+		// onto an item made it overlap a solid entity, so vanilla turned its physics off and it sank
+		// through GTA's ground (which is no real block) into the void.
+		if (other instanceof net.minecraft.world.entity.item.ItemEntity || other instanceof net.minecraft.world.entity.ExperienceOrb) {
+			return false;
+		}
 		if (other instanceof net.minecraft.world.entity.player.Player) {
 			return this.isHostVehicle() && this.level().isClientSide();
 		}
@@ -333,7 +351,7 @@ public class HostActorEntity extends LivingEntity {
 	public boolean canBeSeenAsEnemy() {
 		int flags = this.hostFlags();
 		boolean target = this.isHostVehicle() ? (flags & (Proto.ACTOR_OCCUPIED | Proto.ACTOR_DEAD)) == Proto.ACTOR_OCCUPIED : !this.isHostCorpse();
-		return target && super.canBeSeenAsEnemy();
+		return target && !this.isMission() && super.canBeSeenAsEnemy();
 	}
 
 	/** An occupied vehicle's piece (kActorOccupied), not a wreck. */

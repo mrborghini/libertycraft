@@ -12,6 +12,9 @@
 // is full. Far columns get REQUEST_COLLISION_AT_POSN first; a column with no collision at all
 // (not streamed in yet) is retried, not sent empty. The 3x3 columns around the player are
 // re-checked every second with a few probes and re-probed when they changed (late streaming).
+// Columns more than 7 regions away are forgotten (every 2 s once over 225 are held) and Minecraft
+// is told so (kColForget, through the worker after the column's queued regions), so it can drop
+// them too instead of keeping every region of a long drive.
 // Also writes the water grid (collision/Water.h).
 //
 // Street furniture (lamp posts, bins, benches...: GTA objects, not map collision) comes from a

@@ -9,6 +9,7 @@
 #include "render/World.h"
 
 #include "Config.h"
+#include "Input.h"
 #include "Log.h"
 
 #include <algorithm>
@@ -55,6 +56,8 @@ namespace lc::NikoBody
 				return "cutscene";
 			case drive::Why::kRagdoll:
 				return "knocked over";
+			case drive::Why::kScript:
+				return "mission scene";
 			default:
 				return "none";
 			}
@@ -110,16 +113,20 @@ namespace lc::NikoBody
 		bool          cachedOk = false;
 		double        cachedOrigin[3]{};
 		float         cachedParts[7][3][4]{};
+		bool          cachedHideBack = false;
 
 		// stats / DebugBody
 		std::uint32_t frames = 0, failed = 0, headFrames = 0;
 		std::uint32_t heldHiddenFrames = 0, cameraInsideFrames = 0;  // held items away (seated); parts hidden around the camera
-		bool          lastSeated = false;
+		bool          lastSeated = false, lastPhone = false;
+		float         seatedSmooth = 0.0f;  // B::SeatedAmount, eased
+		std::uint64_t seatedAt = 0;
 		std::uint32_t lastInside = 0;
-		double        liftSum = 0.0, limbMotion = 0.0;
+		double        liftSum = 0.0, sinkSum = 0.0, limbMotion = 0.0;
 		B::V3         lastLimbs[4]{};
 		bool          haveLimbs = false;
 		std::uint64_t nextStats = 0, nextDebug = 0, nextScanLog = 0;
+		B::V3         prevPedPos{}, lastPedPos{};  // the target ped's position last frame (DebugBody)
 
 		// A cutscene actor's bone (a_offset along the bone's own axes, like GET_PED_BONE_POSITION's).
 		bool ReadObjectBone(CObject* a_obj, unsigned a_bone, float a_ox, float a_oy, float a_oz, B::V3& a_out)
@@ -287,7 +294,9 @@ namespace lc::NikoBody
 					best = handle;
 				}
 			}
-			const int found = best ? best : S::IS_CHAR_VISIBLE(a_player) ? a_player : 0;
+			// (The player ped once the body is on him stays the one: he is invisible because we hid him, and
+			// dropping him then showed him again every other frame.)
+			const int found = best ? best : (S::IS_CHAR_VISIBLE(a_player) || target == a_player) ? a_player : 0;
 			if (log) {
 				LC_LOG("cutscene scan: %d other peds of the player's model; following %d", sameModel, found);
 				LogCutsceneObjects(player, cam.x, cam.y, cam.z);
@@ -413,9 +422,9 @@ namespace lc::NikoBody
 				v(a_s.ankleR));
 			LC_LOG("  shoulders L %s R %s, hands L %s R %s", v(a_s.shoulderL), v(a_s.shoulderR), v(a_s.handL), v(a_s.handR));
 			const auto& t = a_pose.torso;
-			LC_LOG("  neck %s, knees L %s R %s; body frame left %s up %s forward %s; lift %.2f m, upper body x %.2f, legs x %.2f", v(a_s.neck), v(a_s.kneeL),
-				v(a_s.kneeR), v(t.c[0]), v(t.c[1]), v(t.c[2]), a_pose.lift, a_pose.scale, a_pose.legScale);
-			LC_LOG("  head bone %s above the pelvis: the Minecraft head x %.2f", v(a_s.head), a_pose.headScale);
+			LC_LOG("  neck %s, knees L %s R %s; body frame left %s up %s forward %s; lift %.2f m (%.2f m of it sunk under the sole match), every part x %.2f",
+				v(a_s.neck), v(a_s.kneeL), v(a_s.kneeR), v(t.c[0]), v(t.c[1]), v(t.c[2]), a_pose.lift, a_pose.sink, a_pose.scale);
+			LC_LOG("  head bone %s above the pelvis", v(a_s.head));
 			LC_LOG("  head bone axes x %s y %s z %s (%s)", v(a_s.headAxes[0]), v(a_s.headAxes[1]), v(a_s.headAxes[2]),
 				a_s.headOk ? "a rotation" : "not usable");
 			// GTA's "left" bones on the ped's left: the ped's right row (CMatrix right = x).
@@ -471,10 +480,33 @@ namespace lc::NikoBody
 					op.x, op.y, op.z, a_origin[0], a_origin[1], a_origin[2], cp.x, cp.y, cp.z, *reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const std::uint8_t*>(targetObj) + 0x24),
 					targetObj->m_nAlpha, copies);
 			}
-			LC_LOG("DebugBody: %s %d (%s) visible %d, lift %.2f, head %s, right hand (left/up/forward of the hips) %.2f %.2f %.2f, limbs moved %.2f m in 1 s%s",
-				a_ped ? "ped" : "cutscene object", a_ped ? a_ped : targetObjHandle, WhyName(targetWhy), a_ped ? S::IS_CHAR_VISIBLE(a_ped) : targetObjShown ? 1 : 0, a_pose.lift, a_pose.headFromBone ? "from its bone" : "with the body", B::Dot(h, t.c[0]), B::Dot(h, t.c[1]),
+			LC_LOG("DebugBody: %s %d (%s) visible %d, size x %.2f (seated %.2f), lift %.2f (sunk %.2f), head %s, right hand (left/up/forward of the hips) %.2f %.2f %.2f, limbs moved %.2f m in 1 s%s",
+				a_ped ? "ped" : "cutscene object", a_ped ? a_ped : targetObjHandle, WhyName(targetWhy), a_ped ? S::IS_CHAR_VISIBLE(a_ped) : targetObjShown ? 1 : 0, a_pose.scale,
+				seatedSmooth, a_pose.lift, a_pose.sink, a_pose.headFromBone ? "from its bone" : "with the body", B::Dot(h, t.c[0]), B::Dot(h, t.c[1]),
 				B::Dot(h, t.c[2]), limbMotion, ground);
 			limbMotion = 0.0;
+			// Seated: where the bones are in the vehicle (its right / forward / up axes), against the
+			// ped's position this frame and last frame (bones a frame behind a moving car trail it).
+			int veh = 0;
+			if (a_ped && S::IS_CHAR_IN_ANY_CAR(a_ped)) {
+				S::GET_CAR_CHAR_IS_USING(a_ped, &veh);
+			}
+			CVehicle* v = veh && CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(veh)) : nullptr;
+			CPed*     p = CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(a_ped)) : nullptr;
+			if (v && v->m_pMatrix && p && p->m_pMatrix) {
+				const auto& vm = *v->m_pMatrix;
+				const B::V3 ax[3] = { { vm.right.x, vm.right.y, vm.right.z }, { vm.up.x, vm.up.y, vm.up.z }, { vm.at.x, vm.at.y, vm.at.z } };
+				const B::V3 pelvis{ float(a_origin[0]), float(a_origin[1]), float(a_origin[2]) };
+				const B::V3 pedNow{ p->m_pMatrix->pos.x, p->m_pMatrix->pos.y, p->m_pMatrix->pos.z };
+				const B::V3 car{ vm.pos.x, vm.pos.y, vm.pos.z };
+				auto in = [&](B::V3 a) { return B::V3{ B::Dot(a, ax[0]), B::Dot(a, ax[1]), B::Dot(a, ax[2]) }; };
+				const B::V3 a = in(pelvis - pedNow), b = in(pelvis - prevPedPos), c = in(pedNow - car), d = in(pelvis - car);
+				float speed = 0.0f;
+				S::GET_CAR_SPEED(veh, &speed);
+				LC_LOG("DebugBody: in vehicle %d at %.1f m/s: the pelvis bone from the ped's position (right forward up) %.2f %.2f %.2f, from last frame's %.2f %.2f %.2f; "
+					   "the ped from the vehicle's origin %.2f %.2f %.2f, the pelvis %.2f %.2f %.2f",
+					veh, speed, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
+			}
 		}
 
 		void Stats()
@@ -486,21 +518,91 @@ namespace lc::NikoBody
 			const bool any = frames || failed || staleFrames;
 			nextStats = now + 10000;
 			if (any) {
-				LC_LOG("stats 10s: Minecraft body posed in %u frames (%s, %s %d; %u failed reads, %u stale cutscene poses), lift %.2f m on average, head from its bone in %u; "
-					   "held items hidden (seated) in %u, parts hidden around the camera in %u",
+				LC_LOG("stats 10s: Minecraft body posed in %u frames (%s, %s %d; %u failed reads, %u stale cutscene poses), lift %.2f m on average (sunk %.2f m under the "
+					   "sole match), head from its bone in %u; held items hidden (seated, phone) in %u, parts hidden around the camera in %u",
 					frames, WhyName(targetWhy), target ? "ped" : "cutscene object", target ? target : targetObjHandle, failed, staleFrames, frames ? liftSum / frames : 0.0,
-					headFrames, heldHiddenFrames, cameraInsideFrames);
+					frames ? sinkSum / frames : 0.0, headFrames, heldHiddenFrames, cameraInsideFrames);
 			}
 			frames = failed = headFrames = staleFrames = heldHiddenFrames = cameraInsideFrames = 0;
-			liftSum = 0.0;
+			liftSum = sinkSum = 0.0;
+		}
+	}
+
+	namespace
+	{
+		// DebugTrainRide (test hook): the nearest train carriage, and the player put into it.
+		void DebugTrainTick(int a_player)
+		{
+			const float after = Config::Get().debugTrainRide;
+			static std::uint64_t start = 0, nextLog = 0;
+			static int           phase = 0, train = 0;
+			auto*                pool = CPools::ms_pVehiclePool;
+			CPed*                ped = FindPlayerPed();
+			if (after <= 0.0f || !a_player || !pool || !ped || !ped->m_pMatrix) {
+				return;
+			}
+			const auto now = ::GetTickCount64();
+			if (!start) {
+				start = now;
+			}
+			if (now < nextLog) {
+				return;
+			}
+			nextLog = now + 2000;
+			const auto& pp = ped->m_pMatrix->pos;
+			int         nearest = 0, count = 0;
+			float       best = 1e30f;
+			for (int i = pool->FindNextUsed(0); i >= 0; i = pool->FindNextUsed(i + 1)) {
+				CVehicle* v = pool->Get(i);
+				if (!v || !v->m_pMatrix || v->m_nVehicleType != VEHICLE_TYPE_TRAIN) {
+					continue;
+				}
+				++count;
+				const auto& m = v->m_pMatrix->pos;
+				const float d = std::sqrt((m.x - pp.x) * (m.x - pp.x) + (m.y - pp.y) * (m.y - pp.y) + (m.z - pp.z) * (m.z - pp.z));
+				if (d < best) {
+					best = d;
+					nearest = static_cast<int>(pool->GetIndex(v));
+				}
+			}
+			float speed = 0.0f;
+			if (phase == 0) {
+				if (nearest) {
+					S::GET_CAR_SPEED(nearest, &speed);
+				}
+				LC_LOG("DebugTrainRide: %d train carriages, the nearest %d %.0f m away at %.1f m/s", count, nearest, nearest ? best : 0.0f, speed);
+				if (nearest && double(now - start) >= after * 1000.0) {
+					S::WARP_CHAR_INTO_CAR_AS_PASSENGER(a_player, nearest, 0);
+					train = nearest;
+					phase = 1;
+					LC_LOG("DebugTrainRide: the player put into train carriage %d as a passenger", nearest);
+				}
+				return;
+			}
+			if (train && S::DOES_VEHICLE_EXIST(train)) {
+				S::GET_CAR_SPEED(train, &speed);
+			}
+			LC_LOG("DebugTrainRide: in any car %d, in any train %d, the carriage at %.1f m/s, the player at %.1f %.1f %.1f, visible %d", S::IS_CHAR_IN_ANY_CAR(a_player),
+				S::IS_CHAR_IN_ANY_TRAIN(a_player), speed, pp.x, pp.y, pp.z, S::IS_CHAR_VISIBLE(a_player));
 		}
 	}
 
 	int Target(int a_player, drive::Why a_why, bool a_hostDrives, bool a_mcInWorld)
 	{
+		DebugTrainTick(a_player);
 		const auto& c = Config::Get();
-		const bool  wanted = c.minecraftBody && a_hostDrives && a_mcInWorld && a_player && render::World::HasBody() &&
-		                    ((a_why == drive::Why::kVehicle && c.minecraftBodyVehicles) || (a_why == drive::Why::kCutscene && c.minecraftBodyCutscenes) ||
+		bool        abOff = false;  // DebugBodyAB: the B half (no body)
+		if (c.debugBodyAB > 0.0f) {
+			static bool lastAbOff = false;
+			abOff = (::GetTickCount64() / static_cast<std::uint64_t>(c.debugBodyAB * 1000.0f)) % 2 == 1;
+			if (abOff != lastAbOff) {
+				lastAbOff = abOff;
+				LC_LOG("DebugBodyAB: %s", abOff ? "B, no Minecraft body" : "A, the Minecraft body");
+			}
+		}
+		const bool  wanted = c.minecraftBody && !abOff && a_hostDrives && a_mcInWorld && a_player && render::World::HasBody() &&
+		                    ((a_why == drive::Why::kVehicle && c.minecraftBodyVehicles) ||
+		                        ((a_why == drive::Why::kCutscene || a_why == drive::Why::kScript) && c.minecraftBodyCutscenes) ||
 		                        (a_why == drive::Why::kNikoMode && c.minecraftBodyNikoMode) || a_why == drive::Why::kRagdoll);
 		int ped = 0;
 		// Cutscenes: GTA IV's own cutscene actor (an object) first, else a ped (scripted scenes).
@@ -585,7 +687,7 @@ namespace lc::NikoBody
 			}
 			std::memcpy(a_f.bodyOrigin, cachedOrigin, sizeof(cachedOrigin));
 			std::memcpy(a_f.bodyParts, cachedParts, sizeof(cachedParts));
-			a_f.flags |= render::kFrameBody;
+			a_f.flags |= render::kFrameBody | (cachedHideBack ? render::kFrameBodyHideBack : 0u);
 			return true;
 		}
 		cachedFrame = a_f.gameFrame;
@@ -601,20 +703,37 @@ namespace lc::NikoBody
 			return false;
 		}
 		Calibrate(s);
-		B::Pose pose = B::Solve(s, headMap, Config::Get().minecraftBodyScale);
+		// Seated (a car, a chair) the figure is smaller (B::kSeatFit), eased in and out as he sits
+		// down and gets up (not tumbling: a knockdown's legs fly anywhere).
+		{
+			const auto  now = ::GetTickCount64();
+			const float dt = std::clamp(float(now - seatedAt) / 1000.0f, 0.0f, 0.25f);
+			seatedAt = now;
+			const float want = targetWhy == drive::Why::kRagdoll ? 0.0f : B::SeatedAmount(s);
+			seatedSmooth += (want - seatedSmooth) * std::min(1.0f, dt * 5.0f);
+		}
+		B::Pose pose = B::Solve(s, headMap, B::ScaleFor(seatedSmooth) * Config::Get().minecraftBodyScale, seatedSmooth);
+		// A cape or an elytra hangs past the hips: seated it came out under the car's floor.
+		pose.hideBack = seatedSmooth > 0.3f || (target && S::IS_CHAR_IN_ANY_CAR(target));
 		if (target ? !loggedFirst : !loggedFirstObj) {
 			LogFirst(target, s, pose);
 		}
 		// Seated in a vehicle the held items (a sword, a shield) poked through its roof and doors: away
 		// while he is in it.
+		// GTA's phone out (a call, the phone book): his hand holds the phone, not the pickaxe at his ear.
 		const bool seated = target && S::IS_CHAR_IN_ANY_CAR(target);
-		if (seated) {
+		const bool phone = target && Input::PhoneOut();
+		if (seated || phone) {
 			B::HideHeld(pose);
 			++heldHiddenFrames;
 		}
 		if (seated != lastSeated) {
 			lastSeated = seated;
 			LC_LOG("held items %s", seated ? "hidden: the body sits in a vehicle" : "shown again (out of the vehicle)");
+		}
+		if (phone != lastPhone) {
+			lastPhone = phone;
+			LC_LOG("held items %s", phone ? "hidden: GTA's phone is out" : "shown again (the phone is away)");
 		}
 		// GTA's camera inside the body (a helicopter coming down pushed it in; the Minecraft body is
 		// bulkier than Niko): GTA's own camera (knocked over, vehicles) within 0.3 m of the body past its
@@ -623,8 +742,10 @@ namespace lc::NikoBody
 		std::uint32_t inside = 0;
 		if (a_f.flags & render::kFrameCameraValid) {
 			const B::V3 cam{ float(a_f.camPos[0] - origin[0]), float(a_f.camPos[1] - origin[1]), float(a_f.camPos[2] - origin[2]) };
-			const bool  scene = targetWhy == drive::Why::kCutscene;
-			inside = B::HideNearCamera(pose, cam, std::clamp(a_f.nearZ, 0.05f, 0.5f) + (scene ? 0.1f : 0.3f), !scene);
+			// Seated (a car, a train's cinematic cameras inside the carriage) only the parts the camera is
+			// at go too: hiding all of it made the body vanish on a train ride whenever the camera came close.
+			const bool  scene = targetWhy == drive::Why::kCutscene || targetWhy == drive::Why::kScript;
+			inside = B::HideNearCamera(pose, cam, std::clamp(a_f.nearZ, 0.05f, 0.5f) + (scene ? 0.1f : 0.3f), targetWhy == drive::Why::kRagdoll);
 		}
 		if (inside) {
 			++cameraInsideFrames;
@@ -636,15 +757,90 @@ namespace lc::NikoBody
 		lastInside = inside;
 		static_assert(sizeof(cachedParts) == sizeof(pose.part));
 		std::memcpy(cachedParts, pose.part, sizeof(cachedParts));
+		cachedHideBack = pose.hideBack;
 		std::memcpy(cachedOrigin, origin, sizeof(origin));
 		cachedOk = true;
 		std::memcpy(a_f.bodyOrigin, cachedOrigin, sizeof(cachedOrigin));
 		std::memcpy(a_f.bodyParts, cachedParts, sizeof(cachedParts));
-		a_f.flags |= render::kFrameBody;
+		a_f.flags |= render::kFrameBody | (cachedHideBack ? render::kFrameBodyHideBack : 0u);
 		++frames;
 		headFrames += pose.headFromBone ? 1 : 0;
 		liftSum += pose.lift;
+		sinkSum += pose.sink;
+		if (CPed* p = target && CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(target)) : nullptr; p && p->m_pMatrix) {
+			prevPedPos = lastPedPos;
+			lastPedPos = { p->m_pMatrix->pos.x, p->m_pMatrix->pos.y, p->m_pMatrix->pos.z };
+		}
 		Debug(target, s, pose, origin);
+		return true;
+	}
+
+	bool DebugCamera(float* a_m)
+	{
+		const std::string& spec = Config::Get().debugBodyView;
+		if (spec.empty() || !a_m) {
+			return false;
+		}
+		struct View
+		{
+			float angle, dist, height;
+		};
+		static std::vector<View> views;
+		static bool              parsed = false;
+		static int               lastView = -1;
+		static std::uint64_t     start = 0;
+		if (!parsed) {
+			parsed = true;
+			std::size_t at = 0;
+			while (at <= spec.size()) {
+				const std::size_t end = std::min(spec.find('|', at), spec.size());
+				View v{};
+				if (std::sscanf(spec.substr(at, end - at).c_str(), "%f,%f,%f", &v.angle, &v.dist, &v.height) == 3) {
+					views.push_back(v);
+				}
+				at = end + 1;
+			}
+			LC_LOG("DebugBodyView: %zu views", views.size());
+		}
+		CPed* player = FindPlayerPed();
+		if (views.empty() || !player || !player->m_pMatrix) {
+			return false;
+		}
+		const auto now = ::GetTickCount64();
+		if (!start) {
+			start = now;
+		}
+		const int i = static_cast<int>(double(now - start) / (Config::Get().debugBodyViewSeconds * 1000.0)) % static_cast<int>(views.size());
+		// Around the body's hips (the pelvis bone), turned with the ped (or the cutscene's Niko).
+		CEntity*    ref = targetObj && !target ? static_cast<CEntity*>(targetObj) : static_cast<CEntity*>(player);
+		const auto& m = *ref->m_pMatrix;
+		B::V3       c{ m.pos.x, m.pos.y, m.pos.z };
+		const bool onBody = cachedOk && (target || (targetObj && targetObjShown));
+		if (onBody) {
+			c = { float(cachedOrigin[0]), float(cachedOrigin[1]), float(cachedOrigin[2]) };
+		}
+		const B::V3 fwd = B::Normalize(B::V3{ m.up.x, m.up.y, 0.0f }, B::V3{ 0, 1, 0 });
+		const B::V3 left{ -fwd.y, fwd.x, 0.0f };
+		const View& v = views[static_cast<std::size_t>(i)];
+		const float a = v.angle * 3.14159265f / 180.0f;
+		const B::V3 pos = c + (fwd * std::cos(a) + left * std::sin(a)) * v.dist + B::V3{ 0, 0, v.height };
+		const B::V3 dir = B::Normalize(c + B::V3{ 0, 0, 0.25f } - pos, fwd);
+		const B::V3 right = B::Normalize(B::Cross(dir, B::V3{ 0, 0, 1 }), B::V3{ 1, 0, 0 });
+		const B::V3 up = B::Cross(right, dir);
+		const B::V3 rows[3] = { right, dir, up };
+		for (int k = 0; k < 3; ++k) {
+			a_m[k * 4 + 0] = rows[k].x;
+			a_m[k * 4 + 1] = rows[k].y;
+			a_m[k * 4 + 2] = rows[k].z;
+		}
+		a_m[12] = pos.x;
+		a_m[13] = pos.y;
+		a_m[14] = pos.z;
+		if (i != lastView) {
+			lastView = i;
+			LC_LOG("DebugBodyView: view %d (%.0f degrees, %.1f m, %.1f m up) at %.2f %.2f %.2f looking at %.2f %.2f %.2f (%s)", i, v.angle, v.dist, v.height, pos.x, pos.y, pos.z,
+				c.x, c.y, c.z, onBody ? "the body's hips" : "the player");
+		}
 		return true;
 	}
 

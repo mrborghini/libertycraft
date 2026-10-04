@@ -1586,6 +1586,7 @@ namespace lc::HostDrive
 		in.inCar = a_f.inCar;
 		in.gettingIn = a_f.exists && !a_f.inCar && S::IS_CHAR_GETTING_IN_TO_A_CAR(a_f.ped);
 		in.cutscene = a_f.cutscene;
+		in.scripted = a_f.scripted;
 		in.puppeting = a_f.puppeting;
 		const std::uint32_t pads = padFrames.load(std::memory_order_relaxed);
 		padLiveRun = pads != padFramesSeen ? padLiveRun + 1 : 0;
@@ -1990,7 +1991,8 @@ namespace lc::HostDrive
 		st.hostDrives = out.hostDrives;
 		st.inVehicle = out.inVehicle;
 		st.nikoMode = logic.mode() == drive::Mode::kNiko;
-		st.cutscene = out.hostDrives && out.why == drive::Why::kCutscene;
+		// (A mission script's scene hides Minecraft's HUD as a cutscene does.)
+		st.cutscene = out.hostDrives && (out.why == drive::Why::kCutscene || out.why == drive::Why::kScript);
 		st.padLocked = out.padLocked && !a_f.paused;
 		static bool lastPadLocked = false;
 		if (out.padLocked != lastPadLocked) {

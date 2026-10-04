@@ -11,6 +11,7 @@
 #include "HostDrive.h"
 #include "Link.h"
 #include "Log.h"
+#include "Missions.h"
 #include "MobFight.h"
 #include "SkyControl.h"
 #include "NpcBlocks.h"
@@ -59,6 +60,7 @@ namespace lc::Combat
 			std::uint32_t crimes = 0, fights = 0, flees = 0, driversFled = 0;
 			std::uint32_t corpseHits = 0, corpseBumps = 0, bumpNudges = 0, bumpStumbles = 0, bumpKnockdowns = 0;
 			std::uint32_t hurtsSent = 0, hurtFrames = 0, hurtDroppedIgnored = 0, hurtDroppedBlast = 0;
+			std::uint32_t mobEventsInScenes = 0, mobHitsOnMission = 0, missionActorsSent = 0;  // (Missions.h)
 			float         hurtGtaDamage = 0.0f;
 			double        gatherUs = 0.0;
 		} counters;
@@ -709,6 +711,7 @@ namespace lc::Combat
 				unsigned       health = 0;
 				S::GET_CAR_HEALTH(handle, &health);
 				const bool     occupied = !dead && Occupied(veh);  // (Minecraft's mobs go for it: kActorOccupied)
+				const bool     mission = occupied && !players && Missions::IsMissionVehicle(handle);  // (...unless a mission character sits in it)
 				unsigned model = 0;
 				S::GET_CAR_MODEL(handle, &model);
 				const char* name = S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model);
@@ -716,7 +719,8 @@ namespace lc::Combat
 				for (std::uint32_t piece = 0; piece < layout.count; ++piece) {
 					proto::ActorRecord r{};
 					r.formId = VehicleActorId(static_cast<std::uint32_t>(handle), piece);
-					r.flags = proto::kActorVehicle | (dead ? proto::kActorDead : 0u) | (players ? proto::kActorPlayerVehicle : 0u) | (occupied ? proto::kActorOccupied : 0u);
+					r.flags = proto::kActorVehicle | (dead ? proto::kActorDead : 0u) | (players ? proto::kActorPlayerVehicle : 0u) | (occupied ? proto::kActorOccupied : 0u) |
+					          (mission ? proto::kActorMission : 0u);
 					// The piece's bottom centre, in the vehicle's frame and then the world's.
 					float at[3];
 					LocalToWorld(mat, shape.centreX + layout.side[piece], shape.Middle() + layout.offset[piece], shape.bottom, at);
@@ -805,6 +809,10 @@ namespace lc::Combat
 					const bool cop = type == kPedTypeCop;
 					const bool hostile = inCombat && (RecentAttacker(static_cast<std::uint32_t>(handle)) || (cop && wanted > 0));
 					r.flags = (inCombat ? proto::kActorInCombat : 0u) | (hostile ? proto::kActorHostile : 0u);
+					if (Missions::IsMissionPed(handle)) {
+						r.flags |= proto::kActorMission;  // Minecraft's mobs leave it alone
+						++counters.missionActorsSent;
+					}
 				}
 				++typeSeen[std::min<unsigned>(type, 31)];
 				const McVec feet = GtaToMc(x, y, z - feetDrop);
@@ -1393,6 +1401,11 @@ namespace lc::Combat
 				return;
 			}
 			const int ped = HandleFromActorId(a_ev.formId, handle) ? static_cast<int>(handle) : 0;
+			if (hitByMob && ped && Missions::IsMissionPed(ped)) {
+				++counters.mobHitsOnMission;
+				LC_LOG_EVERY(2000, "a Minecraft mob's hit on mission character %d dropped", ped);
+				return;
+			}
 			unsigned  before = 0, after = 0, damage = 0;
 			if (ped && ped != a_frame.ped && S::DOES_CHAR_EXIST(ped) && !S::IS_CHAR_DEAD(ped)) {
 				S::GET_CHAR_HEALTH(ped, &before);
@@ -1668,8 +1681,9 @@ namespace lc::Combat
 		}
 
 		// Body and engine health go down by MC damage * VehicleDamageScale; an engine run below 0 burns
-		// and blows the car up a few seconds later (GTA's own way), and hitting a burning wreck-to-be
-		// blows it up at once. Where the hit landed (kEvHitPoint, followed into the car's model box)
+		// and blows the car up a few seconds later (GTA's own way), and shooting a burning wreck-to-be
+		// blows it up at once. A blow (a sword, no arrow or rocket) only dents it: half on the engine,
+		// never under a smoking 300, so swords never set a car on fire (EngineAfterVehicleHit). Where the hit landed (kEvHitPoint, followed into the car's model box)
 		// decides the rest: a blow or a projectile on a window's glass breaks that window, and a
 		// projectile through it also hits whoever sits behind it; the body only takes the damage.
 		// Explosions are left to the host's own blast (kEvExplosion), which hits the vehicle already.
@@ -1685,6 +1699,11 @@ namespace lc::Combat
 			}
 			if (a_ev.flags & proto::kHitExplosion) {
 				++counters.vehicleBlastHits;
+				return;
+			}
+			if (hitByMob && Missions::IsMissionVehicle(veh)) {
+				++counters.mobHitsOnMission;
+				LC_LOG_EVERY(2000, "a Minecraft mob's hit on vehicle %d (a mission character sits in it) dropped", veh);
 				return;
 			}
 			++counters.vehicleHits;
@@ -1716,16 +1735,21 @@ namespace lc::Combat
 			++(havePoint ? (onCar ? counters.vehiclePointsOnCar : counters.vehiclePointsOff) : counters.vehicleNoPoint);
 
 			const char* what = "damaged";
-			if (engineBefore < 0.0f && damage > 0.0f) {
-				// Already burning: one more hit finishes it.
+			// A blow (no arrow, rocket or fire) only dents it: the engine smokes at worst (CombatMath.h).
+			const bool melee = !projectile && !(a_ev.flags & proto::kHitFire);
+			if (engineBefore < 0.0f && damage > 0.0f && !melee) {
+				// Already burning: one more shot finishes it.
 				S::EXPLODE_CAR(veh, true, false);
 				what = "blown up (it was burning)";
 				++counters.wrecked;
 			} else if (damage > 0.0f) {
 				const float bodyAfter = std::max(1.0f, static_cast<float>(body) - damage);
 				S::SET_CAR_HEALTH(veh, static_cast<unsigned>(bodyAfter));
-				float engineAfter = engineBefore - damage;
-				if (engineAfter < 0.0f) {
+				float engineAfter = EngineAfterVehicleHit(engineBefore, damage, melee);
+				if (melee && engineAfter != engineBefore - damage) {
+					what = engineAfter == engineBefore ? "dented (the engine left as it is: a blow never burns it)" : "dented";
+				}
+				if (engineAfter < 0.0f && engineBefore >= 0.0f) {
 					engineAfter = -100.0f;  // on fire: GTA blows it up shortly
 					what = "set on fire";
 					++counters.wrecked;
@@ -1924,6 +1948,10 @@ namespace lc::Combat
 				SetBlastProof(a_frame.ped, true);
 			}
 			const float shake = ExplosionShake(radius, dist);
+			if (a_ev.flags & proto::kExplosionByMob) {
+				// A creeper's blast leaves the mission's characters (and the cars they sit in) standing.
+				Missions::ShieldFromMobBlast(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), radius + 4.0f);
+			}
 			S::ADD_EXPLOSION(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), Cfg().explosionType, radius, true, false, shake);
 			++counters.explosions;
 			LC_LOG("Minecraft explosion (radius %.1f blocks) -> ADD_EXPLOSION type %d radius %.1f m at GTA %.1f %.1f %.1f, %.1f m from the player, shake %.2f%s",
@@ -3781,6 +3809,10 @@ namespace lc::Combat
 					   "no hit point %u), occupants hit %u, windows %u, set on fire or blown up %u; crimes %u, fought back %u, ran %u, drivers fled %u",
 					secs, c.tableWrites ? double(c.vehiclesSent) / c.tableWrites : 0.0, c.vehicleHits, c.vehicleHitsStale, c.vehicleBlastHits, c.vehiclePointsOnCar,
 					c.vehiclePointsOff, c.vehicleNoPoint, c.occupantHits, c.windows, c.wrecked, c.crimes, c.fights, c.flees, c.driversFled);
+				if (c.mobEventsInScenes || c.mobHitsOnMission || c.missionActorsSent) {
+					LC_LOG("stats %.0fs: mission characters %.1f per table write; mob hits on them dropped %u; mob events dropped during scenes %u", secs,
+						c.tableWrites ? double(c.missionActorsSent) / c.tableWrites : 0.0, c.mobHitsOnMission, c.mobEventsInScenes);
+				}
 				if (c.corpseHits || c.corpseBumps || c.bumpNudges || c.bumpStumbles || c.bumpKnockdowns) {
 					LC_LOG("stats %.0fs: bodies: corpses hit %u, corpses pushed by the player %u; peds nudged %u frames, stumbled %u, knocked down %u", secs,
 						c.corpseHits, c.corpseBumps, c.bumpNudges, c.bumpStumbles, c.bumpKnockdowns);
@@ -3880,6 +3912,13 @@ namespace lc::Combat
 				if (playable) {
 					SkyControl::OnEvent(ev);  // Minecraft's /time and /weather (not combat: Combat=0 or not)
 				}
+				continue;
+			}
+			// A cutscene or a script's camera (Minecraft pauses for it, but a world open to friends runs on):
+			// what Minecraft's mobs do waits for no one, it is dropped.
+			if (a_frame.scene && ((ev.type == proto::kEvHitActor && (ev.flags & proto::kHitByMob)) || ev.type == proto::kEvMob ||
+									 (ev.type == proto::kEvExplosion && (ev.flags & proto::kExplosionByMob)))) {
+				++counters.mobEventsInScenes;
 				continue;
 			}
 			if (!Cfg().combat) {

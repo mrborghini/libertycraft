@@ -44,11 +44,43 @@ public final class LibertyCraft implements ModInitializer {
 		rules.set(GameRules.SPAWN_PATROLS, false, server);
 		rules.set(GameRules.SPAWN_WANDERING_TRADERS, false, server);
 		rules.set(GameRules.PLAYER_MOVEMENT_CHECK, false, server);
-		rules.set(GameRules.KEEP_INVENTORY, true, server);
+		defaultRules(server, rules);
 		rules.set(GameRules.IMMEDIATE_RESPAWN, true, server);
 		rules.set(GameRules.SHOW_ADVANCEMENT_MESSAGES, false, server);
 		server.getCommands().performPrefixedCommand(server.createCommandSourceStack().withSuppressedOutput(), "time set noon");
 		LOG.info("[LibertyCraft] mirror world configured");
+	}
+
+	private static final String DEFAULTS_FILE = "libertycraft_defaults.properties";
+
+	/**
+	 * Game rules LibertyCraft only sets once per world, as defaults the player can change with
+	 * /gamerule (the rules above are the mirror world's and set on every start): keepInventory, so a
+	 * death in Liberty City (GTA IV kills the player too) never costs the starter kit. Worlds from
+	 * before this get it once as well. Remembered in the world's libertycraft_defaults.properties.
+	 */
+	private static void defaultRules(MinecraftServer server, GameRules rules) {
+		java.nio.file.Path file = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve(DEFAULTS_FILE);
+		java.util.Properties done = new java.util.Properties();
+		if (java.nio.file.Files.isRegularFile(file)) {
+			try (var in = java.nio.file.Files.newBufferedReader(file)) {
+				done.load(in);
+			} catch (java.io.IOException e) {
+				LOG.warn("[LibertyCraft] couldn't read {}", file, e);
+			}
+		}
+		if (done.getProperty("keepInventory") == null) {
+			rules.set(GameRules.KEEP_INVENTORY, true, server);
+			done.setProperty("keepInventory", "set");
+			try {
+				java.nio.file.Files.writeString(file, "# LibertyCraft: game rule defaults already given to this world (change them with /gamerule)\nkeepInventory=set\n");
+			} catch (java.io.IOException e) {
+				LOG.warn("[LibertyCraft] couldn't write {}", file, e);
+			}
+			LOG.info("[LibertyCraft] keepInventory on for this world (a default: /gamerule keep_inventory false turns it off)");
+		} else {
+			LOG.info("[LibertyCraft] keepInventory is {} in this world (/gamerule keep_inventory)", rules.get(GameRules.KEEP_INVENTORY));
+		}
 	}
 
 	/**

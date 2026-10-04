@@ -56,9 +56,12 @@ public final class PedTargets {
 		});
 	}
 
-	/** A stand-in a mob can hunt: a living ped on foot, or a piece of a vehicle someone sits in. */
+	/**
+	 * A stand-in a mob can hunt: a living ped on foot, or a piece of a vehicle someone sits in; never a mission
+	 * character or the vehicle one sits in (Proto.ACTOR_MISSION: a creeper failed a mission, zombies chased a date off).
+	 */
 	public static boolean isPed(HostActorEntity e) {
-		return e.isAlive() && !e.isRemoved() && (e.isHostVehicle() ? e.isOccupiedVehicle() : !e.isHostCorpse());
+		return e.isAlive() && !e.isRemoved() && !e.isMission() && (e.isHostVehicle() ? e.isOccupiedVehicle() : !e.isHostCorpse());
 	}
 
 	static void addGoals(Mob mob) {

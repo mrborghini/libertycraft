@@ -115,6 +115,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 	private static final int TAG_NONE = 0;     // not known: by position (partAt)
 	private static final int TAG_PENDING = 15; // a model or item that isn't a humanoid's: by where it is, when it's done
 	private static final int TAG_HELD = 16;    // with a part: a held item (Proto.RAGDOLL_HELD)
+	private static final int TAG_BACK = 32;    // with a part: a cape or an elytra (Proto.RAGDOLL_BACK)
 	private boolean tagParts;
 	private int tag = TAG_NONE;
 	private int freeDepth;
@@ -184,6 +185,13 @@ final class AvatarExporter implements SubmitNodeCollector {
 			var dispatcher = minecraft.getEntityRenderDispatcher();
 			dispatcher.prepare(camera, minecraft.crosshairPickEntity);
 			EntityRenderState state = dispatcher.extractEntity(player, partialTick);
+			if (state instanceof ArmedEntityRenderState armed && dev.libertycraft.client.HostClient.sky().phoneOut()) {
+				// GTA IV's phone is out: the hands hold it, not the pickaxe.
+				armed.rightHandItemState.clear();
+				armed.leftHandItemState.clear();
+				armed.rightHandItemStack = net.minecraft.world.item.ItemStack.EMPTY;
+				armed.leftHandItemStack = net.minecraft.world.item.ItemStack.EMPTY;
+			}
 			CameraRenderState cameraState = minecraft.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
 			// At the origin: positions come out relative to the player's feet.
 			dispatcher.submit(state, cameraState, 0.0, 0.0, 0.0, new PoseStack(), this);
@@ -335,9 +343,9 @@ final class AvatarExporter implements SubmitNodeCollector {
 			if (quadCount == 0) {
 				continue;
 			}
-			// Index part + 7 * held.
-			int[][] byPart = new int[14][quadCount];
-			int[] counts = new int[14];
+			// Index part + 7 * held + 14 * back.
+			int[][] byPart = new int[21][quadCount];
+			int[] counts = new int[21];
 			for (int q = 0; q < quadCount; q++) {
 				int t = b.tags[q * 4];
 				int part = t & 15;
@@ -351,10 +359,10 @@ final class AvatarExporter implements SubmitNodeCollector {
 					part = partAt(cx * 0.25F, cy * 0.25F);
 					t = part;
 				}
-				int slot = part + ((t & TAG_HELD) != 0 ? 7 : 0);
+				int slot = part + ((t & TAG_HELD) != 0 ? 7 : 0) + ((t & TAG_BACK) != 0 ? 14 : 0);
 				byPart[slot][counts[slot]++] = q;
 			}
-			for (int slot = 1; slot < 14; slot++) {
+			for (int slot = 1; slot < 21; slot++) {
 				if (counts[slot] > 0) {
 					groups.add(new Group(b, slot, byPart[slot], counts[slot]));
 					vertices += counts[slot] * 6;
@@ -370,8 +378,8 @@ final class AvatarExporter implements SubmitNodeCollector {
 		int first = 0;
 		for (Group g : groups) {
 			int count = g.count() * 6;
-			int part = g.part() % 7, held = g.part() >= 7 ? Proto.RAGDOLL_HELD : 0;
-			header.putInt(g.batch().texture).putInt(first).putInt(count).putInt((g.batch().translucent ? 1 : 0) | part << 8 | held);
+			int part = g.part() % 7, held = g.part() % 14 >= 7 ? Proto.RAGDOLL_HELD : 0, back = g.part() >= 14 ? Proto.RAGDOLL_BACK : 0;
+			header.putInt(g.batch().texture).putInt(first).putInt(count).putInt((g.batch().translucent ? 1 : 0) | part << 8 | held | back);
 			for (int i = 0; i < g.count(); i++) {
 				g.batch().writeQuad(body, g.quads()[i]);
 			}
@@ -404,6 +412,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		Entity hiddenMount = HostDriveClient.riding(player) && !HostDrive.showVehicleMount() ? player.getVehicle() : null;
 		for (Entity e : level.entitiesForRendering()) {
 			if (e == player || e == hiddenMount || (!HostDrive.showVehicleMount() && HostDrive.isMount(e)) || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof HostActorEntity
+				|| (dev.libertycraft.client.GtaMenuPause.scene() && e instanceof net.minecraft.world.entity.monster.Enemy)  // (a GTA IV cutscene: no monsters in it)
 				|| e.distanceToSqr(cam) > SCENE_RANGE * SCENE_RANGE || entities >= SCENE_MAX_ENTITIES) {
 				continue;
 			}
@@ -826,6 +835,15 @@ final class AvatarExporter implements SubmitNodeCollector {
 				parts[i].render(poseStack, buffer, lightCoords, overlayCoords, tintedColor);
 			}
 			poseStack.popPose();
+			this.capture.flush();
+			this.tag = TAG_NONE;
+			return;
+		}
+		if (this.tagParts && (model instanceof net.minecraft.client.model.player.PlayerCapeModel || model instanceof net.minecraft.client.model.object.equipment.ElytraModel)) {
+			// A cape or an elytra: on the body, flagged, as it hangs past the hips (a seated body hides it).
+			this.capture.flush();
+			this.tag = Proto.PART_BODY | TAG_BACK;
+			model.renderToBuffer(poseStack, buffer, lightCoords, overlayCoords, tintedColor);
 			this.capture.flush();
 			this.tag = TAG_NONE;
 			return;

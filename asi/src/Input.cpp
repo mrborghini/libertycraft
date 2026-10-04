@@ -934,12 +934,48 @@ namespace lc::Input
 		counters.padZeroed.fetch_add(1, std::memory_order_relaxed);
 	}
 
+	// DebugInputScript (test hook): Minecraft input events at set times after puppet mode first starts.
+	void InputScriptTick(float a_dt)
+	{
+		const std::string& spec = Config::Get().debugInputScript;
+		static float       t = -1.0f;
+		static std::size_t at = 0;
+		if (spec.empty() || at >= spec.size()) {
+			return;
+		}
+		if (t < 0.0f) {
+			if (!captured) {
+				return;
+			}
+			t = 0.0f;
+			LC_LOG("DebugInputScript: puppet mode is on; the script starts");
+		}
+		t += a_dt;
+		while (at < spec.size()) {
+			const std::size_t end = std::min(spec.find('|', at), spec.size());
+			float             when = 0.0f;
+			char              kind = 0;
+			int               code = 0, down = 0;
+			if (std::sscanf(spec.substr(at, end - at).c_str(), "%f:%c%d:%d", &when, &kind, &code, &down) != 4) {
+				at = end + 1;
+				continue;
+			}
+			if (t < when) {
+				return;
+			}
+			Push(kind == 'm' ? proto::kInMouseButton : proto::kInKey, static_cast<std::uint16_t>(code), down);
+			LC_LOG("DebugInputScript: %.1f s: %s %d %s", t, kind == 'm' ? "mouse button" : "key", code, down ? "down" : "up");
+			at = end + 1;
+		}
+	}
+
 	void Tick(float a_dt)
 	{
 		Watchdog(a_dt);
 		FocusTestTick(a_dt);
 		UpdatePhone();
 		PhoneTestTick(a_dt);
+		InputScriptTick(a_dt);
 	}
 
 	bool PhoneOut()

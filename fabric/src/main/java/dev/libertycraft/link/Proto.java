@@ -91,6 +91,8 @@ public final class Proto {
 	public static final int ACTOR_PLAYER_VEHICLE = 1 << 5;
 	/** LibertyCraft: with {@link #ACTOR_VEHICLE}, someone sits in it (kActorOccupied): hostile mobs go for it. */
 	public static final int ACTOR_OCCUPIED = 1 << 6;
+	/** LibertyCraft: a mission character, or a vehicle one sits in (kActorMission): Minecraft's mobs leave it alone. */
+	public static final int ACTOR_MISSION = 1 << 7;
 
 	// Event ring (relative to OFF_EVENT_RING)
 	public static final int EVENT_RING_ENTRIES = 512;
@@ -192,6 +194,8 @@ public final class Proto {
 	public static final int PART_HEAD = 1, PART_BODY = 2, PART_RIGHT_ARM = 3, PART_LEFT_ARM = 4, PART_RIGHT_LEG = 5, PART_LEFT_LEG = 6;
 	/** kRenRagdoll RenBatch flags bit 12: a held item (on its arm's part). */
 	public static final int RAGDOLL_HELD = 1 << 12;
+	/** LibertyCraft: kRenRagdoll RenBatch flags bit 13: a cape or an elytra (on the body part), hidden by a host posing the body seated. */
+	public static final int RAGDOLL_BACK = 1 << 13;
 	public static final int LIGHT_STEADY = 0, LIGHT_FLAME = 1, LIGHT_LAVA = 2;
 	public static final int REN_VERTEX_BYTES = 32;
 
@@ -225,9 +229,15 @@ public final class Proto {
 	public static final int SKY_HOST_DRIVES = 1 << 3;
 	/** With SKY_HOST_DRIVES: in a vehicle; pos is the rider's feet on the mount, yaw the vehicle heading. */
 	public static final int SKY_IN_VEHICLE = 1 << 4;
+	/** LibertyCraft: GTA IV shows a cutscene or a mission script's camera (kSkyScene): Minecraft pauses like for its menu. */
+	public static final int SKY_SCENE = 1 << 5;
+	/** LibertyCraft: a phone call is going on in GTA IV (kSkyPhoneCall): Minecraft's sounds duck. */
+	public static final int SKY_PHONE_CALL = 1 << 6;
 	/** LibertyCraft: SkyState flags bits 8 to 11 hold GTA IV's weather type + 1 (0: not sent); see GTA_WEATHER_*. */
 	public static final int SKY_WEATHER_SHIFT = 8;
 	public static final int SKY_WEATHER_MASK = 0xF << SKY_WEATHER_SHIFT;
+	/** LibertyCraft: GTA IV's phone is out (kSkyPhoneOut): no first-person hands or held items meanwhile. */
+	public static final int SKY_PHONE_OUT = 1 << 12;
 	/** GTA IV's weather types (GtaWeather). */
 	public static final int GTA_EXTRA_SUNNY = 0, GTA_SUNNY = 1, GTA_SUNNY_WINDY = 2, GTA_CLOUDY = 3, GTA_RAIN = 4, GTA_DRIZZLE = 5, GTA_FOGGY = 6,
 		GTA_LIGHTNING = 7;
@@ -315,6 +325,8 @@ public final class Proto {
 	public static final int COL_CLEAR = 1;
 	public static final int COL_REGION = 2;
 	public static final int COL_TRIS = 3;
+	/** LibertyCraft: GTA IV forgot a column of regions (kColForget); Minecraft may drop it. */
+	public static final int COL_FORGET = 4;
 	public static final int COL_TRI_BYTES = 40;
 	public static final int TRI_STAIR_HELPER = 1;
 	public static final int TRI_DIGGABLE = 2;

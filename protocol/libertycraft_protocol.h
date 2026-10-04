@@ -99,6 +99,14 @@ namespace libertycraft::proto
 		// on a mount (a boat by default) placed so its rider is at pos, every tick, and removes it
 		// when the bit clears.
 		kSkyInVehicle = 1u << 4,
+		// LibertyCraft addition (a bit only): GTA IV shows a scene rather than gameplay (a cutscene, or a
+		// mission script's own camera: a scripted cutscene, a minigame's view). Minecraft pauses meanwhile like
+		// for kSkyMenuOpen (a singleplayer world, its mobs, their blasts and its sounds stand still) and its
+		// HUD stays hidden; the host drops what Minecraft's mobs do to its world in the meantime.
+		kSkyScene = 1u << 5,
+		// LibertyCraft addition (a bit only): a phone call is going on in GTA IV (IS_MOBILE_PHONE_CALL_ONGOING).
+		// Minecraft's sounds duck meanwhile, so the call can be heard.
+		kSkyPhoneCall = 1u << 6,
 	};
 	// LibertyCraft addition (bits only; the layout and kVersion stay SkyCraft's): GTA IV's weather in
 	// SkyState::flags bits 8 to 11, as its weather type + 1 (GtaWeather; 0: the host doesn't say).
@@ -106,6 +114,9 @@ namespace libertycraft::proto
 	// and kGtaLightning, thundering for kGtaLightning.
 	inline constexpr std::uint32_t kSkyWeatherShift = 8;
 	inline constexpr std::uint32_t kSkyWeatherMask = 0xFu << kSkyWeatherShift;
+	// LibertyCraft addition (a bit only): GTA IV's phone is out (a call, the phone book). GTA's phone
+	// shows where Minecraft's first-person hand is: Minecraft draws no hands or held items meanwhile.
+	inline constexpr std::uint32_t kSkyPhoneOut = 1u << 12;
 
 	// GTA IV's weather types (FORCE_WEATHER_NOW, CWeather).
 	enum GtaWeather : std::uint32_t
@@ -329,6 +340,11 @@ namespace libertycraft::proto
 		// passengers, the player too). Minecraft's hostile mobs go for such vehicles as for peds on foot
 		// (they bang on it, shoot it, blow up beside it); empty ones they leave alone.
 		kActorOccupied = 1u << 6,
+		// LibertyCraft addition (a bit only): a mission character (a ped a GTA IV mission script owns:
+		// IS_PED_A_MISSION_PED), or a piece of a vehicle one sits in (or of a mission's own vehicle someone
+		// sits in). Minecraft's mobs leave it alone: they don't hunt it, and the host lets no mob's hit or
+		// blast reach it (the player's own hits still count).
+		kActorMission = 1u << 7,
 	};
 
 	inline constexpr std::uint32_t kActorVehicleTag = 0x56000000u;  // 'V'
@@ -619,6 +635,9 @@ namespace libertycraft::proto
 	// drops it when the player dies; it rides its arm while alive).
 	inline constexpr std::uint32_t kRagdollPartShift = 8;
 	inline constexpr std::uint32_t kRagdollHeld = 1u << 12;
+	// LibertyCraft addition (a flag bit only): a cape or an elytra (on the body part). It hangs down the
+	// back past the hips, so a host posing the body seated hides it (it came out under a car's floor).
+	inline constexpr std::uint32_t kRagdollBack = 1u << 13;
 
 	struct RenLights
 	{
@@ -753,6 +772,12 @@ namespace libertycraft::proto
 		kColClear = 1,   // payload: u32 epoch
 		kColRegion = 2,  // payload: ColRegion + ColBlock[count]
 		kColTris = 3,    // payload: ColRegion (count = triangles) + ColTri[count]; sent before kColRegion
+		// LibertyCraft addition (a message type only; the layout and kVersion stay SkyCraft's): payload
+		// ColRegion (count 0, minY/maxY 0) naming one column of regions, [minX, maxX] x [minZ, maxZ] at every
+		// height. GTA IV no longer tracks it (the player went far away) and probes and sends it again before
+		// the player gets near, so Minecraft may drop what it holds there whenever it likes. Without these
+		// messages Minecraft keeps every region it was ever sent until the next kColClear.
+		kColForget = 4,
 	};
 
 	// Exact Skyrim collision triangle (MC space) for the player's smooth collider.

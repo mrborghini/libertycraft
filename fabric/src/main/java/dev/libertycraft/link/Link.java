@@ -214,6 +214,20 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		public boolean inVehicle() {
 			return (this.flags & (SKY_HOST_DRIVES | SKY_IN_VEHICLE)) == (SKY_HOST_DRIVES | SKY_IN_VEHICLE);
 		}
+
+		public boolean phoneOut() {
+			return (this.flags & SKY_PHONE_OUT) != 0;
+		}
+
+		/** GTA IV shows a cutscene or a mission script's camera: Minecraft pauses (GtaMenuPause). */
+		public boolean scene() {
+			return (this.flags & SKY_SCENE) != 0;
+		}
+
+		/** A phone call is going on in GTA IV: Minecraft's sounds duck (SoundDuck). */
+		public boolean phoneCall() {
+			return (this.flags & SKY_PHONE_CALL) != 0;
+		}
 	}
 
 	/** GTA IV's water surface around the player (see WaterGrid in the protocol). */

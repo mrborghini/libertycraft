@@ -23,4 +23,7 @@ namespace lc::NikoBody
 	bool Capture(render::FrameSnapshot& a_f);
 	// Game::OnIngameStartup: a save is loading (the peds go away).
 	void OnIngameStartup();
+	// Game::Camera, while GTA drives the player: the DebugBodyView test hook's camera (the final
+	// cam's 4 x 4 rows right, forward, up, position). True: it wrote one.
+	bool DebugCamera(float* a_m);
 }

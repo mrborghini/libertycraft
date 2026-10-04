@@ -47,9 +47,10 @@ public final class HostDriveClient {
 				}
 			} else {
 				LibertyCraft.LOG.info("[LibertyCraft] GTA IV let go of the player");
-				if (player.getVehicle() != null) {
+				if (HostDrive.isMount(player.getVehicle())) {
 					// Off the mount right away, or riding it would pull the player back from GTA IV's
-					// teleport (which comes this same frame) until the server's dismount arrives.
+					// teleport (which comes this same frame) until the server's dismount arrives. (Only
+					// GTA's mount: a horse of the player's own is the server's to leave.)
 					player.removeVehicle();
 				}
 				send(sky, 0); // the server drops the mount and puts the player at sky pos

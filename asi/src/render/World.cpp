@@ -622,6 +622,7 @@ namespace lc::render
 			body::Pose pose;
 			static_assert(sizeof(pose.part) == sizeof(a_f.bodyParts));
 			std::memcpy(pose.part, a_f.bodyParts, sizeof(pose.part));
+			pose.hideBack = (a_f.flags & kFrameBodyHideBack) != 0;
 			body::PoseMesh(ragdoll.batches, ragdoll.verts, pose, posedBody.verts);
 			posedBody.batches = ragdoll.batches;
 			const McVec o = GtaToMc(a_f.bodyOrigin[0], a_f.bodyOrigin[1], a_f.bodyOrigin[2]);

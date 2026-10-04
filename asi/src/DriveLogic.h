@@ -26,8 +26,9 @@ namespace lc::drive
 {
 	enum class Mode { kMinecraft, kNiko };
 
-	// Why GTA IV drives the player (Output::why): what it animates Niko for.
-	enum class Why { kNone, kNikoMode, kVehicle, kCutscene, kRagdoll };
+	// Why GTA IV drives the player (Output::why): what it animates Niko for. kScript: a mission script
+	// has him on foot (its camera, his control off, its tasks, a minigame: SceneLogic.h).
+	enum class Why { kNone, kNikoMode, kVehicle, kCutscene, kRagdoll, kScript };
 
 	struct Input
 	{
@@ -38,6 +39,7 @@ namespace lc::drive
 		bool  inCar = false;      // IS_CHAR_IN_ANY_CAR
 		bool  gettingIn = false;  // IS_CHAR_GETTING_IN_TO_A_CAR (our press, or a mission script)
 		bool  cutscene = false;
+		bool  scripted = false;   // a mission script has the player on foot (SceneLogic.h: GTA drives him, as in Niko mode)
 		bool  puppeting = false;  // Minecraft drives the ped right now (before this frame's decision)
 		bool  controlReady = false;  // GTA reads the player's pad again and the ped stands (or waited long enough)
 		bool  moving = false;     // the ped walks on its own (GTA took the press: off to a door)
@@ -206,15 +208,17 @@ namespace lc::drive
 			                     : a_in.inCar         ? "player in a vehicle"
 			                     : recovering_        ? (recoverWhy_ == Why::kVehicle ? "just left a vehicle (until Niko stands)" : "knocked over (until Niko is back up)")
 			                     : a_in.cutscene      ? "cutscene"
+			                     : a_in.scripted      ? "a mission script has the player"
 			                                          : nullptr;
 			out.blocker = reason;
 			out.hostDrives = a_in.inGame && !a_in.dead && reason != nullptr;
-			out.padLocked = out.hostDrives && recovering_ && mode_ == Mode::kMinecraft && !entering_ && !a_in.inCar && !a_in.gettingIn;
+			out.padLocked = out.hostDrives && recovering_ && mode_ == Mode::kMinecraft && !entering_ && !a_in.inCar && !a_in.gettingIn && !a_in.scripted;
 			out.why = !out.hostDrives                                    ? Why::kNone
 			          : mode_ == Mode::kNiko                             ? Why::kNikoMode
 			          : (entering_ || a_in.gettingIn || a_in.inCar)    ? Why::kVehicle
 			          : recovering_                                      ? recoverWhy_
-			                                                             : Why::kCutscene;
+			          : a_in.cutscene                                    ? Why::kCutscene
+			                                                             : Why::kScript;
 			out.inVehicle = out.hostDrives && a_in.inCar;
 			out.resync = wasHostDrives_ && !out.hostDrives && a_in.inGame;
 			wasHostDrives_ = out.hostDrives;

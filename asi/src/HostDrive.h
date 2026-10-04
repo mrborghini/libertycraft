@@ -23,6 +23,7 @@ namespace lc::HostDrive
 		int   player = 0, ped = 0;
 		bool  exists = false, loading = false, paused = false, dead = false;
 		bool  inCar = false, cutscene = false;
+		bool  scripted = false;   // a mission script has the player on foot (Missions.h): GTA drives him
 		bool  puppeting = false;  // before this frame's puppet decision
 		bool  mcInWorld = false;
 		bool  haveMc = false;      // this frame's McState was read (mcCreative is current)
