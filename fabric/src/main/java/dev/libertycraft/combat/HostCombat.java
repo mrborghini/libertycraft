@@ -160,10 +160,9 @@ public final class HostCombat {
 	private static void sync(ServerLevel level) {
 		Map<Integer, Link.Actor> live = new HashMap<>();
 		for (Link.Actor a : ACTORS) {
-			// A dead ped is a ragdoll on the ground (walked over, not hit); a wreck still stands there.
-			if (!a.dead() || (a.flags() & Proto.ACTOR_VEHICLE) != 0) {
-				live.put(a.formId(), a);
-			}
+			// A dead ped stays as a low stand-in over its body: hits and the player push the corpse
+			// around (it isn't solid); a wreck still stands there.
+			live.put(a.formId(), a);
 		}
 		for (Iterator<Map.Entry<Integer, HostActorEntity>> it = PROXIES.entrySet().iterator(); it.hasNext(); ) {
 			Map.Entry<Integer, HostActorEntity> e = it.next();
@@ -197,8 +196,10 @@ public final class HostCombat {
 			proxy.setPos(a.x(), a.y(), a.z());
 			proxy.setYRot(a.yaw());
 			proxy.setYHeadRot(a.yaw());
-			stepOnTriggers(level, proxy);
-			ProxyPush.shoveMobs(level, proxy, a.x() - ox, a.z() - oz);
+			if (!proxy.isHostCorpse()) {
+				stepOnTriggers(level, proxy);
+				ProxyPush.shoveMobs(level, proxy, a.x() - ox, a.z() - oz);
+			}
 		}
 		if (PROXIES.size() != before && (PROXIES.size() % 5 == 0 || PROXIES.size() < 5)) {
 			LibertyCraft.LOG.info("[LibertyCraft] {} GTA IV actors mirrored as hittable stand-ins", PROXIES.size());

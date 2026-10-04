@@ -573,6 +573,26 @@ static void TestBulletRays()
 	CHECK(hit && hx >= 4.99 && hx <= 6.01 && hz >= -0.01 && hz <= 5.01);
 }
 
+static void TestBumps()
+{
+	// A walk only nudges; a sprint makes the ped stumble; a sprint-jump, a fall or an elytra pass
+	// knocks it down, and from 10 m/s on hurts it, more the faster.
+	CHECK(BumpOf(0.0f).kind == BumpOutcome::kNudge && BumpOf(4.3f).kind == BumpOutcome::kNudge && BumpOf(4.3f).gtaDamage == 0.0f);
+	CHECK(BumpOf(5.6f).kind == BumpOutcome::kStumble && BumpOf(5.6f).ragdollMs > 0 && BumpOf(5.6f).gtaDamage == 0.0f);
+	CHECK(BumpOf(9.0f).kind == BumpOutcome::kKnockdown && BumpOf(9.0f).gtaDamage == 0.0f);
+	const auto e20 = BumpOf(20.0f), e30 = BumpOf(30.0f);
+	CHECK(Near(e20.gtaDamage, 80.0f) && e30.gtaDamage > e20.gtaDamage && e30.force > e20.force && e30.ragdollMs >= e20.ragdollMs);
+	CHECK(BumpOf(23.0f).gtaDamage > 100.0f);  // lethal for a full-health ped (200, dies at 100)
+	CHECK(BumpOf(1000.0f).force <= 18.0f && BumpOf(1000.0f).ragdollMs <= 4000 && BumpOf(1000.0f).gtaDamage <= 400.0f);
+	CHECK(BumpOf(-3.0f).kind == BumpOutcome::kNudge);
+	// Nudges: the overlap and a bit, capped.
+	CHECK(Near(NudgeStep(0.1f), 0.13f) && Near(NudgeStep(2.0f), 0.25f) && NudgeStep(-1.0f) == 0.0f);
+	// Corpses: a walk drags, faster throws further; hits push by knockback and damage.
+	CHECK(CorpseBumpForce(4.3f) > 4.0f && CorpseBumpForce(20.0f) > CorpseBumpForce(4.3f) && CorpseBumpForce(500.0f) <= 14.0f);
+	CHECK(CorpseHitForce(0.4f, 7.0f, false) > CorpseHitForce(0.0f, 1.0f, false) && CorpseHitForce(0.4f, 7.0f, true) < CorpseHitForce(0.4f, 7.0f, false));
+	CHECK(CorpseHitForce(5.0f, 100.0f, false) <= 20.0f);
+}
+
 static void TestCrimes()
 {
 	// Hurting a cop: 1 star, killing one 2, whoever watches.
@@ -696,6 +716,7 @@ int main()
 	TestVitals();
 	TestBlockPush();
 	TestBulletRays();
+	TestBumps();
 	TestPacer();
 	if (failures) {
 		std::fprintf(stderr, "combat_test: %d failure(s)\n", failures);

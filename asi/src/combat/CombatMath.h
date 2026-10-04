@@ -588,6 +588,69 @@ namespace lc::combat
 		return std::clamp(ms, 500, 3000);
 	}
 
+	// ---- the Minecraft player running into GTA's peds (proto::kEvBump) --------------------------------
+	// How fast (m/s; Minecraft walks at 4.3, sprints at 5.6) the player has to be going for a ped he
+	// runs into to stumble (a short ragdoll), be knocked down (sprint-jumps, falls, elytra), or get hurt.
+	inline constexpr float kBumpStumbleSpeed = 5.2f;
+	inline constexpr float kBumpKnockdownSpeed = 8.0f;
+	inline constexpr float kBumpHurtSpeed = 10.0f;
+
+	struct BumpOutcome
+	{
+		enum Kind : int
+		{
+			kNudge,      // walked into: the ped is moved out of the way
+			kStumble,    // ran into: a short ragdoll and a light push
+			kKnockdown,  // hit at speed: a ragdoll and a push that grow with the speed, and damage
+		} kind = kNudge;
+		float force = 0.0f;    // APPLY_FORCE_TO_PED's (as Knock gives it)
+		int   ragdollMs = 0;
+		float gtaDamage = 0.0f;  // health off the ped (GTA units; a ped has 200, dies at 100)
+	};
+
+	inline BumpOutcome BumpOf(float a_speed)
+	{
+		BumpOutcome o;
+		const float s = std::max(a_speed, 0.0f);
+		if (s < kBumpStumbleSpeed) {
+			return o;
+		}
+		if (s < kBumpKnockdownSpeed) {
+			o.kind = BumpOutcome::kStumble;
+			o.force = 3.0f + (s - kBumpStumbleSpeed);
+			o.ragdollMs = 900;
+			return o;
+		}
+		o.kind = BumpOutcome::kKnockdown;
+		// (Measured in game: force 22 threw a ped 14 to 35 m; 7 throws it 1 to 9 m.)
+		o.force = std::clamp(3.0f + s * 0.45f, 6.0f, 18.0f);
+		o.ragdollMs = static_cast<int>(std::clamp(1500.0f + s * 80.0f, 1500.0f, 4000.0f));
+		// Like Minecraft's elytra crash (and GTA's own car hits): from 10 m/s on, 8 health a m/s
+		// (20 m/s: 80, a ped survives it; 23 m/s and more kill).
+		o.gtaDamage = s >= kBumpHurtSpeed ? std::min((s - kBumpHurtSpeed) * 8.0f, 400.0f) : 0.0f;
+		return o;
+	}
+
+	// How far (m) a ped walked into moves out of the way this frame: the overlap and a little more,
+	// at most a_max.
+	inline float NudgeStep(float a_overlap, float a_max = 0.25f)
+	{
+		return std::clamp(a_overlap + 0.03f, 0.0f, a_max);
+	}
+
+	// The push a corpse gets from a walk into it (dragged and rolled) or a run at speed.
+	inline float CorpseBumpForce(float a_speed)
+	{
+		return std::clamp(2.0f + std::max(a_speed, 0.0f) * 0.5f, 2.5f, 14.0f);
+	}
+
+	// The push a corpse gets from a Minecraft hit: its knockback and damage (MC units) together.
+	inline float CorpseHitForce(float a_knockback, float a_mcDamage, bool a_projectile)
+	{
+		const float f = 4.0f + 6.0f * std::clamp(a_knockback, 0.0f, 2.0f) + 0.4f * std::clamp(a_mcDamage, 0.0f, 30.0f);
+		return std::clamp(a_projectile ? f * 0.8f : f, 3.0f, 20.0f);
+	}
+
 	// ---- vehicles -------------------------------------------------------------------------------
 	// Minecraft damage on a vehicle -> GTA IV body/engine health points (cars have 1000 of each; the
 	// engine burns below 0 and the car blows up soon after).

@@ -2,7 +2,8 @@
 //
 // Region scheduling is SkyCraft's: 8x8x8-block regions within 5 regions horizontally, 3 below and
 // 2 above the player, nearest first, everything tagged with the collision epoch (kColClear{epoch}
-// on a world change or a Minecraft reconnect). Per 8x8-block column of regions, the game thread
+// on a game load or a Minecraft reconnect; an interior change re-probes the columns around the
+// player instead, Refresh). Per 8x8-block column of regions, the game thread
 // probes the world with CWorld::ProcessLineOfSight (collision/Rays.h) within ~2.5 ms a frame,
 // resumable across frames (collision/Geometry.h: vertical chains every half block, horizontal
 // wall probes per sample edge and floor); a worker thread turns a finished column into kColTris
@@ -37,8 +38,13 @@ namespace lc
 
 		static Collision& Get();
 		void Start();  // worker thread
-		// World change / reconnect: drops everything harvested, queues kColClear{epoch}.
+		// Game load / reconnect: drops everything harvested, queues kColClear{epoch}.
 		void Reset(std::uint32_t a_epoch);
+		// The player went into or out of an interior (same coordinates): the columns around him (7 x 7)
+		// are probed again, nearest first, and their regions are sent again where they changed; until
+		// then Minecraft keeps what it has (nothing is cleared, no new epoch: the floor under the player
+		// never goes away).
+		void Refresh();
 		// Game thread, once a frame: probe and queue what's due around a_centerMc (the player's
 		// feet, MC space). a_feetGtaZ: the player's feet height in GTA space.
 		void Update(const McVec& a_centerMc, float a_feetGtaZ);

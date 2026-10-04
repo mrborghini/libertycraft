@@ -4,6 +4,7 @@
 // no pillar under the awning), a room inside a building, an overpass, stairs.
 #include "collision/Geometry.h"
 #include "collision/Objects.h"
+#include "Doors.h"
 
 #include <cmath>
 #include <cstdio>
@@ -682,6 +683,54 @@ static void TestTiltedBin()
 	CHECK(std::fabs((xhi - xlo) - 1.0f) < 0.2f);
 }
 
+
+// Doors.h: a player walking through a door pushes its leaf just clear of them, away from them,
+// gradually; a door they don't touch is left alone.
+static void TestDoorPush()
+{
+	std::puts("door push geometry");
+	using namespace lc::Doors;
+	const float len = 1.5f, r = 0.4f, deg = 180.0f / 3.14159265f;
+	float       alpha = 0.0f;  // shut leaf along +x from the hinge
+	float       side = 0.0f;
+	float       last = 0.0f;
+	int         pushes = 0;
+	// walk across the doorway at x = 0.75 from y = -2 to y = +2 (through the middle of the leaf)
+	for (int k = 0; k <= 80; ++k) {
+		const float y = -2.0f + 0.05f * float(k);
+		if (side == 0.0f) {
+			side = LeafSide(alpha, 0.75f, y);
+		}
+		const float need = PushRotation(alpha, 0.75f, y, len, r, side);
+		if (need == 0.0f) {
+			side = LeafSide(alpha, 0.75f, y);
+		} else {
+			++pushes;
+			CHECK(need > 0.0f);  // coming from -y: the leaf swings counter-clockwise, towards +y, away from the player
+			alpha += need;
+			CHECK(alpha >= last - 1e-5f);  // only ever further open
+			last = alpha;
+			// now clear of the player
+			CHECK(std::fabs(PushRotation(alpha, 0.75f, y, len, r, side)) < 1e-4f);
+		}
+	}
+	CHECK(pushes > 10);              // gradually, over many steps
+	CHECK(alpha * deg > 60.0f);      // walked wide open
+	CHECK(alpha * deg < 120.0f);
+	// from the other side it swings the other way
+	alpha = 0.0f;
+	side = LeafSide(alpha, 0.75f, 1.5f);
+	CHECK(side < 0.0f);
+	CHECK(PushRotation(alpha, 0.75f, 0.2f, len, r, side) < 0.0f);
+	// beyond the tip's reach, or at the hinge: nothing
+	CHECK(PushRotation(0.0f, 2.0f, 0.1f, len, r, 1.0f) == 0.0f);
+	CHECK(PushRotation(0.0f, 0.1f, 0.1f, len, r, 1.0f) == 0.0f);
+	// just past the tip, still touching it: a small push
+	const float tip = PushRotation(0.0f, 1.7f, -0.1f, len, r, 1.0f);
+	CHECK(tip > 0.0f && tip < 0.6f);
+	CHECK(std::fabs(WrapPi(3.5f) - (3.5f - 2.0f * 3.14159265f)) < 1e-5f);
+}
+
 int main()
 {
 	TestAwningAndBuilding();
@@ -693,6 +742,7 @@ int main()
 	TestLampPost();
 	TestBenchAndBin();
 	TestTiltedBin();
+	TestDoorPush();
 	if (failures) {
 		std::fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

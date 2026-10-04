@@ -119,8 +119,8 @@ namespace libertycraft::proto
 	{
 		std::uint32_t seq;
 		std::uint32_t flags;           // SkyFlags
-		std::uint32_t worldId;         // worldspace FormID (exterior) or cell FormID (interior)
-		std::uint32_t collisionEpoch;  // bumps on world change; MC drops all collision data
+		std::uint32_t worldId;         // worldspace FormID (exterior) or cell FormID (interior); GTA IV: 0 outdoors, else the interior (same coordinates)
+		std::uint32_t collisionEpoch;  // bumps on world change; MC drops all collision data (GTA IV: a game load or a reconnect, not an interior)
 		double        posX, posY, posZ;  // Skyrim player feet, MC coords
 		float         yaw, pitch;        // authoritative look (MC degrees)
 		std::uint32_t teleportSeq;       // MC teleports its player to pos when this changes
@@ -330,6 +330,20 @@ namespace libertycraft::proto
 		// the line into the real vehicle to find what it struck (body or which window). Sent for
 		// vehicle pieces (kActorVehicle) only; a host that doesn't know it ignores it.
 		kEvHitPoint = 6,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): the Minecraft player ran into
+		// a ped's stand-in (alive or dead; peds aren't solid for the player): formId, a = the player's
+		// speed (m/s, its motion this tick), b/c = the horizontal direction of that motion (MC x/z,
+		// unit; 0 when standing), d = how far the player is into the stand-in (blocks, horizontally).
+		// flags = BumpFlags. Sent every tick of contact; the host pushes the ped out of the way, makes
+		// it stumble or knocks it down by the speed (and its own cooldowns).
+		kEvBump = 7,
+	};
+
+	enum BumpFlags : std::uint32_t
+	{
+		kBumpSprinting = 1u << 0,
+		kBumpFlying = 1u << 1,   // elytra
+		kBumpNewContact = 1u << 2,  // the first tick of this contact
 	};
 
 	enum HitFlags : std::uint32_t

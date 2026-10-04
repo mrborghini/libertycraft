@@ -150,6 +150,7 @@ namespace lc
 		std::string debugTestCarModel = "admiral";  // its model (e.g. sabre: two doors, pcj: a motorbike)
 		bool debugCarCover = false;  // DebugTestCar parks it empty, front axle beside the player, a ped in cover beyond its bonnet
 		int debugBulletWall = 0;  // N s into play, a ped beside the player shoots across the blocks ahead of him (NpcBlocks)
+		int debugBumpPed = 0;  // N s into play, a ped stands still 3 m ahead of the player (Combat)
 		// Minecraft's attacks are crimes in GTA IV: victims fight back or flee, police seeing it (or
 		// any witness of a killing) give the player a wanted level, hurting a cop always does.
 		bool gtaCrimes = true;
@@ -199,14 +200,19 @@ namespace lc
 		// Test hook (not in the default ini): real key events that take the phone out, open the
 		// contacts, scroll and put it away again, and a log of which pad controls each key feeds.
 		bool debugPhone = false;
-		// A car running into the puppeted player (or one of GTA's explosions hurting them) knocks
-		// them over: GTA ragdolls Niko along the hit and keeps him until he is back on his feet,
-		// the hit hurts the Minecraft player. HostDrive.cpp.
+		// Any vehicle running into the puppeted player (cars, bikes, boats, helicopters and their
+		// spinning rotors, planes, trains; or one of GTA's explosions hurting them) knocks them over:
+		// GTA ragdolls Niko along the hit and keeps him until he is back on his feet, the hit hurts
+		// the Minecraft player. HostDrive.cpp, drive/VehicleHit.h.
 		bool ragdollOnVehicleHit = true;
 		// Test hooks (not in the default ini): DebugAutoVehicle's car drives off at speed and Niko
 		// bails out of it; a test car is driven into the puppeted player every 40 s.
 		bool debugBailOut = false;
 		bool debugRunOver = false;
+		// Test hook (not in the default ini): vehicles of each kind run into the puppeted player in turn, a
+		// comma list of heli (flies at him), drop (comes down on him), rotor (its rotor reaches him: stand
+		// him on something first), bike, car. HostDrive.cpp DebugVehicleHitTick.
+		std::string debugVehicleHit;
 		// Test hook (not in the default ini): play this GTA IV cutscene (e.g. rom2_a) 20 s into puppet mode.
 		std::string debugCutscene;
 		// Test hook (not in the default ini): give Niko this GTA weapon (7 pistol) 10 s into play.

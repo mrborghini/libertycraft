@@ -74,6 +74,7 @@ namespace lc
 			std::vector<int>                   sent;  // regions (ry) sent from data
 			Clock::time_point                  requested{}, retryAt{}, checked{};
 			bool                               requestedOnce = false;
+			bool                               stale = false;  // Refresh: probe again (data stays sent meanwhile)
 			int                                emptyTries = 0;
 			// objects merged into this column's regions (changed only by ScanObjects, which unsends
 			// the regions they touch)
@@ -106,6 +107,9 @@ namespace lc
 		std::deque<Job>                                queue;
 		std::atomic<std::uint32_t>                     currentEpoch{ 0 };
 		std::unordered_map<std::uint64_t, ColumnState> columns;  // (rx, rz)
+		std::size_t                                    refreshLeft = 0, refreshChanged = 0;  // Refresh()'s columns
+		int                                            lastPrx = 0, lastPrz = 0;            // the player's region column (Update)
+		constexpr int                                  kRefreshRadius = 3;                  // Refresh: columns this near (7 x 7)
 		std::vector<std::array<int, 3>>                offsets;
 		bool                                           started = false;
 		std::unique_ptr<col::ColumnProbe>              active;
@@ -679,6 +683,7 @@ namespace lc
 		Start();
 		currentEpoch = a_epoch;
 		columns.clear();
+		refreshLeft = refreshChanged = 0;
 		active.reset();
 		objLogged = std::min<std::uint32_t>(objLogged, kObjLogFirst - 10);  // a few more probe lines for the new world
 		std::lock_guard lock(mutex);
@@ -688,6 +693,21 @@ namespace lc
 		job.epoch = a_epoch;
 		queue.push_back(job);
 		cv.notify_one();
+	}
+
+	void Collision::Refresh()
+	{
+		std::size_t n = 0;
+		for (auto& [key, st] : columns) {
+			const int cx = static_cast<int>(static_cast<std::int32_t>(key >> 32)), cz = static_cast<int>(static_cast<std::int32_t>(key & 0xFFFFFFFF));
+			if (st.data && !st.stale && std::abs(cx - lastPrx) <= kRefreshRadius && std::abs(cz - lastPrz) <= kRefreshRadius) {
+				st.stale = true;
+				++n;
+			}
+		}
+		refreshLeft += n;
+		refreshChanged = 0;
+		LC_LOG("collision: %zu columns to probe again (interior change; nothing cleared)", n);
 	}
 
 	void Collision::Update(const McVec& a_centerMc, float a_feetGtaZ)
@@ -715,6 +735,7 @@ namespace lc
 		const int  pry = static_cast<int>(std::floor(a_centerMc.y / kRegionSize));
 		const int  prz = static_cast<int>(std::floor(a_centerMc.z / kRegionSize));
 		const auto epoch = currentEpoch.load();
+		lastPrx = prx, lastPrz = prz;
 
 		// Street furniture: who's around, what moved; their shapes go into the columns' regions.
 		if (frameNo % kObjScanEvery == 0) {
@@ -752,6 +773,13 @@ namespace lc
 			if (!st.data || hash != st.hash) {
 				st.sent.clear();  // (re)send every region from the new data
 			}
+			if (st.stale) {
+				refreshChanged += st.data && hash != st.hash ? 1 : 0;
+				if (refreshLeft && --refreshLeft == 0) {
+					LC_LOG("collision: interior refresh done, %zu columns changed (sent again)", refreshChanged);
+				}
+			}
+			st.stale = false;
 			st.hash = hash;
 			st.data = data;
 			st.checked = Clock::now();
@@ -784,6 +812,16 @@ namespace lc
 			const auto key = Key2(rx, rz);
 			auto&      st = columns[key];
 			if (st.data && Covers(*st.data, ry)) {
+				if (st.stale && !active && !outOfTime()) {
+					// Refresh: probe it again; its regions stay with Minecraft until the new data differs.
+					const float yLo = float((std::min(pry, ry) - kBelow - kSpanExtra) * kRegionSize);
+					const float yHi = float((std::max(pry, ry) + kAbove + 1 + kSpanExtra) * kRegionSize);
+					active = std::make_unique<col::ColumnProbe>(rx, rz, yLo, yHi);
+					activeKey = key;
+					if (active->Run(ray, outOfTime)) {
+						finish();
+					}
+				}
 				if (std::find(st.sent.begin(), st.sent.end(), ry) == st.sent.end()) {
 					st.sent.push_back(ry);
 					auto it = std::find_if(pending.begin(), pending.end(), [&](const Pending& p) { return p.key == key; });
@@ -870,6 +908,7 @@ namespace lc
 			for (auto it = columns.begin(); it != columns.end();) {
 				const int cx = static_cast<int>(static_cast<std::int32_t>(it->first >> 32)), cz = static_cast<int>(static_cast<std::int32_t>(it->first & 0xFFFFFFFF));
 				if ((std::abs(cx - prx) > kRadius + 2 || std::abs(cz - prz) > kRadius + 2) && !(active && activeKey == it->first)) {
+					refreshLeft -= it->second.stale && refreshLeft ? 1 : 0;
 					it = columns.erase(it);
 				} else {
 					++it;

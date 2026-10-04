@@ -1,7 +1,9 @@
 // DriveLogic.h: who drives the player (Minecraft or GTA IV) through toggles, the vehicle key,
 // vehicles entered by scripts, and the hand-back after leaving a car.
 #include "DriveLogic.h"
+#include "drive/VehicleHit.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -436,6 +438,116 @@ namespace
 	}
 }
 
+// ---- drive/VehicleHit.h ----------------------------------------------------------------------------
+
+namespace hit = lc::drive::hit;
+
+// A pose at (x, y, z) facing heading a_deg (GTA: 0 = +y, counter-clockwise), upright.
+static hit::Pose PoseAt(float a_x, float a_y, float a_z, float a_deg)
+{
+	hit::Pose   p;
+	const float h = a_deg * 3.14159265f / 180.0f;
+	p.pos[0] = a_x, p.pos[1] = a_y, p.pos[2] = a_z;
+	p.fwd[0] = -std::sin(h), p.fwd[1] = std::cos(h), p.fwd[2] = 0.0f;
+	p.right[0] = std::cos(h), p.right[1] = std::sin(h), p.right[2] = 0.0f;
+	return p;
+}
+
+static void TestCarBumper()
+{
+	const float lo[3] = { -1.0f, -2.5f, -0.5f }, hi[3] = { 1.0f, 2.5f, 0.9f };
+	const float me[3] = { 0.0f, 2.8f, 0.5f };  // just ahead of its bumper
+	const float dt = 1.0f / 60.0f;
+	// Driving forward (+y) at 10 m/s: hits at 10.
+	auto h = hit::Body(PoseAt(0, 0, 0, 0), PoseAt(0, -10.0f * dt, 0, 0), dt, lo, hi, me, 3.0f);
+	CHECK(h.touching && h.hit && std::fabs(h.speed - 10.0f) < 0.1f);
+	// Reversing away at 10 m/s: no.
+	h = hit::Body(PoseAt(0, 0, 0, 0), PoseAt(0, 10.0f * dt, 0, 0), dt, lo, hi, me, 3.0f);
+	CHECK(h.touching && !h.hit);
+	// Creeping at 2 m/s: pushes, no knockdown.
+	h = hit::Body(PoseAt(0, 0, 0, 0), PoseAt(0, -2.0f * dt, 0, 0), dt, lo, hi, me, 3.0f);
+	CHECK(h.touching && !h.hit);
+	// Parked: nothing. Far: not touching.
+	CHECK(!hit::Body(PoseAt(0, 0, 0, 0), PoseAt(0, 0, 0, 0), dt, lo, hi, me, 3.0f).hit);
+	const float far[3] = { 0.0f, 4.0f, 0.5f };
+	CHECK(!hit::Body(PoseAt(0, 0, 0, 0), PoseAt(0, -10.0f * dt, 0, 0), dt, lo, hi, far, 3.0f).touching);
+	// A teleport (2 m in a frame: 120 m/s): not a hit.
+	CHECK(!hit::Body(PoseAt(0, 0, 0, 0), PoseAt(0, -2.0f, 0, 0), dt, lo, hi, me, 3.0f).hit);
+}
+
+static void TestSwingingTail()
+{
+	// A helicopter turning on the spot at 1.5 rad/s: its tail 8 m back sweeps sideways at 12 m/s into the
+	// player beside it, though its middle doesn't move at all.
+	const float lo[3] = { -0.5f, -8.5f, 0.3f }, hi[3] = { 0.5f, -6.5f, 2.6f };
+	const float dt = 1.0f / 60.0f, w = 1.5f;
+	const hit::Pose now = PoseAt(0, 0, 0, 0), was = PoseAt(0, 0, 0, -w * dt * 180.0f / 3.14159265f);
+	// The tail is at (0, -7.5); turning counter-clockwise it moves toward +x: the player at +x of it.
+	const float me[3] = { 0.7f, -7.5f, 1.0f };
+	const auto  h = hit::Body(now, was, dt, lo, hi, me, 2.0f);
+	CHECK(h.touching && h.hit && h.speed > 9.0f && h.speed < 13.0f);
+	// On the other side (it swings away from him): no.
+	const float other[3] = { -0.7f, -7.5f, 1.0f };
+	CHECK(!hit::Body(now, was, dt, lo, hi, other, 2.0f).hit);
+}
+
+static void TestComingDown()
+{
+	// A helicopter's belly 1 m over the player's root, coming down at 3 m/s.
+	const float lo[3] = { -1.0f, -3.0f, -0.5f }, hi[3] = { 1.0f, 3.0f, 2.0f };
+	const float dt = 1.0f / 60.0f;
+	const float me[3] = { 0.2f, 0.5f, 0.0f };
+	auto        h = hit::Body(PoseAt(0, 0, 1.5f, 30), PoseAt(0, 0, 1.5f + 3.0f * dt, 30), dt, lo, hi, me, 2.0f);
+	CHECK(h.touching && h.hit && std::fabs(h.vel[2] + 3.0f) < 0.1f);
+	// Going up off him: no.
+	h = hit::Body(PoseAt(0, 0, 1.5f, 30), PoseAt(0, 0, 1.5f - 3.0f * dt, 30), dt, lo, hi, me, 2.0f);
+	CHECK(!h.hit);
+	// Hovering still: no.
+	CHECK(!hit::Body(PoseAt(0, 0, 1.5f, 30), PoseAt(0, 0, 1.5f, 30), dt, lo, hi, me, 2.0f).hit);
+}
+
+static void TestRotorStrike()
+{
+	hit::Rotor main;
+	main.hub[0] = 0.0f, main.hub[1] = 0.0f, main.hub[2] = 2.7f;
+	main.axis = 2;
+	main.radius = 6.8f;
+	const hit::Pose p = PoseAt(100, 100, 10, 45);
+	// The player on a ledge 2 m up, 5 m from the hub: the disc (12.7) crosses him (feet 11.5, head 13.3).
+	const float on[3] = { 100.0f + 5.0f, 100.0f, 12.5f };
+	auto        s = hit::Strike(p, main, on);
+	CHECK(s.hit && std::fabs(s.rho - 5.0f) < 0.01f);
+	CHECK(s.fling[0] > 0.9f && std::fabs(s.fling[1]) < 0.1f && s.fling[2] > 0.0f);  // out from the hub
+	// Standing on the ground beside it (head 11.8, under the disc): no.
+	const float under[3] = { 105.0f, 100.0f, 11.0f };
+	CHECK(!hit::Strike(p, main, under).hit);
+	// Out of its reach: no.
+	const float out[3] = { 108.0f, 100.0f, 12.5f };
+	CHECK(!hit::Strike(p, main, out).hit);
+	// The mast (inside the inner radius): the body's, not the rotor's.
+	const float mast[3] = { 100.1f, 100.0f, 12.5f };
+	CHECK(!hit::Strike(p, main, mast).hit);
+	// A tail rotor (a vertical disc about x): its edge 0.8 m below its hub reaches his head.
+	hit::Rotor tail;
+	tail.hub[0] = -0.2f, tail.hub[1] = -8.0f, tail.hub[2] = 1.5f;
+	tail.axis = 0;
+	tail.radius = 1.1f;
+	tail.inner = 0.1f;
+	const hit::Pose q = PoseAt(0, 0, 0, 0);
+	const float     behind[3] = { -0.3f, -8.6f, 0.2f };  // (head at 1.0)
+	CHECK(hit::Strike(q, tail, behind).hit);
+	const float beside[3] = { 1.5f, -8.0f, 0.2f };  // 1.7 m to its side: the disc is edge-on to him
+	CHECK(!hit::Strike(q, tail, beside).hit);
+}
+
+static void TestBlows()
+{
+	const auto car = hit::BodyBlow(10.0f, hit::Kind::kCar), heli = hit::BodyBlow(10.0f, hit::Kind::kHeli);
+	CHECK(heli.gtaDamage > car.gtaDamage && heli.force > car.force && heli.ms >= car.ms);
+	CHECK(hit::RotorBlow(true).gtaDamage >= 150.0f && hit::RotorBlow(true).force > heli.force);
+	CHECK(hit::BodyBlow(100.0f, hit::Kind::kTrain).force <= 50.0f && hit::BodyBlow(100.0f, hit::Kind::kTrain).ms <= 5000);
+}
+
 int main()
 {
 	TestDefaultMinecraftMode();
@@ -458,6 +570,11 @@ int main()
 	TestDeathDropsAttempt();
 	TestBailOutWaitsUntilStanding();
 	TestKnockdownUntilBackUp();
+	TestCarBumper();
+	TestSwingingTail();
+	TestComingDown();
+	TestRotorStrike();
+	TestBlows();
 	if (failures) {
 		std::fprintf(stderr, "drive_test: %d failure(s)\n", failures);
 		return EXIT_FAILURE;

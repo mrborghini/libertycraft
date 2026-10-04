@@ -388,7 +388,7 @@ namespace lc::Game
 
 		void SettleOnGround(int a_ped);
 
-		void LeavePuppet(const char* a_reason, bool a_restore = true)
+		void LeavePuppet(const char* a_reason, bool a_restore = true, bool a_keepHidden = false)
 		{
 			if (!puppeting) {
 				return;
@@ -402,7 +402,9 @@ namespace lc::Game
 					S::FREEZE_CHAR_POSITION(puppetPed, false);
 					S::SET_CHAR_COLLISION(puppetPed, true);
 					S::SET_CHAR_INVINCIBLE(puppetPed, false);
-					S::SET_CHAR_VISIBLE(puppetPed, true);
+					if (!a_keepHidden) {
+						S::SET_CHAR_VISIBLE(puppetPed, true);
+					}
 				}
 				S::SET_PLAYER_CONTROL(puppetPlayer, true);
 				S::DISPLAY_HUD(true);
@@ -841,6 +843,7 @@ namespace lc::Game
 		driveFrame.mcInWorld = mcInWorld;
 		driveFrame.dt = dt;
 		driveFrame.heading = heading;
+		driveFrame.resyncing = mcInWorld && !loading && exists && mc.teleportAck != teleportSeq;
 		const HostDrive::Result drive = HostDrive::Tick(driveFrame);
 		if (drive.resync) {
 			LC_LOG("GTA IV let go of the player; teleporting Minecraft to them before it takes over");
@@ -862,10 +865,14 @@ namespace lc::Game
 				interiorCandidate = id;
 				interiorTimer = 0.0f;
 			} else if (id != worldId && (interiorTimer += dt) >= kInteriorDebounce) {
-				LC_LOG("world changed %u -> %u (%s)", worldId, id, id ? "interior" : "outdoors");
+				// GTA IV's interiors share the outdoors' coordinates (1 block = 1 m, no origin change): the
+				// player walked through a door, nothing moved him. No teleport handshake (puppet mode goes
+				// on) and no new collision epoch (Minecraft keeps the floor under him): the columns around
+				// him are probed again and sent where they changed. A real jump (GTA warping him) is
+				// caught below as the game moving the player.
+				LC_LOG("world changed %u -> %u (%s): collision refreshed, puppet mode goes on", worldId, id, id ? "interior" : "outdoors");
 				worldId = id;
-				ResetCollision("world changed");
-				teleportPending = true;
+				Collision::Get().Refresh();
 			}
 		}
 
@@ -947,7 +954,9 @@ namespace lc::Game
 		if (want && !puppeting) {
 			EnterPuppet(player, ped, feet);
 		} else if (!want && puppeting) {
-			LeavePuppet(blocker);
+			// The teleport handshake (the game moved the player): Niko stays hidden, HostDrive puts the
+			// Minecraft body on him until Minecraft has arrived and puppet mode has him again.
+			LeavePuppet(blocker, true, mc.teleportAck != teleportSeq && blocker && std::strcmp(blocker, "waiting for Minecraft to acknowledge the teleport") == 0 && !shared.nikoMode);
 		} else if (puppeting && ped != puppetPed) {
 			LeavePuppet("the player ped changed");
 		}

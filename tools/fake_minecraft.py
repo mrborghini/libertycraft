@@ -39,6 +39,9 @@ pick (the nearest entity box along the look) would hit: the ped, or a piece of a
 comparison, what it would hit if every vehicle piece were as tall as the vehicle's tallest piece).
 --block ON,OFF holds the shield up (kMcBlocking) and down in turn; --spin DEG turns the player on the
 spot (so GTA's attackers end up in front of the shield and behind it).
+--charge M/S runs the player through the nearest ped (--charge-corpses: corpse) every --charge-every s
+and tells the host about each contact (kEvBump) as the Java client does; --hit-corpses aims
+--hit-nearest-actor at the nearest corpse when there is one (else a living ped, who becomes one).
 
 Byte layout: protocol/libertycraft_protocol.h (SkyCraft v11 layout). Stdlib only.
 """
@@ -63,6 +66,8 @@ OFF_EVENTS = 0x17000
 OFF_ACTORS = 0x12000
 EV_ENTRIES = 512
 EV_HIT_ACTOR, EV_PLAYER_DIED, EV_EXPLOSION, EV_HIT_POINT = 1, 2, 3, 6
+EV_BUMP = 7  # LibertyCraft: the player ran into a ped's stand-in
+BUMP_SPRINTING, BUMP_FLYING, BUMP_NEW_CONTACT = 1, 2, 4
 ACTOR_FMT = "<II7fHH24s"  # formId, flags, x, y, z, yaw, width, height, healthFrac, level, pad, name
 ACTOR_DEAD = 2
 OFF_COL = 0x20000
@@ -574,13 +579,72 @@ def pick_step(actors, args, sky, t, st):
     print(f"pick from the eye ({eye[0]:.2f} {eye[1]:.2f} {eye[2]:.2f}) at ped {ped[0]:08X} {math.dist((ped[2], ped[4]), (px, pz)):.2f} blocks away: " + "; ".join(out))
 
 
+def bump_step(bridge, args, actors, st):
+    """--charge: the player's box against the stand-ins along this tick's move (kEvBump), as ProxyPushClient does."""
+    pos, prev = st.get("tick_pos"), st.get("prev_tick_pos")
+    st["prev_tick_pos"] = pos
+    if not actors or not pos or not prev:
+        return
+    mx, my, mz = pos[0] - prev[0], pos[1] - prev[1], pos[2] - prev[2]
+    if mx * mx + my * my + mz * mz > 25.0 or (mx == 0 and my == 0 and mz == 0 and not st.get("contact")):
+        return
+    speed = math.sqrt(mx * mx + my * my + mz * mz) / 0.05  # (one 20 Hz tick)
+    lo = (min(pos[0], prev[0]) - 0.3, min(pos[1], prev[1]), min(pos[2], prev[2]) - 0.3)
+    hi = (max(pos[0], prev[0]) + 0.3, max(pos[1], prev[1]) + 1.8, max(pos[2], prev[2]) + 0.3)
+    h = math.hypot(mx, mz)
+    dx, dz = (mx / h, mz / h) if h > 1e-4 else (0.0, 0.0)
+    now = set()
+    for r in actors:
+        if r[1] & ACTOR_VEHICLE:
+            continue
+        w = r[6] * 0.5
+        alo, ahi = (r[2] - w, r[3], r[4] - w), (r[2] + w, r[3] + r[7], r[4] + w)
+        if any(hi[k] <= alo[k] or lo[k] >= ahi[k] for k in range(3)):
+            continue
+        overlap = max(0.0, min(min(hi[0], ahi[0]) - max(lo[0], alo[0]), min(hi[2], ahi[2]) - max(lo[2], alo[2])))
+        fresh = r[0] not in st.get("contact", set())
+        now.add(r[0])
+        flags = (BUMP_SPRINTING if speed > 5.0 else 0) | (BUMP_FLYING if speed > 12.0 else 0) | (BUMP_NEW_CONTACT if fresh else 0)
+        bridge.push_event(EV_BUMP, r[0], speed, dx, dz, overlap, flags)
+        if fresh:
+            print(f"bump: ran into {r[9]} {r[0]:08X}{' (corpse)' if r[1] & ACTOR_DEAD else ''} at {speed:.1f} m/s, overlap {overlap:.2f}")
+    st["contact"] = now
+
+
+def charge_step(args, actors, t, st):
+    """--charge: start the next run through the nearest ped (or corpse)."""
+    ch = st.get("charge")
+    if ch and t < ch["t1"]:
+        return
+    if not actors or t < st.get("next_charge", 0.0) or not st.get("pos"):
+        return
+    st["next_charge"] = t + args.charge_every
+    px, py, pz = st["pos"]
+    cands = [r for r in actors if not r[1] & ACTOR_VEHICLE and bool(r[1] & ACTOR_DEAD) == args.charge_corpses
+             and 1.0 < math.dist((r[2], r[4]), (px, pz)) < 25.0 and abs(r[3] - py) < 1.5]
+    if not cands:
+        print("charge: nobody near")
+        return
+    r = min(cands, key=lambda r: math.dist((r[2], r[4]), (px, pz)))
+    d = math.dist((r[2], r[4]), (px, pz))
+    ux, uz = (r[2] - px) / d, (r[4] - pz) / d
+    # (On the ped's level: this fake has no collision, so the run keeps its height.)
+    b = (r[2] + ux * 3.0, r[3], r[4] + uz * 3.0)
+    st["charge"] = dict(a=(px, r[3], pz), b=b, t0=t, t1=t + (d + 3.0) / args.charge)
+    print(f"charge: running at {args.charge:.1f} m/s through {r[9]} {r[0]:08X}{' (corpse)' if r[1] & ACTOR_DEAD else ''}, {d:.1f} m away "
+          f"(its feet at y {r[3]:.2f}, {r[7]:.1f} tall; the player's at {py:.2f})")
+
+
 def combat_step(bridge, args, sky, t, t0, st):
     """The combat flags, once per loop. st holds next_hit / next_blast / next_actors / died_sent."""
     px, py, pz, yaw = sky[4], sky[5], sky[6], sky[7]
-    want_actors = args.actors or args.hit_nearest_actor > 0 or args.pick_test
+    want_actors = args.actors or args.hit_nearest_actor > 0 or args.pick_test or args.charge > 0
     actors = bridge.read_actors() if want_actors else None
+    st["actors"] = actors
     if args.pick_test:
         pick_step(actors, args, sky, t, st)
+    if args.charge > 0:
+        charge_step(args, actors, t, st)
     if args.actors and actors is not None and t >= st["next_actors"]:
         st["next_actors"] = t + 2.0
         near = sorted(actors, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
@@ -592,6 +656,9 @@ def combat_step(bridge, args, sky, t, t0, st):
     if args.hit_nearest_actor > 0 and actors and t >= st["next_hit"]:
         st["next_hit"] = t + args.combat_interval
         alive = [r for r in actors if not r[1] & ACTOR_DEAD]
+        if args.hit_corpses:  # a corpse if there is one near (else a living ped, who becomes one)
+            corpses = [r for r in actors if r[1] & ACTOR_DEAD and not r[1] & ACTOR_VEHICLE and math.dist((r[2], r[3], r[4]), (px, py, pz)) < 20.0]
+            alive = corpses or alive
         if args.hit_kind != "any":
             alive = [r for r in alive if bool(r[1] & ACTOR_VEHICLE) == (args.hit_kind == "vehicle")]
         if args.hit_name:
@@ -662,6 +729,12 @@ def main():
     ap.add_argument("--demo-avatar", action="store_true", help="with --demo-section: also a box body (kRenTexture + kRenAvatar) at the feet (use with --third-person)")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every collision message")
     ap.add_argument("--actors", action="store_true", help="print the host's actor table every 2 s")
+    ap.add_argument("--hit-corpses", action="store_true", help="--hit-nearest-actor: hit the nearest corpse when there is one (else a living ped)")
+    ap.add_argument("--charge", type=float, default=0.0, metavar="M/S",
+                    help="every --charge-every s, run at M/S from where the player stands through the nearest ped (or corpse) to 3 m beyond it, "
+                         "telling the host about the contact (kEvBump) as the Java client does")
+    ap.add_argument("--charge-every", type=float, default=6.0, metavar="S")
+    ap.add_argument("--charge-corpses", action="store_true", help="--charge: run through corpses instead of the living")
     ap.add_argument("--hit-name", default="", metavar="NAME", help="--hit-nearest-actor: only actors whose name has NAME in it (e.g. Cop)")
     ap.add_argument("--pick-test", action="store_true", help="say what Minecraft's pick at the nearest ped would hit (DebugCarCover)")
     ap.add_argument("--hit-nearest-actor", type=float, default=0.0, metavar="DMG",
@@ -771,28 +844,33 @@ def main():
                 if walk_from and t >= walk_t0:
                     path = [walk_from] + [tuple(v) for v in args.walk_via] + [tuple(args.walk_to)]
                     length = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
-                    raw = (t - walk_t0) * args.walk_speed  # blocks walked (standing time excluded below)
-                    if args.walk_back >= 0 and raw > length + args.walk_back * args.walk_speed:
-                        raw = max(0.0, 2 * length + args.walk_back * args.walk_speed - raw)
-                    # --walk-pause: stand at each via point; that time doesn't count as travel
-                    travel, left = 0.0, raw
-                    for i, (a, b) in enumerate(zip(path, path[1:])):
-                        step = min(left, math.dist(a, b))
-                        travel += step
-                        left -= step
-                        if left <= 0 or i == len(path) - 2:
-                            break
-                        left = max(0.0, left - args.walk_pause * args.walk_speed)
-                    travel = min(travel, length)
+                    # time along the path: legs at --walk-speed, --walk-pause at each via point;
+                    # --walk-back replays it backwards (pauses included) after standing at the end
+                    legs = list(zip(path, path[1:]))
+                    total = length / args.walk_speed + args.walk_pause * (len(legs) - 1)
+                    te = t - walk_t0
+                    if args.walk_back >= 0 and te > total + args.walk_back:
+                        te = max(0.0, total - (te - total - args.walk_back))
                     cur = path[-1]
-                    for a, b in zip(path, path[1:]):
-                        leg = math.dist(a, b)
-                        if travel <= leg:
-                            f = travel / leg if leg > 1e-6 else 1.0
+                    for i, (a, b) in enumerate(legs):
+                        leg_t = math.dist(a, b) / args.walk_speed
+                        if te <= leg_t:
+                            f = te / leg_t if leg_t > 1e-6 else 1.0
                             cur = tuple(p + (q - p) * f for p, q in zip(a, b))
                             break
-                        travel -= leg
+                        te -= leg_t
+                        if i < len(legs) - 1:
+                            if te <= args.walk_pause:
+                                cur = b
+                                break
+                            te -= args.walk_pause
                     walk += math.dist(prev, cur) * 0.6
+                elif combat_state.get("charge") and t < combat_state["charge"]["t1"] + 0.05:
+                    ch = combat_state["charge"]
+                    f = min(1.0, max(0.0, (t - ch["t0"]) / max(ch["t1"] - ch["t0"], 1e-3)))
+                    cur = tuple(a + (b - a) * f for a, b in zip(ch["a"], ch["b"]))
+                    if f >= 1.0:
+                        origin = cur  # stay where the run ended
                 elif args.circle > 0:
                     ang = (t - start) * 0.5  # rad/s
                     cur = (origin[0] + args.circle * math.cos(ang), origin[1], origin[2] + args.circle * math.sin(ang))
@@ -800,6 +878,9 @@ def main():
                 else:
                     cur = origin
                 tick_qpc = now_qpc()
+                if args.charge > 0:
+                    combat_state["tick_pos"] = cur
+                    bump_step(bridge, args, combat_state.get("actors"), combat_state)
             if origin:
                 f = min(1.0, (now_qpc() - tick_qpc) / 500_000) if tick_qpc else 1.0
                 pos = tuple(p + (c - p) * f for p, c in zip(prev, cur))

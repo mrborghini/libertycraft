@@ -25,6 +25,7 @@ namespace lc::HostDrive
 		bool  inCar = false, cutscene = false;
 		bool  puppeting = false;  // before this frame's puppet decision
 		bool  mcInWorld = false;
+		bool  resyncing = false;  // the teleport handshake runs (Minecraft hasn't arrived where the game put the player)
 		float dt = 0.0f;
 		float heading = 0.0f;  // the ped's heading (GTA degrees)
 	};

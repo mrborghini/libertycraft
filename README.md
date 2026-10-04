@@ -122,6 +122,9 @@ Minecraft's `config/libertycraft.properties`.
 - [x] **M9**: Minecraft blocks stop GTA's bullets, Minecraft attacks feed GTA's own crime system (wanted levels
   escalate), killing blows ragdoll, Minecraft fire and lava burn peds and cars, cars slow and stall in Minecraft
   water, a trimmed Minecraft HUD in vehicles
+- [x] **M10**: walking into peds pushes them (sprinting makes them stumble), elytra, falls and sprint-jumps knock
+  them down by speed, corpses can be hit and dragged, doors swing open and shut on GTA's own hinges, every vehicle
+  (helicopters and their rotors too) knocks you over, and entering interiors no longer drops Minecraft mode
 
 Known gaps: no shadows on blocks indoors; peds wade instead of swim in Minecraft water; cutscene support needs
 1.0.8.0; peds take double damage from Minecraft explosions. (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)

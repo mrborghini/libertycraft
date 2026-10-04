@@ -27,9 +27,12 @@ import org.jspecify.annotations.Nullable;
  * explosions) can target and hit GTA IV's NPCs and cars. What it receives is collected into one hit per
  * tick and forwarded to the real thing; its own health never drops.
  *
- * <p>It is solid: the local player and mobs can't walk through it (and {@link ProxyPush} puts them back
- * out when the ped or car moves into them). The server leaves players out of that: it would see the
- * stand-in a tick late and take the client's moves for moves into it.
+ * <p>A vehicle's pieces are solid: the local player and mobs can't walk through them (and
+ * {@link ProxyPush} puts them back out when the car moves into them). The server leaves players out of
+ * that: it would see the stand-in a tick late and take the client's moves for moves into it. A ped is
+ * solid for mobs only: the player pushes it out of the way (ProxyPushClient sends kEvBump, GTA IV moves,
+ * trips or knocks down the ped by the player's speed). A dead ped's corpse ({@link #isHostCorpse}) is a
+ * low stand-in over the body, never solid: hits and the player push it around.
  */
 public class HostActorEntity extends LivingEntity {
 	private static final EntityDataAccessor<Integer> FORM_ID = SynchedEntityData.defineId(HostActorEntity.class, EntityDataSerializers.INT);
@@ -79,6 +82,11 @@ public class HostActorEntity extends LivingEntity {
 	/** One piece of a GTA IV vehicle rather than a ped. */
 	public boolean isHostVehicle() {
 		return (this.hostFlags() & Proto.ACTOR_VEHICLE) != 0;
+	}
+
+	/** A dead ped's body on the ground (not a wreck): hit and pushed, never solid. */
+	public boolean isHostCorpse() {
+		return (this.hostFlags() & (Proto.ACTOR_DEAD | Proto.ACTOR_VEHICLE)) == Proto.ACTOR_DEAD;
 	}
 
 	@Override
@@ -269,8 +277,16 @@ public class HostActorEntity extends LivingEntity {
 
 	@Override
 	public boolean canBeCollidedWith(@Nullable Entity other) {
-		// Solid for whoever moves into it; on the server not for players (see the class comment).
-		return this.isAlive() && !(other instanceof HostActorEntity) && (this.level().isClientSide() || !(other instanceof net.minecraft.world.entity.player.Player));
+		// Vehicles are solid for whoever moves into them; on the server not for players (see the class
+		// comment). Peds only for mobs: the player pushes them out of the way instead (ProxyPushClient,
+		// kEvBump), and corpses are never solid.
+		if (!this.isAlive() || other instanceof HostActorEntity || this.isHostCorpse()) {
+			return false;
+		}
+		if (other instanceof net.minecraft.world.entity.player.Player) {
+			return this.isHostVehicle() && this.level().isClientSide();
+		}
+		return true;
 	}
 
 	@Override

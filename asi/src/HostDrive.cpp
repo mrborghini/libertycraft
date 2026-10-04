@@ -11,17 +11,23 @@
 #include "Log.h"
 #include "NikoBody.h"
 #include "NpcBlocks.h"
+#include "collision/Rays.h"
 #include "combat/CombatMath.h"
+#include "drive/VehicleHit.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace lc::HostDrive
 {
 	namespace
 	{
 		namespace S = ::Scripting;
+		namespace hit = ::lc::drive::hit;
 
 		constexpr float kFallbackRadius = 10.0f;     // VehicleEnterFallback looks this far for a car
 		constexpr float kDebugCarRadius = 12.0f;     // DebugAutoVehicle: "near a car"
@@ -184,17 +190,17 @@ namespace lc::HostDrive
 		// ---- knocked over (RagdollOnVehicleHit): a car ran into the player, a blast ------------------------
 		constexpr float kUprightSpeed = 0.5f;  // m/s: slower than this on his feet counts as standing
 		constexpr float kHandBackSeconds = 0.5f;  // the body stays on Niko this long at most while Minecraft takes over
-		constexpr float kHitRange = 9.0f;      // vehicles this close (centre to the player) are checked
-		constexpr float kHitSpeed = 3.0f;      // m/s: slower cars push, they don't knock over
-		constexpr float kHitMargin = 0.35f;    // the player's radius around the car's box
 		struct Knock
 		{
 			bool  pending = false;  // ragdoll Niko once puppet mode has let go of him
-			float gx = 0.0f, gy = 0.0f, force = 0.0f, wait = 0.0f;
+			float gx = 0.0f, gy = 0.0f, force = 0.0f, wait = 0.0f, up = 0.3f;
 			int   ms = 0;
+			bool  rotors = false;  // a spinning rotor is near: GTA's own would chop him as he falls
 			char  what[96] = "";
 		};
 		Knock knock;
+		float rotorProof = 0.0f;  // > 0: Niko is invincible this many seconds more (falling out of a rotor's reach)
+		float afterKnock = 0.0f;  // > 0: watching Niko this long after a knockdown's release
 		const char* roadRequest = nullptr;  // DebugRequestRoad
 		int   knockdowns = 0;  // for DriveLogic, this frame
 		char  uprightWhy[96] = "";  // the standing check's parts (logged when a recovery runs out of time)
@@ -260,21 +266,362 @@ namespace lc::HostDrive
 			}
 		}
 
-		void StartKnock(float a_gx, float a_gy, float a_force, int a_ms, const char* a_what)
+		void StartKnock(float a_gx, float a_gy, float a_force, int a_ms, const char* a_what, float a_up = 0.3f)
 		{
 			knock.pending = true;
 			knock.gx = a_gx;
 			knock.gy = a_gy;
 			knock.force = a_force;
+			knock.up = a_up;
+			knock.rotors = false;
 			knock.ms = a_ms;
 			knock.wait = 0.0f;
 			std::snprintf(knock.what, sizeof(knock.what), "%s", a_what);
 			++knockdowns;
 		}
 
-		// While puppeting: a vehicle moving into the player (the player's point inside its box, plus
-		// their radius) faster than kHitSpeed. Niko is frozen with his collision off, so GTA never
-		// sees the hit itself.
+		// ---- what a vehicle is to a hit (RagdollOnVehicleHit) ---------------------------------------------
+		// Cars, bikes, boats and trains: their model box. Helicopters and planes: their body measured once
+		// per model with line probes against its collision (VEHICLES only, this vehicle alone), as slabs
+		// along its length (a cabin and a thin tail boom, not one box round both, nor round the rotor);
+		// a helicopter's rotors as discs around their hubs (the vehicle structure's rotor bones).
+		struct Slab
+		{
+			float lo[3], hi[3];
+		};
+		struct HitShape
+		{
+			hit::Kind         kind = hit::Kind::kCar;
+			bool              ok = false;
+			float             lo[3]{}, hi[3]{};
+			std::vector<Slab> slabs;      // measured body (helicopters, planes); empty: the box
+			int               slicesDone = 0, sliceHits = 0;
+			bool              measured = false;  // (or not measurable: the box)
+			hit::Rotor        rotor[2];   // main, tail (radius 0: none)
+			int               spinBone[2] = { -1, -1 };
+			float             reach = 0.0f;  // from its origin, nothing farther can touch
+			bool              logged = false;
+		};
+		std::unordered_map<std::int32_t, HitShape> hitShapes;  // by model index
+		constexpr int                              kSlices = 16;
+		constexpr int                              kAcross = 13;
+
+		struct HitTrack
+		{
+			hit::Pose     pose;
+			std::uint32_t frame = 0;
+			float         spinAxis[2][3]{};  // the moving rotor bones' y axis last frame (vehicle frame)
+			bool          haveSpin[2] = { false, false };
+			float         spin[2] = { 0.0f, 0.0f };  // rad/s, smoothed
+		};
+		std::unordered_map<int, HitTrack> hitTracks;
+		std::uint32_t                     hitFrame = 0;
+		struct HitCounters
+		{
+			std::uint32_t body = 0, rotor = 0, touchingSlow = 0;
+			float         fastestTouch = 0.0f;  // m/s, touching but no hit
+		} hitCounters;
+
+		hit::Pose PoseOf(const CMatrix& a_m)
+		{
+			hit::Pose p;
+			p.pos[0] = a_m.pos.x, p.pos[1] = a_m.pos.y, p.pos[2] = a_m.pos.z;
+			p.right[0] = a_m.right.x, p.right[1] = a_m.right.y, p.right[2] = a_m.right.z;
+			p.fwd[0] = a_m.up.x, p.fwd[1] = a_m.up.y, p.fwd[2] = a_m.up.z;  // IV-SDK's rows: "up" = forward, "at" = up
+			p.up[0] = a_m.at.x, p.up[1] = a_m.at.y, p.up[2] = a_m.at.z;
+			return p;
+		}
+
+		// A bone's matrix (CDynamicEntity::GetBoneMatrix), guarded: false if it faults.
+		bool ReadBone(CVehicle* a_v, int a_bone, CMatrix& a_out)
+		{
+			CMatrix* m = nullptr;
+			__try {
+				m = a_v->GetBoneMatrix(a_bone);
+				if (m) {
+					a_out = *m;
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				m = nullptr;
+			}
+			return m != nullptr;
+		}
+
+		// The vehicle structure's bone for a part (-1: none).
+		int PartBone(std::int32_t a_model, int a_part)
+		{
+			if (a_model < 0 || a_model >= 31000 || a_part < 0 || a_part >= 102) {
+				return -1;
+			}
+			auto* mi = reinterpret_cast<CVehicleModelInfo*>(CModelInfo::ms_modelInfoPtrs[a_model]);
+			if (!mi || !mi->m_pVehicleStruct) {
+				return -1;
+			}
+			const std::uint32_t b = mi->m_pVehicleStruct->m_nBones[a_part];
+			return b < 256 ? static_cast<int>(b) : -1;
+		}
+
+		// A bone's position in the vehicle's frame (GetBoneMatrix's may be the world's or the model's).
+		bool BoneLocal(CVehicle* a_v, const hit::Pose& a_pose, int a_bone, float a_out[3], float a_axis[3] = nullptr)
+		{
+			CMatrix m{};
+			if (a_bone < 0 || !ReadBone(a_v, a_bone, m)) {
+				return false;
+			}
+			const float w[3] = { m.pos.x, m.pos.y, m.pos.z };
+			const float dw = std::sqrt((w[0] - a_pose.pos[0]) * (w[0] - a_pose.pos[0]) + (w[1] - a_pose.pos[1]) * (w[1] - a_pose.pos[1]) +
+			                           (w[2] - a_pose.pos[2]) * (w[2] - a_pose.pos[2]));
+			const float dl = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+			if (!std::isfinite(dw + dl)) {
+				return false;
+			}
+			const bool world = dw < dl;
+			if (world) {
+				hit::ToLocal(a_pose, w, a_out);
+			} else {
+				a_out[0] = w[0], a_out[1] = w[1], a_out[2] = w[2];
+			}
+			if (a_axis) {
+				const float ax[3] = { m.up.x, m.up.y, m.up.z };  // (its y axis: turns whether it spins about z or x)
+				if (world) {
+					a_axis[0] = ax[0] * a_pose.right[0] + ax[1] * a_pose.right[1] + ax[2] * a_pose.right[2];
+					a_axis[1] = ax[0] * a_pose.fwd[0] + ax[1] * a_pose.fwd[1] + ax[2] * a_pose.fwd[2];
+					a_axis[2] = ax[0] * a_pose.up[0] + ax[1] * a_pose.up[1] + ax[2] * a_pose.up[2];
+				} else {
+					a_axis[0] = ax[0], a_axis[1] = ax[1], a_axis[2] = ax[2];
+				}
+			}
+			return std::fabs(a_out[0]) < 30.0f && std::fabs(a_out[1]) < 30.0f && std::fabs(a_out[2]) < 30.0f;
+		}
+
+		// A vertical probe (the vehicle's frame) against a_veh alone: where it meets it.
+		bool ProbeOwn(CVehicle* a_veh, const hit::Pose& a_pose, const float a_from[3], const float a_to[3], float a_hit[3])
+		{
+			float from[3], to[3];
+			hit::ToWorld(a_pose, a_from, from);
+			hit::ToWorld(a_pose, a_to, to);
+			for (int pass = 0; pass < 3; ++pass) {
+				tLineOfSightResults res;
+				--col::rayCounters.rays;  // (not a map probe)
+				if (!col::CastGta(from, to, res, VEHICLES)) {
+					return false;
+				}
+				const float* p = &res.m_vEndPosition.x;
+				if (!std::isfinite(p[0] + p[1] + p[2])) {
+					return false;
+				}
+				const auto* inst = reinterpret_cast<const rage::phInst*>(res.m_pInst);
+				if (!inst || inst->m_pEntity == a_veh) {
+					hit::ToLocal(a_pose, p, a_hit);
+					return true;
+				}
+				const float dir[3] = { to[0] - from[0], to[1] - from[1], to[2] - from[2] };
+				const float len = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+				const float along = ((p[0] - from[0]) * dir[0] + (p[1] - from[1]) * dir[1] + (p[2] - from[2]) * dir[2]) / std::max(len, 1e-4f) + 0.02f;
+				if (len < 1e-4f || along >= len) {
+					return false;
+				}
+				for (int k = 0; k < 3; ++k) {
+					from[k] += dir[k] / len * along;
+				}
+			}
+			return false;
+		}
+
+		// One slice of a helicopter's or plane's body a frame: probes down and up across it (under the
+		// main rotor from just below its blades: they have collision), then in from both sides for its
+		// width. After the last slice a helicopter's tail rotor goes on its tail's end.
+		void MeasureSlice(CVehicle* a_veh, const hit::Pose& a_pose, HitShape& a_s)
+		{
+			const int   i = a_s.slicesDone++;
+			const float d = (a_s.hi[1] - a_s.lo[1]) / kSlices, y = a_s.lo[1] + (static_cast<float>(i) + 0.5f) * d;
+			const float step = (a_s.hi[0] - a_s.lo[0]) / (kAcross - 1);
+			const auto& main = a_s.rotor[0];
+			Slab        slab{ { 1e9f, y - d * 0.5f, 1e9f }, { -1e9f, y + d * 0.5f, -1e9f } };
+			int         hits = 0;
+			for (int k = 0; k < kAcross; ++k) {
+				const float x = a_s.lo[0] + step * static_cast<float>(k);
+				const bool  underRotor = main.radius > 0.0f && std::hypot(x - main.hub[0], y - main.hub[1]) <= main.radius + 0.3f;
+				const float topZ = underRotor ? main.hub[2] - 0.35f : a_s.hi[2] + 0.5f;
+				float       h[3];
+				const float top[3] = { x, y, topZ }, bottom[3] = { x, y, a_s.lo[2] - 0.5f };
+				bool        any = false;
+				for (int dir = 0; dir < 2; ++dir) {
+					if (dir == 0 ? ProbeOwn(a_veh, a_pose, top, bottom, h) : ProbeOwn(a_veh, a_pose, bottom, top, h)) {
+						slab.hi[2] = std::max(slab.hi[2], h[2]);
+						slab.lo[2] = std::min(slab.lo[2], h[2]);
+						any = true;
+					}
+				}
+				if (any) {
+					++hits;
+					slab.lo[0] = std::min(slab.lo[0], x - step * 0.5f);
+					slab.hi[0] = std::max(slab.hi[0], x + step * 0.5f);
+				}
+			}
+			if (hits) {
+				// Its width: between the outermost probe that met it and the next one out, halved 3 times.
+				const auto meets = [&](float a_x) {
+					const bool  underRotor = main.radius > 0.0f && std::hypot(a_x - main.hub[0], y - main.hub[1]) <= main.radius + 0.3f;
+					const float top[3] = { a_x, y, underRotor ? main.hub[2] - 0.35f : a_s.hi[2] + 0.5f }, bottom[3] = { a_x, y, a_s.lo[2] - 0.5f };
+					float       h[3];
+					return ProbeOwn(a_veh, a_pose, top, bottom, h) || ProbeOwn(a_veh, a_pose, bottom, top, h);
+				};
+				for (int side = 0; side < 2; ++side) {
+					float in = side == 0 ? slab.lo[0] + step * 0.5f : slab.hi[0] - step * 0.5f;  // (the outermost that met)
+					float out = side == 0 ? in - step : in + step;
+					for (int b = 0; b < 3; ++b) {
+						const float mid = (in + out) * 0.5f;
+						(meets(mid) ? in : out) = mid;
+					}
+					(side == 0 ? slab.lo[0] : slab.hi[0]) = (in + out) * 0.5f;
+				}
+				++a_s.sliceHits;
+				slab.lo[0] = std::max(slab.lo[0], a_s.lo[0]), slab.hi[0] = std::min(slab.hi[0], a_s.hi[0]);
+				if (slab.hi[2] - slab.lo[2] < 0.3f) {  // (a thin skin: give it some depth)
+					slab.lo[2] -= 0.15f, slab.hi[2] += 0.15f;
+				}
+				a_s.slabs.push_back(slab);
+			}
+			if (a_s.slicesDone < kSlices) {
+				return;
+			}
+			a_s.measured = true;
+			if (a_s.sliceHits < kSlices / 3) {
+				a_s.slabs.clear();  // the probes hardly met it: the model box
+			}
+			float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
+			for (const auto& b : a_s.slabs) {
+				for (int k = 0; k < 3; ++k) {
+					lo[k] = std::min(lo[k], b.lo[k]), hi[k] = std::max(hi[k], b.hi[k]);
+				}
+			}
+			// The tail rotor (its bone's position is its parent's, not the model's): on the side of the tail's
+			// last slab, as tall as half of it.
+			auto& tail = a_s.rotor[1];
+			if (a_s.kind == hit::Kind::kHeli && !a_s.slabs.empty() && a_s.spinBone[1] >= 0) {
+				const Slab& end = a_s.slabs.front();  // (lowest y: the tail)
+				tail.hub[0] = std::fabs(tail.hub[0]) < 1.0f ? tail.hub[0] : 0.0f;
+				tail.hub[1] = (end.lo[1] + end.hi[1]) * 0.5f;
+				tail.hub[2] = (end.lo[2] + end.hi[2]) * 0.5f;
+				tail.radius = std::clamp((end.hi[2] - end.lo[2]) * 0.5f, 0.6f, 1.2f);
+				tail.axis = 0;
+				tail.inner = 0.1f;
+			} else {
+				tail.radius = 0.0f;
+			}
+			LC_LOG("vehicle hits: %s model %d body measured: %d of %d slices met%s; body x %+.2f..%+.2f, y %+.2f..%+.2f, z %+.2f..%+.2f (model box x %+.2f..%+.2f, "
+			       "y %+.2f..%+.2f, z %+.2f..%+.2f); tail rotor %s %+.2f %+.2f %+.2f r %.2f",
+				hit::KindName(a_s.kind), a_veh->m_nModelIndex, a_s.sliceHits, kSlices, a_s.slabs.empty() ? " (too few: the model box)" : "",
+				a_s.slabs.empty() ? 0.0f : lo[0], a_s.slabs.empty() ? 0.0f : hi[0], a_s.slabs.empty() ? 0.0f : lo[1], a_s.slabs.empty() ? 0.0f : hi[1],
+				a_s.slabs.empty() ? 0.0f : lo[2], a_s.slabs.empty() ? 0.0f : hi[2], a_s.lo[0], a_s.hi[0], a_s.lo[1], a_s.hi[1], a_s.lo[2], a_s.hi[2],
+				tail.radius > 0.0f ? "at" : "none", tail.hub[0], tail.hub[1], tail.hub[2], tail.radius);
+			for (const auto& b : a_s.slabs) {
+				LC_LOG("vehicle hits:   slab y %+.2f..%+.2f: x %+.2f..%+.2f, z %+.2f..%+.2f", b.lo[1], b.hi[1], b.lo[0], b.hi[0], b.lo[2], b.hi[2]);
+			}
+		}
+
+		HitShape& ShapeFor(CVehicle* a_veh, int a_handle, const hit::Pose& a_pose)
+		{
+			auto [it, fresh] = hitShapes.try_emplace(a_veh->m_nModelIndex);
+			HitShape& s = it->second;
+			if (fresh) {
+				s.kind = a_veh->m_nVehicleType <= 5 ? static_cast<hit::Kind>(a_veh->m_nVehicleType) : hit::Kind::kCar;
+				s.ok = NpcBlocks::ModelBox(a_handle, a_veh->m_nModelIndex, s.lo, s.hi);
+				s.measured = !(s.kind == hit::Kind::kHeli || s.kind == hit::Kind::kPlane);
+				unsigned model = 0;
+				S::GET_CAR_MODEL(a_handle, &model);
+				if (s.kind == hit::Kind::kHeli) {
+					// The rotors: hubs from the structure's bones (static, else moving), the main one as wide
+					// as the model box's widest reach from its hub, the tail one 1.0 m.
+					for (int r = 0; r < 2; ++r) {
+						float hub[3];
+						const int still = PartBone(a_veh->m_nModelIndex, r == 0 ? 89 : 91), moving = PartBone(a_veh->m_nModelIndex, r == 0 ? 90 : 92);
+						s.spinBone[r] = moving;
+						if (BoneLocal(a_veh, a_pose, still, hub) || BoneLocal(a_veh, a_pose, moving, hub)) {
+							auto& ro = s.rotor[r];
+							ro.hub[0] = hub[0], ro.hub[1] = hub[1], ro.hub[2] = hub[2];
+							ro.axis = r == 0 ? 2 : 0;
+							if (r == 0) {
+								const float rx = std::max(hub[0] - s.lo[0], s.hi[0] - hub[0]);
+								ro.radius = std::clamp(rx, 2.0f, 9.0f);
+								ro.inner = 0.4f;
+							} else {
+								ro.radius = 0.0f;  // (its bone's position is its parent's: placed once the body is measured)
+								ro.inner = 0.1f;
+							}
+						}
+					}
+				}
+				float r2 = 0.0f;
+				for (int c = 0; c < 8; ++c) {
+					const float x = (c & 1) ? s.hi[0] : s.lo[0], y = (c & 2) ? s.hi[1] : s.lo[1], z = (c & 4) ? s.hi[2] : s.lo[2];
+					r2 = std::max(r2, x * x + y * y + z * z);
+				}
+				s.reach = std::sqrt(r2) + std::max(s.rotor[0].radius, s.rotor[1].radius);
+				if (s.kind != hit::Kind::kCar || !s.ok || Cfg().diagnostics) {
+					LC_LOG("vehicle hits: model %08X (%s, index %d) is a %s (IS_THIS_MODEL_A_HELI %d, BIKE %d, BOAT %d); model box x %+.2f..%+.2f, "
+					       "y %+.2f..%+.2f, z %+.2f..%+.2f%s",
+						model, S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model), a_veh->m_nModelIndex, hit::KindName(s.kind), S::IS_THIS_MODEL_A_HELI(model) ? 1 : 0,
+						S::IS_THIS_MODEL_A_BIKE(model) ? 1 : 0, S::IS_THIS_MODEL_A_BOAT(model) ? 1 : 0, s.lo[0], s.hi[0], s.lo[1], s.hi[1], s.lo[2], s.hi[2],
+						s.ok ? "" : " (no usable box: never hits)");
+				}
+				if (s.kind == hit::Kind::kHeli) {
+					for (int r = 0; r < 2; ++r) {
+						LC_LOG("vehicle hits:   %s rotor: bones %d / %d (still / moving); %s", r == 0 ? "main" : "tail", PartBone(a_veh->m_nModelIndex, r == 0 ? 89 : 91),
+							s.spinBone[r],
+							s.rotor[r].radius > 0.0f || r == 1 ? "hub found" : "no hub (no rotor strikes)");
+						if (s.rotor[r].radius > 0.0f) {
+							LC_LOG("vehicle hits:   hub %+.2f %+.2f %+.2f (vehicle frame), radius %.2f m", s.rotor[r].hub[0], s.rotor[r].hub[1], s.rotor[r].hub[2],
+								s.rotor[r].radius);
+						}
+					}
+				}
+			}
+			if (!s.measured && s.ok) {
+				MeasureSlice(a_veh, a_pose, s);
+			}
+			return s;
+		}
+
+		// How fast a rotor turns (rad/s): its moving bone's axis this frame against last frame's.
+		void TrackSpin(CVehicle* a_veh, const hit::Pose& a_pose, const HitShape& a_s, HitTrack& a_t, bool a_prev, float a_dt)
+		{
+			for (int r = 0; r < 2; ++r) {
+				float hub[3], axis[3];
+				if (a_s.spinBone[r] < 0 || !BoneLocal(a_veh, a_pose, a_s.spinBone[r], hub, axis)) {
+					a_t.haveSpin[r] = false;
+					continue;
+				}
+				if (a_prev && a_t.haveSpin[r] && a_dt > 1e-4f) {
+					const float* o = a_t.spinAxis[r];
+					const float  dot = std::clamp(o[0] * axis[0] + o[1] * axis[1] + o[2] * axis[2], -1.0f, 1.0f);
+					const float  w = std::acos(dot) / a_dt;
+					if (std::isfinite(w)) {
+						a_t.spin[r] += (w - a_t.spin[r]) * std::min(1.0f, a_dt * 8.0f);
+					}
+				}
+				std::copy(axis, axis + 3, a_t.spinAxis[r]);
+				a_t.haveSpin[r] = true;
+			}
+		}
+
+		void Knocked(const hit::Blow& a_b, float a_gx, float a_gy, float a_up, const char* a_what, bool a_rotors = false)
+		{
+			StartKnock(a_gx, a_gy, a_b.force, a_b.ms, a_what, a_up);
+			knock.rotors = a_rotors;
+			float mcDamage = 0.0f;
+			if (Config::Get().combat) {
+				mcDamage = combat::McDamageFromGta(a_b.gtaDamage, Config::Get().playerDamageScale);
+				Game::ReportHurt(::libertycraft::proto::kHurtOther, combat::HostDamageForMc(mcDamage), 0, 0);
+			}
+			LC_LOG("%s: knocked over (force %.0f, ragdoll %d ms), %.0f GTA damage -> %.2f Minecraft damage", a_what, a_b.force, a_b.ms, a_b.gtaDamage, mcDamage);
+		}
+
+		// While puppeting: any vehicle (car, bike, boat, helicopter, plane, train) whose body runs into the
+		// player (his column inside its box, or a measured slab, plus his radius) with its point there
+		// moving at 3 m/s or more (helicopters, planes and trains 2), or whose spinning rotor crosses him.
+		// Niko is frozen with his collision off, so GTA never sees the hit itself.
 		void DetectVehicleHits(const Frame& a_f)
 		{
 			CPed* p = FindPlayerPed();
@@ -282,52 +629,107 @@ namespace lc::HostDrive
 			if (!p || !p->m_pMatrix || !pool) {
 				return;
 			}
-			const auto P = p->m_pMatrix->pos;  // the root, ~1 m above the feet
+			const float     root[3] = { p->m_pMatrix->pos.x, p->m_pMatrix->pos.y, p->m_pMatrix->pos.z };  // ~1 m above the feet
+			const hit::Tuning tune{};
+			bool            knocked = false;
 			for (int slot = pool->FindNextUsed(0); slot >= 0; slot = pool->FindNextUsed(slot + 1)) {
 				CVehicle* veh = pool->Get(slot);
 				if (!veh || !veh->m_pMatrix) {
 					continue;
 				}
 				const auto& m = *veh->m_pMatrix;
-				const float dx = P.x - m.pos.x, dy = P.y - m.pos.y, dz = P.z - m.pos.z;
-				if (dx * dx + dy * dy > kHitRange * kHitRange || std::fabs(dz) > 4.0f) {
+				const float dx = root[0] - m.pos.x, dy = root[1] - m.pos.y, dz = root[2] - m.pos.z, d2 = dx * dx + dy * dy + dz * dz;
+				if (d2 > 60.0f * 60.0f) {
 					continue;
 				}
-				CVector v{};
-				veh->GetVelocity(&v);
-				const float speed = std::hypot(v.x, v.y);
-				if (!std::isfinite(speed) || speed < kHitSpeed || v.x * dx + v.y * dy <= 0.0f) {
-					continue;  // slow, or moving away from the player
+				const int       handle = static_cast<int>(pool->GetIndex(veh));
+				const hit::Pose pose = PoseOf(m);
+				HitShape&       s = ShapeFor(veh, handle, pose);
+				auto&           tr = hitTracks[handle];
+				const bool      prev = tr.frame + 1 == hitFrame;
+				const hit::Pose was = tr.pose;
+				tr.pose = pose;
+				tr.frame = hitFrame;
+				if (s.kind == hit::Kind::kHeli) {
+					TrackSpin(veh, pose, s, tr, prev, a_f.dt);
 				}
-				const int handle = static_cast<int>(pool->GetIndex(veh));
-				float     lo[3], hi[3];
-				if (!NpcBlocks::ModelBox(handle, veh->m_nModelIndex, lo, hi)) {
+				if (!s.ok || !prev || knocked || std::sqrt(d2) > s.reach + 2.5f) {
 					continue;
 				}
-				// IV-SDK's CMatrix rows: right = x, "up" = forward (y), "at" = up (z).
-				const float lx = dx * m.right.x + dy * m.right.y + dz * m.right.z;
-				const float ly = dx * m.up.x + dy * m.up.y + dz * m.up.z;
-				const float lz = dx * m.at.x + dy * m.at.y + dz * m.at.z;
-				if (lx < lo[0] - kHitMargin || lx > hi[0] + kHitMargin || ly < lo[1] - kHitMargin || ly > hi[1] + kHitMargin || lz < lo[2] - 1.2f ||
-					lz > hi[2] + 0.3f) {
+				const float jump = std::hypot(pose.pos[0] - was.pos[0], pose.pos[1] - was.pos[1]) + std::fabs(pose.pos[2] - was.pos[2]);
+				if (jump > 4.0f) {
+					continue;  // moved by GTA (respawn, teleport)
+				}
+				if (!s.measured) {
+					continue;  // (a helicopter's or plane's body is being measured: a frame or two)
+				}
+				const bool engine = veh->m_nVehicleFlags.bEngineOn;
+				bool       spinning[2] = { false, false };
+				for (int r = 0; r < 2 && s.kind == hit::Kind::kHeli; ++r) {
+					spinning[r] = s.rotor[r].radius > 0.0f && (tr.haveSpin[r] ? tr.spin[r] > 8.0f : engine);
+				}
+				// ---- the body
+				const float minSpeed = hit::Heavy(s.kind) ? tune.heavySpeed : tune.speed;
+				hit::BodyHit best;
+				if (s.slabs.empty()) {
+					best = hit::Body(pose, was, a_f.dt, s.lo, s.hi, root, minSpeed, tune);
+				} else {
+					for (const auto& b : s.slabs) {
+						const auto h = hit::Body(pose, was, a_f.dt, b.lo, b.hi, root, minSpeed, tune);
+						if (h.hit || (h.touching && !best.touching)) {
+							best = h;
+							if (h.hit) {
+								break;
+							}
+						}
+					}
+				}
+				if (best.hit) {
+					const auto  blow = hit::BodyBlow(best.speed, s.kind);
+					float       gx = best.vel[0], gy = best.vel[1];
+					const float h = std::hypot(gx, gy);
+					if (h < 0.5f * best.speed || h < 1.0f) {
+						// Mostly down (a helicopter landing on him): out from under it.
+						float mid[3] = { (s.lo[0] + s.hi[0]) * 0.5f, (s.lo[1] + s.hi[1]) * 0.5f, (s.lo[2] + s.hi[2]) * 0.5f }, midW[3];
+						hit::ToWorld(pose, mid, midW);
+						gx = root[0] - midW[0], gy = root[1] - midW[1];
+					}
+					const float g = std::max(std::hypot(gx, gy), 1e-3f);
+					char        what[128];
+					std::snprintf(what, sizeof(what), "%s %d hit the player at %.1f m/s (%.1f down)", hit::KindName(s.kind), handle, best.speed, -best.vel[2]);
+					LC_LOG("%s: the player at %+.2f %+.2f %+.2f in its frame (%s)", what, best.local[0], best.local[1], best.local[2],
+						s.slabs.empty() ? "model box" : "measured body");
+					Knocked(blow, gx / g, gy / g, 0.3f, what, spinning[0] || spinning[1]);
+					++hitCounters.body;
+					knocked = true;
 					continue;
 				}
-				// Thrown along the car's way; harder and longer the faster it was.
-				const float force = std::clamp(2.0f * speed, 8.0f, 40.0f);
-				const int   ms = static_cast<int>(std::clamp(1500.0f + 150.0f * speed, 1500.0f, 5000.0f));
-				// (GTA's own damage while he tumbles comes on top: Minecraft still owns his health then)
-				const float gtaDamage = std::clamp(2.5f * speed, 8.0f, 100.0f);
-				char        what[96];
-				std::snprintf(what, sizeof(what), "vehicle %d hit the player at %.1f m/s", handle, speed);
-				StartKnock(v.x / speed, v.y / speed, force, ms, what);
-				float mcDamage = 0.0f;
-				if (Config::Get().combat) {
-					mcDamage = combat::McDamageFromGta(gtaDamage, Config::Get().playerDamageScale);
-					Game::ReportHurt(::libertycraft::proto::kHurtOther, combat::HostDamageForMc(mcDamage), 0, 0);
+				if (best.touching) {
+					++hitCounters.touchingSlow;
+					hitCounters.fastestTouch = std::max(hitCounters.fastestTouch, best.speed);
 				}
-				LC_LOG("%s (%.1f m to its side, %.1f m along it): knocked over (force %.0f, ragdoll %d ms), %.0f GTA damage -> %.2f Minecraft damage", what, lx, ly,
-					force, ms, gtaDamage, mcDamage);
-				return;
+				// ---- a helicopter's spinning rotors
+				if (s.kind != hit::Kind::kHeli) {
+					continue;
+				}
+				for (int r = 0; r < 2 && !knocked; ++r) {
+					if (!spinning[r]) {
+						continue;
+					}
+					const auto st = hit::Strike(pose, s.rotor[r], root, tune);
+					if (!st.hit) {
+						continue;
+					}
+					char what[128];
+					std::snprintf(what, sizeof(what), "the %s rotor of helicopter %d (%.0f rad/s%s) struck the player %.1f m from its hub", r == 0 ? "main" : "tail", handle,
+						tr.spin[r], tr.haveSpin[r] ? "" : ", engine on", st.rho);
+					Knocked(hit::RotorBlow(r == 0), st.fling[0], st.fling[1], std::max(0.3f, st.fling[2] * 1.5f), what, true);
+					++hitCounters.rotor;
+					knocked = true;
+				}
+			}
+			for (auto it = hitTracks.begin(); it != hitTracks.end();) {
+				it = it->second.frame == hitFrame ? std::next(it) : hitTracks.erase(it);
 			}
 		}
 
@@ -425,6 +827,181 @@ namespace lc::HostDrive
 			debugRunT = -25.0f;  // the next one 40 s on
 			LC_LOG("DebugRunOver: test car %d 15 m up the road (%.1f %.1f %.1f), driving at the player at 12 m/s (heading %.0f)", debugRunCar, sx, sy, ground,
 				aim);
+		}
+
+		// DebugVehicleHit=heli,drop,rotor,bike,car: one test vehicle at a time runs into the puppeted
+		// player, 20 s into puppet mode and 15 s after the last one is gone (back on his feet):
+		//  - heli: a Maverick (engine on, blades at full speed) 16 m ahead of the camera, a little off the
+		//    ground, flies at him at 8 m/s (its velocity held level every frame);
+		//  - drop: one 9 m over him comes down at 4 m/s;
+		//  - rotor: one 14 m ahead on the ground creeps at him at 3 m/s until its hub is 2.5 m away (stand
+		//    the player on something about 3 m up first: its rotor reaches him before its body);
+		//  - bike / car: a PCJ / an Admiral 15 m ahead of the camera drives at him at 12 m/s.
+		// The vehicle is deleted 8 s after it started.
+		struct VehicleHitTest
+		{
+			std::vector<std::string> list;
+			bool                     parsed = false;
+			std::size_t              next = 0;
+			float                    wait = 30.0f;
+			int                      car = 0;
+			unsigned                 model = 0;
+			std::string              kind;
+			float                    age = 0.0f, logT = 0.0f;
+			bool                     requested = false, pushing = false;
+		} vht;
+
+		void PushVehicle(int a_car, const CVector& a_v)
+		{
+			CVehicle* v = CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(a_car)) : nullptr;
+			CVector   vel = a_v;
+			if (v) {
+				if (auto* c = v->GetConstrainedCollider()) {
+					c->SetVelocity(&vel);
+					return;
+				}
+			}
+			S::SET_CAR_FORWARD_SPEED(a_car, std::hypot(a_v.x, a_v.y));
+		}
+
+		void DebugVehicleHitTick(const Frame& a_f)
+		{
+			auto& t = vht;
+			if (Cfg().debugVehicleHit.empty() || !a_f.exists) {
+				return;
+			}
+			if (!t.parsed) {
+				t.parsed = true;
+				std::string cur;
+				for (const char c : Cfg().debugVehicleHit + ",") {
+					if (c == ',') {
+						if (!cur.empty()) {
+							t.list.push_back(cur);
+						}
+						cur.clear();
+					} else if (c != ' ') {
+						cur += c;
+					}
+				}
+			}
+			CPed* player = FindPlayerPed();
+			if (t.car) {
+				t.age += a_f.dt;
+				const bool exists = S::DOES_VEHICLE_EXIST(t.car);
+				CVehicle*  v = exists && CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(t.car)) : nullptr;
+				const bool down = knock.pending || logic.recovering();
+				if (v && v->m_pMatrix && player && player->m_pMatrix && t.pushing && !down && t.age < 6.0f) {
+					const auto& pos = v->m_pMatrix->pos;
+					const auto& me = player->m_pMatrix->pos;
+					const float dx = me.x - pos.x, dy = me.y - pos.y, d = std::max(std::hypot(dx, dy), 0.01f);
+					if (t.kind == "heli") {
+						PushVehicle(t.car, CVector{ dx / d * 8.0f, dy / d * 8.0f, 0.0f });
+					} else if (t.kind == "drop") {
+						PushVehicle(t.car, CVector{ dx / d * std::min(d * 2.0f, 1.0f), dy / d * std::min(d * 2.0f, 1.0f), -4.0f });
+					} else if (t.kind == "rotor") {
+						if (d < 2.5f) {
+							t.pushing = false;
+							PushVehicle(t.car, CVector{ 0.0f, 0.0f, 0.0f });
+						} else {
+							PushVehicle(t.car, CVector{ dx / d * 3.0f, dy / d * 3.0f, 0.0f });
+						}
+					} else {
+						// (riderless bikes wander off a straight line: aimed at him every frame)
+						CVector vel{};
+						v->GetVelocity(&vel);
+						S::SET_CAR_HEADING(t.car, std::atan2(-dx, dy) / kDegToRad);
+						PushVehicle(t.car, CVector{ dx / d * 12.0f, dy / d * 12.0f, vel.z });
+					}
+					if (t.kind == "heli" || t.kind == "drop" || t.kind == "rotor") {
+						S::SET_HELI_BLADES_FULL_SPEED(t.car);
+					}
+				} else if (down) {
+					t.pushing = false;
+				}
+				if (v && v->m_pMatrix && player && player->m_pMatrix && (t.logT -= a_f.dt) <= 0.0f) {
+					t.logT = 0.25f;
+					CVector vel{};
+					v->GetVelocity(&vel);
+					const auto& pos = v->m_pMatrix->pos;
+					const auto& me = player->m_pMatrix->pos;
+					const auto  it = hitTracks.find(t.car);
+					LC_LOG("DebugVehicleHit: %s %d at %.1f s: %.1f m from the player (%.1f up), velocity %.1f %.1f %.1f, engine %s, rotor %.0f / %.0f rad/s",
+						t.kind.c_str(), t.car, t.age, std::hypot(me.x - pos.x, me.y - pos.y), pos.z - me.z, vel.x, vel.y, vel.z,
+						v->m_nVehicleFlags.bEngineOn ? "on" : "off", it != hitTracks.end() ? it->second.spin[0] : -1.0f,
+						it != hitTracks.end() ? it->second.spin[1] : -1.0f);
+				}
+				if (!exists || t.age > 8.0f) {
+					if (exists) {
+						S::DELETE_CAR(&t.car);
+					}
+					LC_LOG("DebugVehicleHit: %s test over", t.kind.c_str());
+					t.car = 0;
+					t.wait = 15.0f;
+				}
+				return;
+			}
+			if (!a_f.puppeting || a_f.paused || logic.mode() != drive::Mode::kMinecraft || logic.recovering() || t.next >= t.list.size() || !player ||
+				!player->m_pMatrix) {
+				return;
+			}
+			if ((t.wait -= a_f.dt) > 0.0f) {
+				return;
+			}
+			const std::string& kind = t.list[t.next];
+			const bool         heli = kind == "heli" || kind == "drop" || kind == "rotor";
+			const unsigned     model = S::GET_HASH_KEY(heli ? "maverick" : kind == "bike" ? "pcj" : "admiral");
+			if (!t.requested) {
+				t.requested = true;
+				CStreaming::ScriptRequestModel(static_cast<std::int32_t>(model));
+			}
+			if (!S::HAS_MODEL_LOADED(model)) {
+				return;
+			}
+			t.requested = false;
+			++t.next;
+			const auto& me = player->m_pMatrix->pos;
+			float       fx = 0.0f, fy = 1.0f;
+			if (const CCam* cam = TheCamera.m_pFinalCam) {
+				const float h = std::hypot(cam->m_mMatrix.up.x, cam->m_mMatrix.up.y);
+				if (h > 0.1f) {
+					fx = cam->m_mMatrix.up.x / h, fy = cam->m_mMatrix.up.y / h;
+				}
+			}
+			const float dist = kind == "drop" ? 0.0f : kind == "rotor" ? 14.0f : kind == "heli" ? 16.0f : 15.0f;
+			const float x = me.x + fx * dist, y = me.y + fy * dist;
+			float       ground = me.z - 1.0f, here = me.z - 1.0f;
+			S::GET_GROUND_Z_FOR_3D_COORD(x, y, me.z + 3.0f, &ground);
+			S::GET_GROUND_Z_FOR_3D_COORD(me.x, me.y, me.z + 1.0f, &here);  // (GTA's ground under him: not Minecraft's blocks)
+			if (!std::isfinite(here) || here < me.z - 8.0f || here > me.z + 1.0f) {
+				here = me.z - 1.0f;
+			}
+			if (!std::isfinite(ground) || ground < here - 3.0f || ground > me.z + 2.0f) {
+				ground = here;  // (over water: the sea bed)
+			}
+			if (heli) {
+				ground = std::max(ground, here);
+			}
+			const float z = kind == "drop" ? me.z + 9.0f : kind == "heli" ? ground + 1.2f : ground + 0.5f;
+			S::CREATE_CAR(model, x, y, z, &t.car, true);
+			S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
+			if (!t.car) {
+				LC_LOG("DebugVehicleHit: CREATE_CAR failed for %s", kind.c_str());
+				t.wait = 5.0f;
+				return;
+			}
+			const float aim = std::atan2(-(me.x - x), me.y - y) / kDegToRad;
+			S::SET_CAR_HEADING(t.car, kind == "drop" ? std::atan2(-fx, fy) / kDegToRad : aim);
+			if (heli) {
+				S::SET_CAR_ENGINE_ON(t.car, true, true);
+				S::SET_HELI_BLADES_FULL_SPEED(t.car);
+			}
+			t.kind = kind;
+			t.model = model;
+			t.age = 0.0f;
+			t.logT = 0.0f;
+			t.pushing = true;
+			LC_LOG("DebugVehicleHit: %s test: vehicle %d at %.1f %.1f %.1f (%.1f m from the player, ground %.1f), heading %.0f", kind.c_str(), t.car, x, y, z, dist,
+				ground, aim);
 		}
 
 		void EnterByOtherMeans(int a_ped)
@@ -705,7 +1282,11 @@ namespace lc::HostDrive
 		hiddenPed = 0;  // the ped is going away with the old session
 		knock = Knock{};
 		knockdowns = 0;
+		rotorProof = 0.0f;
+		afterKnock = 0.0f;
+		hitTracks.clear();
 		debugRunCar = 0;
+		vht.car = 0;
 		NikoBody::OnIngameStartup();
 		seatLoggedFor = 0;
 		lastReason = nullptr;
@@ -713,6 +1294,7 @@ namespace lc::HostDrive
 
 	Result Tick(const Frame& a_f)
 	{
+		++hitFrame;  // (vehicle hits: last frame's poses only count from the frame right before)
 		if (!configured) {
 			configured = true;
 			logic = drive::Logic(Cfg().toggleStartsInMinecraft);
@@ -850,6 +1432,7 @@ namespace lc::HostDrive
 		}
 		if (active) {
 			DebugRunOverTick(a_f);
+			DebugVehicleHitTick(a_f);
 		}
 		if (inGame) {
 			DebugCutsceneTick(a_f);
@@ -970,14 +1553,35 @@ namespace lc::HostDrive
 		if (knock.pending) {
 			knock.wait += a_f.dt;
 			if (a_f.exists && !a_f.puppeting && !a_f.inCar && !a_f.dead) {
+				if (knock.rotors) {
+					// GTA IV's own spinning rotor chops a ped it touches (measured: 660 health in one go, which
+					// Combat would hand to Minecraft as 66 damage on top of our strike's): his fall out of its
+					// reach is invincible (collision-proof doesn't cover it).
+					S::SET_CHAR_INVINCIBLE(a_f.ped, true);
+					rotorProof = 1.0f;
+				}
+				afterKnock = 1.5f;
 				S::SWITCH_PED_TO_RAGDOLL(a_f.ped, knock.ms, knock.ms, false, false, false, false);
 				// World-direction force (APPLY_FORCE_TO_PED's 10th argument 0; Combat.cpp measured it).
-				S::APPLY_FORCE_TO_PED(a_f.ped, 3, knock.gx * knock.force, knock.gy * knock.force, knock.force * 0.3f, 0.0f, 0.0f, 0.0f, 0, 0, 1, 1);
+				S::APPLY_FORCE_TO_PED(a_f.ped, 3, knock.gx * knock.force, knock.gy * knock.force, knock.force * knock.up, 0.0f, 0.0f, 0.0f, 0, 0, 1, 1);
 				LC_LOG("knocked over (%s): Niko ragdolled for %d ms, pushed %.2f %.2f x %.0f", knock.what, knock.ms, knock.gx, knock.gy, knock.force);
 				knock.pending = false;
 			} else if (knock.wait > 1.0f) {
 				LC_LOG("knockdown dropped (%s): Niko wasn't free to fall within 1 s", knock.what);
 				knock.pending = false;
+			}
+		}
+		if (rotorProof > 0.0f && (rotorProof -= a_f.dt) <= 0.0f) {
+			if (a_f.exists && !a_f.puppeting) {
+				S::SET_CHAR_INVINCIBLE(a_f.ped, false);  // (puppet mode sets its own)
+			}
+			LC_LOG("knockdown: Niko can be hurt by GTA again (out of the rotor's reach)");
+		}
+		if (afterKnock > 0.0f) {
+			afterKnock -= a_f.dt;
+			if (!a_f.exists || a_f.dead) {
+				LC_LOG("knockdown: Niko died %.2f s after the knockdown's release (GTA killed him)", 1.5f - afterKnock);
+				afterKnock = 0.0f;
 			}
 		}
 		if (out.blocker != lastReason) {
@@ -1052,7 +1656,20 @@ namespace lc::HostDrive
 		}
 		handBackT = a_f.puppeting ? 0.0f : std::max(0.0f, handBackT - a_f.dt);
 		const bool handingBack = handBackT > 0.0f && !out.hostDrives && lastWhy != drive::Why::kNone;
-		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, handingBack ? lastWhy : out.why, out.hostDrives || handingBack, a_f.mcInWorld);
+		// The game moved the player (a warp through a door, a script): Game's teleport handshake runs and
+		// Minecraft holds its player until his ground has arrived; Niko stays hidden (Game leaves him so)
+		// under the Minecraft body standing on his skeleton meanwhile.
+		const bool resyncBody = a_f.resyncing && !a_f.puppeting && !out.hostDrives && !handingBack && logic.mode() == drive::Mode::kMinecraft;
+		const drive::Why bodyWhy = handingBack ? lastWhy : resyncBody ? drive::Why::kRagdoll : out.why;
+		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, bodyWhy, out.hostDrives || handingBack || resyncBody, a_f.mcInWorld);
+		static int loggedResync = 0;  // 0 none, 1 with the body, 2 without (no body from Minecraft yet)
+		const int  resyncState = resyncBody ? (bodyPed ? 1 : 2) : 0;
+		if (resyncState != loggedResync) {
+			loggedResync = resyncState;
+			LC_LOG("%s", resyncState == 1   ? "teleport handshake: Niko hidden under the Minecraft body until Minecraft arrives"
+			             : resyncState == 2 ? "teleport handshake: no Minecraft body to show yet (Niko as puppet mode left him: hidden)"
+			                                : "teleport handshake over");
+		}
 		const bool hide = out.inVehicle && Cfg().hideNikoInVehicle && logic.mode() == drive::Mode::kMinecraft && a_f.mcInWorld;
 		if (bodyPed) {
 			SetHidden(bodyPed, true, "the Minecraft body follows his animation");

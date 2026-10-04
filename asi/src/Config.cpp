@@ -262,6 +262,7 @@ namespace lc
 		if (auto v = get("debugtestcarmodel")) debugTestCarModel = *v;
 		if (auto v = get("debugcarcover")) debugCarCover = ToBool(*v, debugCarCover);
 		if (auto v = get("debugbulletwall")) debugBulletWall = std::atoi(v->c_str());
+		if (auto v = get("debugbumpped")) debugBumpPed = std::atoi(v->c_str());
 		if (auto v = get("gtacrimes")) gtaCrimes = ToBool(*v, gtaCrimes);
 		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
 		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
@@ -286,6 +287,7 @@ namespace lc
 		if (auto v = get("ragdollonvehiclehit")) ragdollOnVehicleHit = ToBool(*v, ragdollOnVehicleHit);
 		if (auto v = get("debugbailout")) debugBailOut = ToBool(*v, debugBailOut);
 		if (auto v = get("debugrunover")) debugRunOver = ToBool(*v, debugRunOver);
+		if (auto v = get("debugvehiclehit")) debugVehicleHit = Lower(*v);
 		if (auto v = get("debugcutscene")) debugCutscene = *v;
 		if (auto v = get("debuggiveweapon")) debugGiveWeapon = std::atoi(v->c_str());
 		if (auto v = get("hazardsburnpeds")) hazardsBurnPeds = ToBool(*v, hazardsBurnPeds);
@@ -340,8 +342,8 @@ namespace lc
 		LC_LOG("config: HazardsBurnPeds=%d HazardsBurnVehicles=%d LiquidsSlowVehicles=%d LiquidsSlowPeds=%d MinecraftWaterIsGtaWater=%d%s%s%s", hazardsBurnPeds,
 			hazardsBurnVehicles, liquidsSlowVehicles, liquidsSlowPeds, minecraftWaterIsGtaWater,
 			debugHazards ? " DebugHazards=1" : "", debugHazardInject.empty() ? "" : " DebugHazardInject=", debugHazardInject.c_str());
-		LC_LOG("config: RagdollOnVehicleHit=%d%s%s%s%s", ragdollOnVehicleHit, debugBailOut ? " DebugBailOut=1" : "", debugRunOver ? " DebugRunOver=1" : "",
-			debugCutscene.empty() ? "" : " DebugCutscene=", debugCutscene.c_str());
+		LC_LOG("config: RagdollOnVehicleHit=%d%s%s%s%s%s%s", ragdollOnVehicleHit, debugBailOut ? " DebugBailOut=1" : "", debugRunOver ? " DebugRunOver=1" : "",
+			debugCutscene.empty() ? "" : " DebugCutscene=", debugCutscene.c_str(), debugVehicleHit.empty() ? "" : " DebugVehicleHit=", debugVehicleHit.c_str());
 		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
 			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyScale, minecraftBodyHide.c_str(),
 			debugBody ? " DebugBody=1" : "");

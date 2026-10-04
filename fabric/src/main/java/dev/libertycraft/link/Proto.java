@@ -88,6 +88,11 @@ public final class Proto {
 	public static final int EV_SKILL_USE = 5;
 	/** LibertyCraft: where the next EV_HIT_ACTOR on the same vehicle piece landed (see kEvHitPoint). */
 	public static final int EV_HIT_POINT = 6;
+	/** LibertyCraft: the player ran into a ped's stand-in (kEvBump): a = speed m/s, b/c = motion dir x/z, d = overlap; flags BUMP_*. */
+	public static final int EV_BUMP = 7;
+	public static final int BUMP_SPRINTING = 1;
+	public static final int BUMP_FLYING = 1 << 1;
+	public static final int BUMP_NEW_CONTACT = 1 << 2;
 	// SkyCraft's Skyrim skills (ActorValue). Kept for protocol parity; LibertyCraft never sends
 	// EV_SKILL_USE because GTA IV has no skill XP to feed.
 	public static final int SKILL_BLOCK = 9;

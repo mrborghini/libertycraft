@@ -55,6 +55,7 @@ namespace lc::Combat
 			std::uint32_t vehiclesSent = 0, vehicleHits = 0, vehicleHitsStale = 0, vehicleBlastHits = 0, occupantHits = 0, windows = 0, wrecked = 0;
 			std::uint32_t vehiclePointsOnCar = 0, vehiclePointsOff = 0, vehicleNoPoint = 0;
 			std::uint32_t crimes = 0, fights = 0, flees = 0, driversFled = 0;
+			std::uint32_t corpseHits = 0, corpseBumps = 0, bumpNudges = 0, bumpStumbles = 0, bumpKnockdowns = 0;
 			std::uint32_t hurtsSent = 0, hurtFrames = 0, hurtDroppedIgnored = 0, hurtDroppedBlast = 0;
 			float         hurtGtaDamage = 0.0f;
 			double        gatherUs = 0.0;
@@ -724,6 +725,25 @@ namespace lc::Combat
 				unsigned health = 0;
 				const bool dead = S::IS_CHAR_DEAD(handle) || (S::GET_CHAR_HEALTH(handle, &health), health == 0);
 				if (dead) {
+					if (p->m_nPedFlags2.bInCar || S::IS_CHAR_IN_ANY_CAR(handle)) {
+						continue;  // slumped in a seat: hits go through the car
+					}
+					// A corpse on the ground: a low box over its torso, between the pelvis and the neck
+					// (hit and pushed by Minecraft, not solid).
+					S::Vector3 pelvis{}, neck{};
+					S::GET_PED_BONE_POSITION(handle, 0x1A1 /* pelvis */, 0.0f, 0.0f, 0.0f, &pelvis);
+					S::GET_PED_BONE_POSITION(handle, 0x4B4 /* neck */, 0.0f, 0.0f, 0.0f, &neck);
+					const float bx = neck.x - pelvis.x, by = neck.y - pelvis.y;
+					if (std::isfinite(pelvis.x + pelvis.y + pelvis.z + neck.x + neck.y + neck.z) && bx * bx + by * by < 4.0f) {
+						x = (pelvis.x + neck.x) * 0.5f;
+						y = (pelvis.y + neck.y) * 0.5f;
+						z = std::min(pelvis.z, neck.z) - 0.25f + feetDrop;  // (feetDrop comes off below)
+						r.width = std::clamp(std::sqrt(bx * bx + by * by) + 0.6f, 0.9f, 1.6f);
+					} else {
+						z = m.z - 0.3f + feetDrop;
+						r.width = 1.2f;
+					}
+					r.height = 0.6f;
 					r.flags = proto::kActorDead;
 					r.healthFrac = 0.0f;
 					heading = p->m_fCurrentHeading * kRadToDeg;
@@ -1012,6 +1032,295 @@ namespace lc::Combat
 			}
 		}
 
+		// ---- bodies Minecraft runs into or hits (kEvBump; corpses) -----------------------------------------
+		// Where a ped is (its root), dead or alive: from its matrix (the natives refuse dead peds).
+		bool PedRoot(int a_ped, float& a_x, float& a_y, float& a_z)
+		{
+			CPed* p = CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(a_ped)) : nullptr;
+			if (!p || !p->m_pMatrix) {
+				return false;
+			}
+			a_x = p->m_pMatrix->pos.x, a_y = p->m_pMatrix->pos.y, a_z = p->m_pMatrix->pos.z;
+			return true;
+		}
+
+		std::unordered_map<int, float> bumpCooldown;    // ped -> seconds until it can be knocked again
+		std::unordered_map<int, float> speechCooldown;  // ped -> seconds until it complains again
+
+		// A ped's physics state (1.0.8.0: CPed +0x7C8; 2 animated, 6 ragdoll; a settled corpse lies animated).
+		int PhysicsState(int a_ped)
+		{
+			const CPed* p = CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(a_ped)) : nullptr;
+			if (!p || plugin::gameVer != plugin::VERSION_1080) {
+				return -1;
+			}
+			int v = 0;
+			std::memcpy(&v, reinterpret_cast<const std::uint8_t*>(p) + 0x7C8, sizeof(v));
+			return v;
+		}
+
+		// A corpse takes a push. While its death ragdoll still moves (physics state 6) the push is a
+		// force on the ragdoll. A settled corpse lies animated in its dead pose (state 2) and its dead
+		// task won't let it be a ragdoll again (measured: SWITCH_PED_TO_RAGDOLL, any kind, makes it one
+		// for a single frame, then it is back in its pose and the force is lost), so it is thrown
+		// along an arc instead, as it lies (CorpseFlings): a_speed m/s along the push, a_lift up.
+		struct CorpseFling
+		{
+			int   ped;
+			float x, y, z;        // where it started (its root)
+			float vx, vy, vz;     // m/s
+			float above;          // its root's height over the ground where it lay
+			float t;
+		};
+		std::vector<CorpseFling> corpseFlings;
+
+		// (Measured: force 7.2 moves a fresh ragdoll 1 to 4 m; the arc covers about the same.)
+		bool PushCorpse(int a_ped, float a_gx, float a_gy, float a_force, float a_speed, float a_lift)
+		{
+			float x = 0, y = 0, z = 0;
+			if (!PedRoot(a_ped, x, y, z)) {
+				return false;
+			}
+			if (shoves.size() < 16) {
+				shoves.push_back({ a_ped, x, y, z, kKnockbackCheckSeconds, a_force, a_gx, a_gy, 0.0f, kKnockVariant });
+			}
+			if (PhysicsState(a_ped) == 6 || S::IS_PED_RAGDOLL(a_ped)) {
+				Knock(a_ped, a_gx, a_gy, a_force, 0.0f, kKnockVariant);
+				return true;
+			}
+			float ground = z - 0.2f;
+			S::GET_GROUND_Z_FOR_3D_COORD(x, y, z + 0.5f, &ground);
+			for (auto& f : corpseFlings) {
+				if (f.ped == a_ped) {
+					f = CorpseFling{ a_ped, x, y, z, a_gx * a_speed, a_gy * a_speed, a_lift, std::max(z - ground, 0.05f), 0.0f };
+					return false;
+				}
+			}
+			if (corpseFlings.size() < 16) {
+				corpseFlings.push_back({ a_ped, x, y, z, a_gx * a_speed, a_gy * a_speed, a_lift, std::max(z - ground, 0.05f), 0.0f });
+			}
+			return false;
+		}
+
+		void CorpseFlings(float a_dt)
+		{
+			for (auto it = corpseFlings.begin(); it != corpseFlings.end();) {
+				CorpseFling& f = *it;
+				CPed* p = CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(f.ped)) : nullptr;
+				if (!p || !p->m_pMatrix || !S::DOES_CHAR_EXIST(f.ped)) {
+					it = corpseFlings.erase(it);
+					continue;
+				}
+				f.t += a_dt;
+				const float t = f.t;
+				float       nx = f.x + f.vx * t, ny = f.y + f.vy * t, nz = f.z + f.vz * t - 4.9f * t * t;
+				float       ground = nz - f.above;
+				S::GET_GROUND_Z_FOR_3D_COORD(nx, ny, std::max(nz, f.z) + 1.0f, &ground);
+				const bool landed = (t > 0.05f && nz <= ground + f.above) || t > 1.5f;
+				if (landed) {
+					nz = ground + f.above;
+				}
+				CVector to{ nx, ny, nz };
+				p->Teleport(&to, false, true);
+				if (landed) {
+					it = corpseFlings.erase(it);
+					continue;
+				}
+				++it;
+			}
+		}
+
+		void HitCorpse(int a_ped, const proto::McEvent& a_ev)
+		{
+			float gx = 0.0f, gy = 0.0f;
+			if (!PushDirToGta(a_ev.b, a_ev.c, gx, gy)) {
+				LC_LOG_EVERY(1000, "hit on corpse %08X: no knockback direction", a_ev.formId);
+				return;
+			}
+			const bool  projectile = (a_ev.flags & proto::kHitProjectile) != 0;
+			const float force = CorpseHitForce(a_ev.d, a_ev.a, projectile);
+			const bool  ragdoll = PushCorpse(a_ped, gx, gy, force, force * 0.3f, 2.0f);
+			++counters.corpseHits;
+			LC_LOG("hit corpse %08X for %.2f Minecraft (knockback %.2f%s): %s along GTA %.2f %.2f", a_ev.formId, a_ev.a, a_ev.d, projectile ? ", projectile" : "",
+				ragdoll ? "its ragdoll pushed (force)" : "thrown as it lies (settled)", gx, gy);
+		}
+
+		// The Minecraft player ran into a ped's stand-in (proto::kEvBump; CombatMath.h BumpOf).
+		void Bump(const proto::McEvent& a_ev, const Frame& a_frame)
+		{
+			std::uint32_t handle = 0;
+			const int     ped = HandleFromActorId(a_ev.formId, handle) ? static_cast<int>(handle) : 0;
+			if (!ped || ped == a_frame.ped || !S::DOES_CHAR_EXIST(ped)) {
+				return;
+			}
+			float x = 0, y = 0, z = 0, px = 0, py = 0, pz = 0;
+			if (!PedRoot(ped, x, y, z) || !PedRoot(a_frame.ped, px, py, pz)) {
+				return;
+			}
+			// Away from the player, and along his run when he's moving.
+			float mx = 0.0f, my = 0.0f;
+			const bool moving = a_ev.a > 1.0f && PushDirToGta(a_ev.b, a_ev.c, mx, my);
+			float ax = x - px, ay = y - py;
+			const float al = std::sqrt(ax * ax + ay * ay);
+			ax = al > 1e-3f ? ax / al : mx, ay = al > 1e-3f ? ay / al : my;
+			float gx = ax + (moving ? mx : 0.0f), gy = ay + (moving ? my : 0.0f);
+			const float gl = std::sqrt(gx * gx + gy * gy);
+			if (gl < 1e-3f) {
+				return;
+			}
+			gx /= gl, gy /= gl;
+			const float speed = std::max(a_ev.a, 0.0f);
+			const bool  newContact = (a_ev.flags & proto::kBumpNewContact) != 0;
+			float&      cooldown = bumpCooldown[ped];
+			unsigned    health = 0;
+			const bool  dead = S::IS_CHAR_DEAD(ped) || (S::GET_CHAR_HEALTH(ped, &health), health == 0);
+			if (dead) {
+				// Dragged and rolled along: a push now and then while the player walks into it.
+				if (cooldown > 0.0f) {
+					return;
+				}
+				cooldown = 0.35f;
+				const float force = CorpseBumpForce(speed);
+				// (A walk drags it along the ground; faster throws it.)
+				const bool ragdoll = PushCorpse(ped, gx, gy, force, std::max(speed, 1.5f) * 0.8f, speed > kBumpStumbleSpeed ? speed * 0.15f : 0.4f);
+				++counters.corpseBumps;
+				LC_LOG_EVERY(250, "bump: the player (%.1f m/s) pushed corpse %08X (%s)", speed, a_ev.formId, ragdoll ? "its ragdoll, force" : "as it lies");
+				return;
+			}
+			if (S::IS_CHAR_IN_ANY_CAR(ped)) {
+				return;
+			}
+			const BumpOutcome o = BumpOf(speed);
+			if (o.kind != BumpOutcome::kNudge && cooldown <= 0.0f && (newContact || o.kind == BumpOutcome::kKnockdown)) {
+				float heading = 0.0f;
+				S::GET_CHAR_HEADING(ped, &heading);
+				S::UNLOCK_RAGDOLL(ped, true);
+				bool switched = S::SWITCH_PED_TO_RAGDOLL(ped, o.ragdollMs, o.ragdollMs, false, false, false, false);
+				if (!switched && o.kind == BumpOutcome::kKnockdown) {
+					S::CLEAR_CHAR_TASKS_IMMEDIATELY(ped);
+					switched = S::SWITCH_PED_TO_RAGDOLL(ped, o.ragdollMs, o.ragdollMs, false, false, false, false);
+				}
+				if (switched) {
+					cooldown = o.kind == BumpOutcome::kKnockdown ? 2.0f : 1.5f;
+					Knock(ped, gx, gy, o.force, heading, kKnockVariant);
+					++counters.ragdolls;
+					++(o.kind == BumpOutcome::kKnockdown ? counters.bumpKnockdowns : counters.bumpStumbles);
+					if (shoves.size() < 16) {
+						shoves.push_back({ ped, x, y, z, kKnockbackCheckSeconds, o.force, gx, gy, heading, kKnockVariant });
+					}
+					unsigned type = 0;
+					S::GET_PED_TYPE(ped, &type);
+					LC_LOG("bump: the player hit %s %08X at %.1f m/s%s%s: %s, ragdoll %d ms, force %.1f along GTA %.2f %.2f, %.0f GTA damage", PedTypeName(type),
+						a_ev.formId, speed, (a_ev.flags & proto::kBumpSprinting) ? " (sprinting)" : "", (a_ev.flags & proto::kBumpFlying) ? " (flying)" : "",
+						o.kind == BumpOutcome::kKnockdown ? "knocked down" : "stumbles", o.ragdollMs, o.force, gx, gy, o.gtaDamage);
+					if (o.gtaDamage > 0.0f) {
+						proto::McEvent hurt{};
+						hurt.type = proto::kEvBump;
+						hurt.formId = a_ev.formId;
+						hurt.a = o.gtaDamage / std::max(Cfg().pedDamageScale, 0.01f);  // (as Minecraft damage)
+						hurt.weapon = proto::kWeaponUnarmed;
+						if (health <= static_cast<unsigned>(o.gtaDamage + kDeathHealth) && pendingKills.size() < 16) {
+							pendingKills.push_back({ ped, hurt, health, 0.0f, 0, x, y, z, gx, gy });  // dies in the ragdoll (PendingKills)
+						} else {
+							unsigned after = 0, damage = 0;
+							DamagePed(ped, hurt.a, health, after, damage);
+							if (damage > 0) {
+								AfterAttack(ped, type, S::IS_CHAR_DEAD(ped), a_frame, 0, CrimeForAttack(0, proto::kWeaponUnarmed, type == kPedTypeCop));
+							}
+						}
+					}
+					return;
+				}
+			}
+			// Walked into: out of the way (a step along the push, the overlap's worth), and a word about it.
+			CPed* p = CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(ped)) : nullptr;
+			if (!p || S::IS_PED_RAGDOLL(ped)) {
+				return;
+			}
+			const float step = NudgeStep(std::max(a_ev.d, 0.0f));
+			if (step > 0.0f) {
+				CVector to{ x + gx * step, y + gy * step, z };
+				p->Teleport(&to, false, true);
+				++counters.bumpNudges;
+			}
+			float& talk = speechCooldown[ped];
+			if (newContact && talk <= 0.0f) {
+				talk = 6.0f;
+				S::SAY_AMBIENT_SPEECH(ped, "BUMP", true, true, 0);
+			}
+			LC_LOG_EVERY(500, "bump: the player (%.1f m/s) walked into %08X: nudged %.2f m along GTA %.2f %.2f", speed, a_ev.formId, step, gx, gy);
+		}
+
+		// DebugBumpPed=N (not in the default ini): N s into play, a ped stands still 3 m ahead of the player
+		// (for a Minecraft player to run, fall or glide into: tools/fake_minecraft.py --charge, or an
+		// autorun's tp above it); its health is logged every second for 20 s.
+		struct BumpPedTest
+		{
+			int   stage = 0;  // 0 waiting, 1 standing, 2 done
+			float timer = 0.0f, logTimer = 0.0f;
+			int   ped = 0;
+		} bumpPedTest;
+
+		void BumpPedHook(const Frame& a_frame)
+		{
+			auto& b = bumpPedTest;
+			if (Cfg().debugBumpPed <= 0 || b.stage >= 2 || !a_frame.exists || a_frame.loading || !a_frame.mc) {
+				return;
+			}
+			b.timer += a_frame.dt;
+			if (b.stage == 0) {
+				if (b.timer < static_cast<float>(Cfg().debugBumpPed)) {
+					return;
+				}
+				float x = 0, y = 0, z = 0;
+				S::GET_CHAR_COORDINATES(a_frame.ped, &x, &y, &z);
+				const float hd = McYawToGtaHeading(a_frame.mc->yaw), h = hd * kDegToRad;
+				const float tx = x - std::sin(h) * 3.0f, ty = y + std::cos(h) * 3.0f;
+				S::CREATE_RANDOM_CHAR(tx, ty, z, &b.ped);
+				if (!b.ped) {
+					LC_LOG("DebugBumpPed: CREATE_RANDOM_CHAR failed");
+					b.stage = 2;
+					return;
+				}
+				float ground = z - 1.0f;
+				S::GET_GROUND_Z_FOR_3D_COORD(tx, ty, z + 1.0f, &ground);
+				S::SET_CHAR_COORDINATES(b.ped, tx, ty, ground);
+				S::SET_CHAR_HEADING(b.ped, hd + 180.0f);
+				S::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(b.ped, true);
+				S::TASK_STAND_STILL(b.ped, 60000);
+				LC_LOG("DebugBumpPed: ped %d (%08X) 3 m ahead of the player at GTA %.2f %.2f %.2f", b.ped, ActorIdFromHandle(static_cast<std::uint32_t>(b.ped)), tx, ty,
+					ground);
+				b.stage = 1;
+				b.timer = 0.0f;
+				return;
+			}
+			if ((b.logTimer += a_frame.dt) >= 1.0f) {
+				b.logTimer = 0.0f;
+				float x = 0, y = 0, z = 0;
+				unsigned health = 0;
+				const bool exists = S::DOES_CHAR_EXIST(b.ped);
+				const bool dead = exists && S::IS_CHAR_DEAD(b.ped);
+				if (exists) {
+					S::GET_CHAR_HEALTH(b.ped, &health);
+					PedRoot(b.ped, x, y, z);
+				}
+				LC_LOG("DebugBumpPed +%.0fs: ped %d %s, health %u, ragdoll %d, at GTA %.2f %.2f %.2f", b.timer, b.ped, !exists ? "gone" : dead ? "dead" : "alive", health,
+					exists && S::IS_PED_RAGDOLL(b.ped), x, y, z);
+			}
+			if (b.timer > 20.0f) {
+				b.stage = 2;
+			}
+		}
+
+		void TickBumps(float a_dt)
+		{
+			for (auto* m : { &bumpCooldown, &speechCooldown }) {
+				for (auto it = m->begin(); it != m->end();) {
+					it = (it->second -= a_dt) <= -10.0f ? m->erase(it) : std::next(it);
+				}
+			}
+		}
+
 		void ApplyHit(const proto::McEvent& a_ev, const Frame& a_frame)
 		{
 			std::uint32_t handle = 0, piece = 0;
@@ -1024,9 +1333,13 @@ namespace lc::Combat
 			if (ped && ped != a_frame.ped && S::DOES_CHAR_EXIST(ped) && !S::IS_CHAR_DEAD(ped)) {
 				S::GET_CHAR_HEALTH(ped, &before);
 			}
-			if (before == 0) {  // gone, dead, or dying (0 health, not flagged dead yet)
+			if (before == 0 && ped && ped != a_frame.ped && S::DOES_CHAR_EXIST(ped)) {
+				HitCorpse(ped, a_ev);  // dead: the body flies along the hit
+				return;
+			}
+			if (before == 0) {  // gone
 				++counters.hitsStale;
-				LC_LOG_EVERY(1000, "hit on actor %08X ignored: no such living ped any more", a_ev.formId);
+				LC_LOG_EVERY(1000, "hit on actor %08X ignored: no such ped any more", a_ev.formId);
 				return;
 			}
 			++counters.hits;
@@ -1489,18 +1802,17 @@ namespace lc::Combat
 					++it;
 					continue;
 				}
-				if (S::DOES_CHAR_EXIST(it->ped)) {
-					float x = 0, y = 0, z = 0;
-					S::GET_CHAR_COORDINATES(it->ped, &x, &y, &z);
+				float x = 0, y = 0, z = 0;
+				if (S::DOES_CHAR_EXIST(it->ped) && PedRoot(it->ped, x, y, z)) {
 					const float mx = x - it->x, my = y - it->y;
 					const float moved = std::sqrt(mx * mx + my * my);
 					// Which way it went against where Minecraft pushed (0 = straight along the push).
 					const float angle = AngleBetween(mx, my, it->dirX, it->dirY);
 					const float along = moved > 1e-4f ? (mx * it->dirX + my * it->dirY) : 0.0f;
 					static constexpr const char* kVariants[] = { "world", "ped frame", "old flags", "no force" };
-					LC_LOG("knockback: ped %d moved %.2f m in %.1f s, %.2f m along the push (%.0f deg off it; push GTA %.2f %.2f, ped heading %.0f, %s force %.1f, ragdoll %d)",
-						it->ped, moved, kKnockbackCheckSeconds, along, angle, it->dirX, it->dirY, it->heading, kVariants[it->variant & 3], it->force,
-						S::IS_PED_RAGDOLL(it->ped));
+					LC_LOG("knockback: %s %d moved %.2f m in %.1f s, %.2f m along the push (%.0f deg off it; push GTA %.2f %.2f, ped heading %.0f, %s force %.1f, ragdoll %d)",
+						S::IS_CHAR_DEAD(it->ped) ? "corpse" : "ped", it->ped, moved, kKnockbackCheckSeconds, along, angle, it->dirX, it->dirY, it->heading,
+						kVariants[it->variant & 3], it->force, S::IS_PED_RAGDOLL(it->ped));
 					auto& vs = variantStats[it->variant & 3];
 					++vs.n;
 					vs.moved += along;
@@ -2345,6 +2657,7 @@ namespace lc::Combat
 			}
 			TestCarHook(a_frame);
 			WantedHook(a_frame);
+			BumpPedHook(a_frame);
 		}
 
 		// ---- Diagnostics=1: who called into the game when it faulted ----------------------------------------
@@ -2431,6 +2744,10 @@ namespace lc::Combat
 					   "no hit point %u), occupants hit %u, windows %u, set on fire or blown up %u; crimes %u, fought back %u, ran %u, drivers fled %u",
 					secs, c.tableWrites ? double(c.vehiclesSent) / c.tableWrites : 0.0, c.vehicleHits, c.vehicleHitsStale, c.vehicleBlastHits, c.vehiclePointsOnCar,
 					c.vehiclePointsOff, c.vehicleNoPoint, c.occupantHits, c.windows, c.wrecked, c.crimes, c.fights, c.flees, c.driversFled);
+				if (c.corpseHits || c.corpseBumps || c.bumpNudges || c.bumpStumbles || c.bumpKnockdowns) {
+					LC_LOG("stats %.0fs: bodies: corpses hit %u, corpses pushed by the player %u; peds nudged %u frames, stumbled %u, knocked down %u", secs,
+						c.corpseHits, c.corpseBumps, c.bumpNudges, c.bumpStumbles, c.bumpKnockdowns);
+				}
 			}
 			if (diag && now - lastTypesMs >= 30000) {
 				lastTypesMs = now;
@@ -2471,6 +2788,9 @@ namespace lc::Combat
 		seenVehicles.clear();
 		shield = Shield{};  // (the ped is going away)
 		pendingKills.clear();
+		bumpCooldown.clear();
+		speechCooldown.clear();
+		corpseFlings.clear();
 		ClearActorTable();
 	}
 
@@ -2515,6 +2835,11 @@ namespace lc::Combat
 				break;
 			case proto::kEvArrowStuck:
 				++counters.arrows;  // drawing stuck arrows is the renderer's business
+				break;
+			case proto::kEvBump:
+				if (playable && a_frame.puppeting) {
+					Bump(ev, a_frame);
+				}
 				break;
 			default:
 				++counters.unknownEvents;
@@ -2563,6 +2888,8 @@ namespace lc::Combat
 		UpdateShield(a_frame);
 		UpdateHudHealth(a_frame);
 		PendingKills(a_frame);
+		CorpseFlings(a_frame.dt);
+		TickBumps(a_frame.dt);
 		UpdateKill(a_frame);
 		CheckShoves(a_frame.dt);
 		CheckSeats(a_frame.dt);
