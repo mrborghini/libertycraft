@@ -89,6 +89,53 @@ public final class WorldExporter {
 	private WorldExporter() {
 	}
 
+	/**
+	 * A chunk of the blocky city unloaded (the player moved on): GTA IV drops its sections, so it only
+	 * holds the city within the render distance (in the mirror world GTA IV keeps what it has).
+	 */
+	public static void dropChunk(ClientLevel level, int cx, int cz) {
+		if (level != sentLevel) {
+			return;
+		}
+		java.util.function.LongPredicate inChunk = key -> SectionPos.x(key) == cx && SectionPos.z(key) == cz;
+		int dropped = 0;
+		for (long key : SENT.toLongArray()) {
+			if (inChunk.test(key) && writeEmpty(Proto.REN_SECTION, key)) {
+				SENT.remove(key);
+				dropped++;
+			}
+		}
+		for (long key : LIT.toLongArray()) {
+			if (inChunk.test(key) && writeEmpty(Proto.REN_LIGHTS, key)) {
+				LIT.remove(key);
+			}
+		}
+		for (long key : SOLID.toLongArray()) {
+			if (inChunk.test(key) && writeEmpty(Proto.REN_SOLIDS, key)) {
+				SOLID.remove(key);
+			}
+		}
+		for (long key : WET.toLongArray()) {
+			if (inChunk.test(key) && writeEmpty(Proto.REN_LIQUIDS, key)) {
+				WET.remove(key);
+			}
+		}
+		droppedSections += dropped;
+		if (dropped > 0 && (droppedChunks++ < 5 || droppedChunks % 100 == 0)) {
+			LibertyCraft.LOG.info("[LibertyCraft] blocky city: chunk {} {} unloaded, {} sections dropped in GTA IV ({} so far, {} sections held there)", cx, cz,
+				dropped, droppedSections, SENT.size());
+		}
+	}
+
+	private static int droppedChunks, droppedSections;
+
+	/** A section's message with nothing in it (sx, sy, sz, count 0): GTA IV drops what it had. */
+	private static boolean writeEmpty(int type, long key) {
+		ByteBuffer header = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN).putInt(SectionPos.x(key)).putInt(SectionPos.y(key)).putInt(SectionPos.z(key))
+			.putInt(0).flip();
+		return Link.writeRender(type, header, ByteBuffer.allocate(0));
+	}
+
 	public static void markDirty(int sx, int sy, int sz) {
 		synchronized (DIRTY) {
 			DIRTY.add(SectionPos.asLong(sx, sy, sz));

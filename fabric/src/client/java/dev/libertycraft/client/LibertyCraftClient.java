@@ -30,6 +30,12 @@ public final class LibertyCraftClient implements ClientModInitializer {
 			}));
 		});
 		ClientTickEvents.END_CLIENT_TICK.register(HostClient::clientTick);
+		// The blocky city: GTA IV drops what Minecraft unloads (it only holds the city near the player).
+		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents.CHUNK_UNLOAD.register((level, chunk) -> {
+			if (dev.libertycraft.world.city.BlockyCity.isCity(level) && dev.libertycraft.link.Link.active()) {
+				dev.libertycraft.client.render.WorldExporter.dropChunk(level, chunk.getPos().x(), chunk.getPos().z());
+			}
+		});
 		// GTA IV's peds and cars that moved into the player put it back out (and cars shove it).
 		ClientTickEvents.END_CLIENT_TICK.register(ProxyPushClient::tick);
 		// Multiplayer testing on one PC: LIBERTYCRAFT_LAN_PORT opens the world to LAN on that port as soon

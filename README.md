@@ -125,7 +125,10 @@ traffic and HUD. Peds and cars still walk and drive on GTA IV's own (invisible) 
 copy. A nether portal there (the one you arrived through, or one you build) leads back to the same spot
 in Liberty City, and GTA IV's map comes back.
 
-`blockyCity=false` in Minecraft's `config/libertycraft.properties` makes nether portals do nothing.
+`blockyCity=false` in Minecraft's `config/libertycraft.properties` makes nether portals do nothing;
+`blockyCityRenderDistance` (12 chunks) is how far the city is drawn around you (Minecraft keeps its own
+render distance everywhere else). GTA IV only holds the blocks within that distance: what is further
+behind you is dropped and comes back as you return.
 
 ## Milestones
 

@@ -54,6 +54,13 @@ public final class BlockyCity {
 
 	/** config/libertycraft.properties {@code blockyCity}: nether portals lead to the blocky city (default true). */
 	public static volatile boolean enabled = true;
+	/**
+	 * config/libertycraft.properties {@code blockyCityRenderDistance}: Minecraft's render distance (chunks)
+	 * in the city, where its blocks are all there is to see (the mirror world keeps its own 8).
+	 */
+	public static volatile int renderDistance = 12;
+	// Forced rebuilds (the libertycraft_city command): chunks to rebuild whatever the store says.
+	private static final java.util.Set<Long> FORCED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
 	private static int tickCounter;
 
@@ -77,6 +84,24 @@ public final class BlockyCity {
 		});
 		ServerTickEvents.END_SERVER_TICK.register(BlockyCity::tick);
 		CityRecorder.startFlushing();
+		// Test hook: "libertycraft_city rebuild <radius>" rebuilds the chunks around the player now, as
+		// newer data would (what the player built must stay).
+		net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT.register((dispatcher, registry, environment) -> dispatcher.register(
+			net.minecraft.commands.Commands.literal("libertycraft_city")
+				.then(net.minecraft.commands.Commands.literal("rebuild")
+					.then(net.minecraft.commands.Commands.argument("radius", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 8)).executes(c -> {
+						int radius = com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(c, "radius");
+						BlockPos at = BlockPos.containing(c.getSource().getPosition());
+						int n = 0;
+						for (int dx = -radius; dx <= radius; dx++) {
+							for (int dz = -radius; dz <= radius; dz++) {
+								FORCED.add((long) ((at.getX() >> 4) + dx) << 32 | (((at.getZ() >> 4) + dz) & 0xFFFFFFFFL));
+								n++;
+							}
+						}
+						LibertyCraft.LOG.info("[LibertyCraft] blocky city: rebuild of {} chunks around {} forced", n, at.toShortString());
+						return n;
+					})))));
 	}
 
 	public static boolean isCity(@Nullable Level level) {
@@ -145,10 +170,11 @@ public final class BlockyCity {
 						}
 						long source = store.chunkSourceRevision(cx, cz);
 						long applied = store.chunkApplied(cx, cz);
-						if (source <= applied) {
+						boolean forced = FORCED.remove((long) cx << 32 | (cz & 0xFFFFFFFFL));
+						if (source <= applied && !forced) {
 							continue;
 						}
-						rebuild(city, store, cx, cz, applied);
+						rebuild(city, store, cx, cz, applied, forced);
 						budget--;
 					}
 				}
@@ -163,7 +189,7 @@ public final class BlockyCity {
 	 * glass block placed in the city, and the player standing on it fell). Blocks that newer data no
 	 * longer has stay until the chunk is built again (a new world).
 	 */
-	private static void rebuild(ServerLevel city, CityStore store, int cx, int cz, long applied) {
+	private static void rebuild(ServerLevel city, CityStore store, int cx, int cz, long applied, boolean forced) {
 		Map<Long, BlockState> wanted = new HashMap<>();
 		int[] span = { Integer.MAX_VALUE, Integer.MIN_VALUE };
 		int minY = city.getMinY(), maxY = city.getMaxY();
@@ -199,7 +225,7 @@ public final class BlockyCity {
 				}
 			}
 		}
-		int changed = 0;
+		int changed = 0, kept = 0;
 		if (span[0] <= span[1]) {
 			BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 			BlockState air = Blocks.AIR.defaultBlockState();
@@ -209,7 +235,11 @@ public final class BlockyCity {
 					for (int y = y0; y <= y1; y++) {
 						BlockState want = wanted.getOrDefault(BlockPos.asLong(x, y, z), air);
 						BlockState have = city.getBlockState(pos.set(x, y, z));
-						if (have == want || !mayReplace(have, want)) {
+						if (have == want) {
+							continue;
+						}
+						if (!mayReplace(have, want)) {
+							kept++; // the player's (or a portal), or something newer data no longer has
 							continue;
 						}
 						city.setBlock(pos, want, Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
@@ -219,8 +249,9 @@ public final class BlockyCity {
 			}
 		}
 		store.setChunkApplied(cx, cz, rev);
-		if (changed > 0) {
-			LibertyCraft.LOG.info("[LibertyCraft] blocky city: chunk {} {} rebuilt from newer data (revision {} -> {}): {} blocks changed", cx, cz, applied, rev, changed);
+		if (changed > 0 || forced) {
+			LibertyCraft.LOG.info("[LibertyCraft] blocky city: chunk {} {} rebuilt from {} (revision {} -> {}): {} blocks changed, {} kept as they are", cx, cz,
+				forced ? "the store (forced)" : "newer data", applied, rev, changed, kept);
 		}
 	}
 
@@ -249,9 +280,18 @@ public final class BlockyCity {
 				Files.write(file, lines);
 			}
 			enabled = Boolean.parseBoolean(on == null ? "true" : on.trim());
+			String distance = props.getProperty("blockyCityRenderDistance");
+			if (distance != null) {
+				try {
+					renderDistance = Math.max(2, Math.min(32, Integer.parseInt(distance.trim())));
+				} catch (NumberFormatException e) {
+					LibertyCraft.LOG.warn("[LibertyCraft] blockyCityRenderDistance={} isn't a number", distance);
+				}
+			}
 		} catch (IOException e) {
 			LibertyCraft.LOG.warn("[LibertyCraft] couldn't read {}", file, e);
 		}
-		LibertyCraft.LOG.info("[LibertyCraft] blocky city: {} (blockyCity in {})", enabled ? "on" : "off", file.getFileName());
+		LibertyCraft.LOG.info("[LibertyCraft] blocky city: {} (blockyCity in {}), render distance there {} chunks", enabled ? "on" : "off", file.getFileName(),
+			renderDistance);
 	}
 }

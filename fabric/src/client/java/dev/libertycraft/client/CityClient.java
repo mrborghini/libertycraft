@@ -21,6 +21,8 @@ import org.jspecify.annotations.Nullable;
 public final class CityClient {
 	private static volatile boolean inCity;
 	private static @Nullable ClientLevel lastLevel;
+	// The render distance outside the city (put back on the way out).
+	private static int outsideDistance = -1;
 
 	private CityClient() {
 	}
@@ -46,8 +48,18 @@ public final class CityClient {
 		if (now != inCity) {
 			inCity = now;
 			var p = minecraft.player;
-			LibertyCraft.LOG.info("[LibertyCraft] blocky city: {}{}; GTA IV {} its map", now ? "arrived" : "back in the mirror world",
-				p != null ? String.format(Locale.ROOT, " at %.1f %.1f %.1f", p.getX(), p.getY(), p.getZ()) : "", now ? "hides" : "shows");
+			// The city's blocks are all there is to see there: Minecraft loads (and the exporter sends)
+			// them further out than the mirror world's few placed blocks need.
+			var distance = minecraft.options.renderDistance();
+			if (now) {
+				outsideDistance = distance.get();
+				distance.set(BlockyCity.renderDistance);
+			} else if (outsideDistance > 0) {
+				distance.set(outsideDistance);
+				outsideDistance = -1;
+			}
+			LibertyCraft.LOG.info("[LibertyCraft] blocky city: {}{}; GTA IV {} its map; render distance {} chunks", now ? "arrived" : "back in the mirror world",
+				p != null ? String.format(Locale.ROOT, " at %.1f %.1f %.1f", p.getX(), p.getY(), p.getZ()) : "", now ? "hides" : "shows", distance.get());
 		}
 		return crossed;
 	}

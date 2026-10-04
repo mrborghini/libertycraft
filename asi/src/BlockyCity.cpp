@@ -29,6 +29,19 @@ namespace lc::BlockyCity
 		std::uint32_t                         scans = 0;
 		double                                scanMsSum = 0.0, scanMsMax = 0.0;
 
+		// The 32-bit game's address space in use (MiB): what the blocks' managed buffers eat into.
+		std::uint64_t AddressSpaceUsedMiB(std::uint64_t* a_totalMiB)
+		{
+			MEMORYSTATUSEX ms{};
+			ms.dwLength = sizeof(ms);
+			if (!::GlobalMemoryStatusEx(&ms)) {
+				*a_totalMiB = 0;
+				return 0;
+			}
+			*a_totalMiB = ms.ullTotalVirtual >> 20;
+			return (ms.ullTotalVirtual - ms.ullAvailVirtual) >> 20;
+		}
+
 		// A loose object that belongs to the map (street furniture, props, doors), not to someone.
 		bool MapObject(CObject* a_obj)
 		{
@@ -141,8 +154,11 @@ namespace lc::BlockyCity
 		scanMsMax = ms > scanMsMax ? ms : scanMsMax;
 		if (scans == 1 || (logT -= a_dt) <= 0.0f) {
 			logT = 10.0f;
-			LC_LOG("blocky city: GTA's map hidden: %u buildings and %u map objects in the pools, %zu hidden so far (+%zu this frame), scan %.3f ms", buildings,
-				objects, hidden.size(), hidden.size() - before, ms);
+			std::uint64_t total = 0;
+			const auto    used = AddressSpaceUsedMiB(&total);
+			LC_LOG("blocky city: GTA's map hidden: %u buildings and %u map objects in the pools, %zu hidden so far (+%zu this frame), scan %.3f ms; "
+				   "address space %llu of %llu MiB in use",
+				buildings, objects, hidden.size(), hidden.size() - before, ms, static_cast<unsigned long long>(used), static_cast<unsigned long long>(total));
 		}
 	}
 

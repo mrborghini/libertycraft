@@ -27,6 +27,7 @@ import net.minecraft.client.Minecraft;
  * # from ingame         the delay counts from when GTA IV is in game (not loading) instead of from linking
  * # wait 10             the commands below run 10 seconds later (as many waits as needed)
  * tp @s ~ ~ ~4
+ * ? execute if block ~ ~-1 ~ minecraft:glass    "?": the command's feedback goes to the log (a check)
  * </pre>
  */
 public final class DevAutorun {
@@ -76,6 +77,8 @@ public final class DevAutorun {
 					fromIngame = true;
 				} else if (line.startsWith("# wait ")) {
 					commands.add(WAIT + (long) (Double.parseDouble(line.substring(7).strip()) * 1000));
+				} else if (line.startsWith("? ")) {
+					commands.add(line); // a check: its feedback is logged
 				} else if (!line.isEmpty() && !line.startsWith("#")) {
 					commands.add(line.startsWith("/") ? line.substring(1) : line);
 				}
@@ -121,10 +124,13 @@ public final class DevAutorun {
 			now.add(command);
 		}
 		server.execute(() -> {
-			var source = server.createCommandSourceStack().withSuppressedOutput();
+			var quiet = server.createCommandSourceStack().withSuppressedOutput();
+			var loud = server.createCommandSourceStack();
 			for (String command : now) {
-				LibertyCraft.LOG.info("[LibertyCraft] autorun: {}", command);
-				server.getCommands().performPrefixedCommand(source, "execute as " + who + " at @s run " + command);
+				boolean check = command.startsWith("? ");
+				String text = check ? command.substring(2).strip() : command;
+				LibertyCraft.LOG.info("[LibertyCraft] autorun{}: {}", check ? " check" : "", text);
+				server.getCommands().performPrefixedCommand(check ? loud : quiet, "execute as " + who + " at @s run " + text);
 			}
 		});
 	}

@@ -324,7 +324,15 @@ blocks are the city around Niko:
   what streams in while the player walks around disappears too; the sky, the water surface, peds,
   vehicles and the HUD stay. The scan is logged every 10 s with its cost;
 - back in the mirror world (the bit clears) every entity hidden that is still there with the same
-  model gets both flags back; a game load forgets the list;
+  model gets both flags back; a game load forgets the list; the 10 s line also gives how much of the
+  game's 32-bit address space is in use (the blocks' vertex buffers are `D3DPOOL_MANAGED`: a copy of
+  each stays in the game's memory). Minecraft draws the city further out than the mirror world
+  (`blockyCityRenderDistance`) and drops a chunk's sections here when it unloads it (an empty
+  `kRenSection` and empty lights, solids and liquids), so only the city near the player is held.
+  Measured at 16 chunks in Broker (an area of about 400 x 400 m explored): 646 sections, 46.8 MiB of
+  vertex buffers, 1.7 M triangles in view, 0.43 ms a frame to draw them, and the address space in
+  use stayed at 2089 of 4095 MiB. The default is 12 chunks: dense parts of Algonquin stack many more
+  sections per column than Broker;
 - GTA's collision isn't touched: it is the same city, so its peds and cars walk and drive on it. The
   city's own blocks therefore don't come in `kRenSolids` / `kRenLiquids` (the mod compares each
   block with what the city's generator put there), so `NpcBlocks` and `Hazards` see only what the
