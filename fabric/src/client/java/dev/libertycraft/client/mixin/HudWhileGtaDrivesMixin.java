@@ -1,13 +1,10 @@
 package dev.libertycraft.client.mixin;
 
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
-import com.llamalad7.mixinextras.injector.WrapWithCondition;
 import dev.libertycraft.client.HostDriveClient;
 import net.minecraft.client.DeltaTracker;
-import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.Hud;
-import net.minecraft.client.gui.contextualbar.ContextualBar;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import org.spongepowered.asm.mixin.Mixin;
@@ -19,9 +16,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * While GTA IV drives the player (a vehicle, getting in, getting back up after a bail-out or a
  * knockdown) GTA's camera and aim are in charge: Minecraft's HUD keeps only the hotbar (with the
- * selected item and the offhand slot), the hearts and the food bar. Gone meanwhile: the crosshair
- * and both attack indicators, armour, the experience bar and level (and the locator and jump
- * bars in their place), air bubbles, the mount's hearts (the food bar shows instead), the action
+ * selected item and the offhand slot), the experience bar and level, the hearts and the food bar.
+ * Gone meanwhile: the crosshair and both attack indicators, armour, the locator and jump bars,
+ * air bubbles, the mount's hearts (the food bar shows instead), the action
  * bar message ("Press Left Shift to dismount"), titles, the held item's name, status effects, boss
  * bars and the camera overlays (pumpkin, vignette, portal, powder snow). Chat, the scoreboard,
  * subtitles and toasts stay. On foot in Minecraft mode nothing changes.
@@ -104,32 +101,26 @@ public abstract class HudWhileGtaDrivesMixin {
 		}
 	}
 
-	/** The experience, locator or jump bar behind the hotbar. */
-	@WrapWithCondition(
-		method = "extractHotbarAndDecorations",
-		at = @At(value = "INVOKE",
-			target = "Lnet/minecraft/client/gui/contextualbar/ContextualBar;extractBackground(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/DeltaTracker;)V")
+	/**
+	 * The bar above the hotbar is the experience bar and level, as on foot: not the jump bar of the
+	 * hidden mount nor the locator bar (with no waypoint or jumpable vehicle Minecraft picks the
+	 * experience bar, or none in creative).
+	 */
+	@ModifyExpressionValue(
+		method = "nextContextualInfoState",
+		at = @At(value = "INVOKE", target = "Lnet/minecraft/client/waypoints/ClientWaypointManager;hasWaypoints()Z")
 	)
-	private boolean libertycraft$noContextualBarBackground(ContextualBar bar, GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
-		return !libertycraft$minimal();
+	private boolean libertycraft$noLocatorBar(boolean hasWaypoints) {
+		return hasWaypoints && !libertycraft$minimal();
 	}
 
-	@WrapWithCondition(
-		method = "extractHotbarAndDecorations",
-		at = @At(value = "INVOKE",
-			target = "Lnet/minecraft/client/gui/contextualbar/ContextualBar;extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/DeltaTracker;)V")
+	@ModifyExpressionValue(
+		method = "nextContextualInfoState",
+		at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;jumpableVehicle()Lnet/minecraft/world/entity/PlayerRideableJumping;")
 	)
-	private boolean libertycraft$noContextualBar(ContextualBar bar, GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
-		return !libertycraft$minimal();
-	}
-
-	@WrapWithCondition(
-		method = "extractHotbarAndDecorations",
-		at = @At(value = "INVOKE",
-			target = "Lnet/minecraft/client/gui/contextualbar/ContextualBar;extractExperienceLevel(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/gui/Font;I)V")
-	)
-	private boolean libertycraft$noExperienceLevel(GuiGraphicsExtractor graphics, Font font, int experienceLevel) {
-		return !libertycraft$minimal();
+	private net.minecraft.world.entity.@org.jspecify.annotations.Nullable PlayerRideableJumping libertycraft$noJumpBar(
+		net.minecraft.world.entity.@org.jspecify.annotations.Nullable PlayerRideableJumping vehicle) {
+		return libertycraft$minimal() ? null : vehicle;
 	}
 
 	/** The attack indicator beside the hotbar (AttackIndicator=hotbar) draws only below full strength. */
