@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.libertycraft.link.Proto;
@@ -33,7 +34,8 @@ public abstract class ServerExplosionMixin {
 
 	@Inject(method = "explode", at = @At("HEAD"))
 	private void libertycraft$begin(CallbackInfoReturnable<Integer> cir) {
-		this.libertycraft$blast = HostDigBlast.begin((ServerExplosion) (Object) this);
+		// The blocky city is made of real blocks: no GTA IV ground to blow apart there (GTA IV still feels the blast).
+		this.libertycraft$blast = BlockyCity.isCity(((ServerExplosion) (Object) this).level()) ? null : HostDigBlast.begin((ServerExplosion) (Object) this);
 	}
 
 	@WrapOperation(

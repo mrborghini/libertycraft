@@ -126,6 +126,9 @@ namespace lc
 		// ADD_EXPLOSION type for Minecraft's explosions (0 grenade, 2 rocket, ...) and radius scale.
 		int   explosionType = 0;
 		float explosionRadiusScale = 1.0f;
+		// ADD_EXPLOSION type for a firework rocket's burst (proto::kExplosionFirework: Minecraft's crossbow
+		// RPG; 2 rocket, GTA's RPG blast), as big as its stars make it (FireworkBlast.radius).
+		int   fireworkExplosionType = 2;
 		// A Minecraft hit knocks the ped over (SWITCH_PED_TO_RAGDOLL + APPLY_FORCE_TO_PED).
 		bool ragdollOnHit = true;
 		// Test hooks (not in the default ini): DAMAGE_CHAR the puppeted player every 5 s; 15 s into a
@@ -151,6 +154,12 @@ namespace lc
 		bool debugCarCover = false;  // DebugTestCar parks it empty, front axle beside the player, a ped in cover beyond its bonnet
 		int debugBulletWall = 0;  // N s into play, a ped beside the player shoots across the blocks ahead of him (NpcBlocks)
 		int debugBumpPed = 0;  // N s into play, a ped stands still 3 m ahead of the player (Combat)
+		// N s into puppet mode, targets for crossbow fireworks where the player looks: a police helicopter
+		// hovers DebugFireworkHeliAhead m ahead, two peds and a car stand 14 m ahead (Combat.cpp
+		// FireworkTargetsHook); 0 off.
+		int debugFireworkTargets = 0;
+		float debugFireworkHeliAhead = 40.0f;  // how far ahead DebugFireworkTargets' helicopter hovers (m)
+		int debugStumbleKind = -1;  // test hook: the ragdoll kind of a stumble (CombatMath.h kRagdollBalance; -1 the default)
 		// Minecraft's attacks are crimes in GTA IV: victims fight back or flee, police seeing it (or
 		// any witness of a killing) give the player a wanted level, hurting a cop always does.
 		bool gtaCrimes = true;
@@ -217,6 +226,9 @@ namespace lc
 		std::string debugCutscene;
 		// Test hook (not in the default ini): give Niko this GTA weapon (7 pistol) 10 s into play.
 		int debugGiveWeapon = 0;
+		// Test hook (not in the default ini): 1 logs the room GTA renders from against the camera's place
+		// near interiors (ViewportRoom.cpp) every 0.25 s; 2 also switches its correction off and on every 8 s.
+		int debugViewportRoom = 0;
 		// Minecraft's fire, lava and magma burn GTA's peds on foot (and lava sets vehicles alight). Hazards.h.
 		bool hazardsBurnPeds = true;
 		bool hazardsBurnVehicles = true;   // fire, lava and magma under a vehicle: engine fire, lava wrecks it
@@ -247,6 +259,12 @@ namespace lc
 		// (DebugBody: once a second, plus a ped scan in cutscenes).
 		std::string minecraftBodyHide = "visible";
 		bool        debugBody = false;
+		// ---- the blocky city (BlockyCity.h; collision/Rays.h) ----
+		// Collision triangles carry GTA's material of the surface they were probed on (kTriGtaMaterial),
+		// for the blocky city's blocks. Not in the default ini: DebugMaterials=1 logs the line probes'
+		// raw result fields (finding where the material is).
+		bool cityMaterials = true;
+		int  debugMaterials = 0;
 
 		static Config& Get();
 		// Loads <asi dir>/LibertyCraft.ini (creating it with defaults if absent). Logs what it got.

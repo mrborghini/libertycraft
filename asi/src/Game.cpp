@@ -5,6 +5,7 @@
 #define LC_MODULE "game"
 #include "Game.h"
 
+#include "BlockyCity.h"
 #include "Collision.h"
 #include "Combat.h"
 #include "Config.h"
@@ -16,6 +17,7 @@
 #include "Link.h"
 #include "Log.h"
 #include "Perf.h"
+#include "ViewportRoom.h"
 
 #include <algorithm>
 #include <array>
@@ -93,6 +95,7 @@ namespace lc::Game
 		float         zoom = 0.0f;
 		std::uint32_t zoomMode = 0;
 		bool          onFootForCamera = false;  // Tick's verdict, for the camera-row discovery
+		float         gtaCameraRoomCheck = 0.0f;  // seconds GTA's own camera's room is still checked (ViewportRoom)
 
 		// Which CMatrix row (0 right, 1 up, 2 at) holds the camera's right / forward / up, and its sign.
 		struct Rows
@@ -681,6 +684,11 @@ namespace lc::Game
 		return shared;
 	}
 
+	void PlacePed(int a_ped, float a_x, float a_y, float a_z)
+	{
+		MovePed(a_ped, a_x, a_y, a_z, Cfg().puppetMove == "native");
+	}
+
 	void ReportHurt(std::uint16_t a_kind, float a_damage, std::uint32_t a_attacker, std::uint32_t a_flags)
 	{
 		// Combat calls this when GTA damages the player while puppeting.
@@ -695,6 +703,8 @@ namespace lc::Game
 		LeavePuppet("the game is loading a save", false);
 		Combat::OnIngameStartup();
 		HostDrive::OnIngameStartup();
+		ViewportRoom::OnIngameStartup();
+		BlockyCity::OnIngameStartup();
 		teleportPending = true;
 		haveLastSet = false;
 		measured = false;
@@ -775,6 +785,7 @@ namespace lc::Game
 		}
 		mcWasAlive = mcAlive;
 		const bool mcInWorld = haveMc && (mc.flags & proto::kMcInWorld);
+		const bool mcCity = haveMc && (mc.flags & proto::kMcBlockyCity);  // the blocky city (BlockyCity.h)
 		const bool screenOpen = haveMc && (mc.flags & proto::kMcScreenOpen);
 		if (screenOpen && !wasScreenOpen) {
 			shared.cursorX = shared.viewportW / 2;
@@ -827,6 +838,8 @@ namespace lc::Game
 			}
 			feet = { x, y, z - rootToFeet };
 		}
+		// ---- the blocky city: GTA's map geometry hidden while Minecraft's player is in it -------------------
+		BlockyCity::Tick(mcCity && mcAlive && !loading, dt);
 		const McVec feetMc = GtaToMc(feet);
 
 		// ---- who drives: Minecraft, or GTA IV (Niko mode, vehicles, cutscenes; HostDrive.h) -------------
@@ -966,6 +979,34 @@ namespace lc::Game
 			LC_LOG("Niko mode: GTA weapon %u back in Niko's hand", holsteredWeapon);
 			holsteredWeapon = 0;
 		}
+		// In a vehicle in Minecraft mode GTA's weapon stays put away too, and there are no drive-bys;
+		// Niko mode gives both back. In a vehicle GTA's HUD shows the weapon it would drive-by with (the
+		// pistol, with the current weapon unarmed: measured), next to Minecraft's hotbar: its weapon icon
+		// and ammo are hidden meanwhile (SET_HIDE_WEAPON_ICON / DISPLAY_AMMO set flags that stay; set again
+		// every 0.5 s in case a script changes them).
+		{
+			static bool  driveByOff = false;
+			static float hudT = 0.0f;
+			const bool   keepAway = exists && !dead && !puppeting && !shared.nikoMode && (inCar || drive.inVehicle);
+			unsigned     weapon = 0;
+			if (keepAway && S::GET_CURRENT_CHAR_WEAPON(ped, &weapon) && weapon != WEAPON_UNARMED) {
+				holsteredWeapon = weapon;
+				S::SET_CURRENT_CHAR_WEAPON(ped, WEAPON_UNARMED, true);
+				LC_LOG_EVERY(2000, "GTA weapon %u put away in the vehicle (Minecraft mode)", weapon);
+			}
+			if (keepAway != driveByOff && exists) {
+				driveByOff = keepAway;
+				S::SET_PLAYER_CAN_DO_DRIVE_BY(player, !keepAway);
+				S::SET_HIDE_WEAPON_ICON(keepAway);
+				S::DISPLAY_AMMO(!keepAway);
+				hudT = 0.5f;
+				LC_LOG("drive-bys and GTA's weapon icon %s", keepAway ? "off (Minecraft mode in a vehicle)" : "back");
+			} else if (keepAway && (hudT -= dt) <= 0.0f) {
+				hudT = 0.5f;
+				S::SET_HIDE_WEAPON_ICON(true);
+				S::DISPLAY_AMMO(false);
+			}
+		}
 
 		if (puppeting) {
 			const Pose pose = Interpolate();
@@ -989,6 +1030,8 @@ namespace lc::Game
 			lastSetFeet = target;
 			haveLastSet = true;
 			BuildCamPose(pose, dt);
+			ViewportRoom::Tick(camPose.pos, ped, true, zoom > 0.05f, dt);  // (interiors: GTA renders from the camera's room)
+			gtaCameraRoomCheck = 1.5f;
 			// Niko stays hidden in every Minecraft camera mode: first person the camera sits in his head,
 			// third person Minecraft's own body is drawn there (his limbs showed through it). Every frame:
 			// GTA (scripts, the phone) can show him again.
@@ -1015,6 +1058,13 @@ namespace lc::Game
 				}
 			}
 		} else {
+			// GTA's camera jumps back to Niko: the room it renders from is checked for a moment longer.
+			if (gtaCameraRoomCheck > 0.0f && exists && TheCamera.m_pFinalCam) {
+				gtaCameraRoomCheck -= dt;
+				const auto& c = TheCamera.m_pFinalCam->m_mMatrix.pos;
+				const float at[3] = { c.x, c.y, c.z };
+				ViewportRoom::Tick(at, ped, false, true, dt);
+			}
 			camPose.valid = false;
 			tickHistory.clear();
 			lastFrameQpc = 0;

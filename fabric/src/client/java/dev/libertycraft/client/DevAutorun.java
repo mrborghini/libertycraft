@@ -24,6 +24,9 @@ import net.minecraft.client.Minecraft;
  * # camera third         then the camera goes to third person (behind), as F5 would
  * gamemode creative
  * fill ^-2 ^ ^5 ^2 ^4 ^9 minecraft:oak_planks hollow
+ * # from ingame         the delay counts from when GTA IV is in game (not loading) instead of from linking
+ * # wait 10             the commands below run 10 seconds later (as many waits as needed)
+ * tp @s ~ ~ ~4
  * </pre>
  */
 public final class DevAutorun {
@@ -31,12 +34,19 @@ public final class DevAutorun {
 
 	private static boolean done;
 	private static long linkedSince;
+	private static final String WAIT = "\u0000wait ";
+	// After a "# wait": the commands still to run, and when the next ones are due.
+	private static List<String> pending;
+	private static long pendingAt;
 
 	private DevAutorun() {
 	}
 
 	/** Called every client tick from {@link HostClient#clientTick}. */
 	static void tick(Minecraft minecraft, boolean linked) {
+		if (pending != null && minecraft.player != null && minecraft.getSingleplayerServer() != null && System.currentTimeMillis() >= pendingAt) {
+			run(minecraft, pending);
+		}
 		if (done) {
 			return;
 		}
@@ -54,6 +64,7 @@ public final class DevAutorun {
 		List<String> commands = new ArrayList<>();
 		long delayMs = 5000;
 		boolean thirdPerson = false;
+		boolean fromIngame = false;
 		try {
 			for (String raw : Files.readAllLines(file)) {
 				String line = raw.strip();
@@ -61,6 +72,10 @@ public final class DevAutorun {
 					delayMs = (long) (Double.parseDouble(line.substring(8).strip()) * 1000);
 				} else if (line.equals("# camera third")) {
 					thirdPerson = true;
+				} else if (line.equals("# from ingame")) {
+					fromIngame = true;
+				} else if (line.startsWith("# wait ")) {
+					commands.add(WAIT + (long) (Double.parseDouble(line.substring(7).strip()) * 1000));
 				} else if (!line.isEmpty() && !line.startsWith("#")) {
 					commands.add(line.startsWith("/") ? line.substring(1) : line);
 				}
@@ -71,6 +86,10 @@ public final class DevAutorun {
 			return;
 		}
 		long now = System.currentTimeMillis();
+		if (fromIngame && (!HostClient.sky().inGame() || HostClient.sky().loading())) {
+			linkedSince = 0;
+			return;
+		}
 		if (linkedSince == 0) {
 			linkedSince = now;
 		}
@@ -78,14 +97,33 @@ public final class DevAutorun {
 			return;
 		}
 		done = true;
-		String who = player.getUUID().toString();
 		LibertyCraft.LOG.info("[LibertyCraft] autorun: {} command(s) from {}{}", commands.size(), file.getFileName(), thirdPerson ? ", camera third person" : "");
 		if (thirdPerson) {
 			minecraft.options.setCameraType(net.minecraft.client.CameraType.THIRD_PERSON_BACK);
 		}
+		run(minecraft, commands);
+	}
+
+	/** Runs commands up to the next "# wait" (the rest stays pending for later). */
+	private static void run(Minecraft minecraft, List<String> commands) {
+		var server = minecraft.getSingleplayerServer();
+		String who = minecraft.player.getUUID().toString();
+		List<String> now = new ArrayList<>();
+		pending = null;
+		for (int i = 0; i < commands.size(); i++) {
+			String command = commands.get(i);
+			if (command.startsWith(WAIT)) {
+				pending = new ArrayList<>(commands.subList(i + 1, commands.size()));
+				pendingAt = System.currentTimeMillis() + Long.parseLong(command.substring(WAIT.length()));
+				LibertyCraft.LOG.info("[LibertyCraft] autorun: waiting {} s, then {} more command(s)", Long.parseLong(command.substring(WAIT.length())) / 1000.0, pending.size());
+				break;
+			}
+			now.add(command);
+		}
 		server.execute(() -> {
 			var source = server.createCommandSourceStack().withSuppressedOutput();
-			for (String command : commands) {
+			for (String command : now) {
+				LibertyCraft.LOG.info("[LibertyCraft] autorun: {}", command);
 				server.getCommands().performPrefixedCommand(source, "execute as " + who + " at @s run " + command);
 			}
 		});

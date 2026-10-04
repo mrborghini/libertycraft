@@ -70,6 +70,8 @@ namespace lc
 			"; ADD_EXPLOSION type for Minecraft explosions (0 grenade, 2 rocket, ...) and radius scale\n"
 			"ExplosionType=0\n"
 			"ExplosionRadiusScale=1.0\n"
+			"; ADD_EXPLOSION type for a firework rocket with stars (2 rocket: the crossbow is an RPG)\n"
+			"FireworkExplosionType=2\n"
 			"; a Minecraft hit knocks the ped over (ragdoll)\n"
 			"RagdollOnHit=1\n"
 			"; Minecraft damage x this = GTA body/engine health off a vehicle (1000 each)\n"
@@ -251,6 +253,7 @@ namespace lc
 		if (auto v = get("playerdamagescale")) playerDamageScale = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("explosiontype")) explosionType = std::atoi(v->c_str());
 		if (auto v = get("explosionradiusscale")) explosionRadiusScale = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("fireworkexplosiontype")) fireworkExplosionType = std::atoi(v->c_str());
 		if (auto v = get("ragdollonhit")) ragdollOnHit = ToBool(*v, ragdollOnHit);
 		if (auto v = get("combatselftest")) combatSelfTest = ToBool(*v, combatSelfTest);
 		if (auto v = get("debugwarpoutdoors")) debugWarpOutdoors = ToBool(*v, debugWarpOutdoors);
@@ -263,6 +266,9 @@ namespace lc
 		if (auto v = get("debugcarcover")) debugCarCover = ToBool(*v, debugCarCover);
 		if (auto v = get("debugbulletwall")) debugBulletWall = std::atoi(v->c_str());
 		if (auto v = get("debugbumpped")) debugBumpPed = std::atoi(v->c_str());
+		if (auto v = get("debugfireworktargets")) debugFireworkTargets = std::atoi(v->c_str());
+		if (auto v = get("debugfireworkheliahead")) debugFireworkHeliAhead = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugstumblekind")) debugStumbleKind = std::atoi(v->c_str());
 		if (auto v = get("gtacrimes")) gtaCrimes = ToBool(*v, gtaCrimes);
 		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
 		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
@@ -290,6 +296,7 @@ namespace lc
 		if (auto v = get("debugvehiclehit")) debugVehicleHit = Lower(*v);
 		if (auto v = get("debugcutscene")) debugCutscene = *v;
 		if (auto v = get("debuggiveweapon")) debugGiveWeapon = std::atoi(v->c_str());
+		if (auto v = get("debugviewportroom")) debugViewportRoom = std::atoi(v->c_str());
 		if (auto v = get("hazardsburnpeds")) hazardsBurnPeds = ToBool(*v, hazardsBurnPeds);
 		if (auto v = get("hazardsburnvehicles")) hazardsBurnVehicles = ToBool(*v, hazardsBurnVehicles);
 		if (auto v = get("liquidsslowvehicles")) liquidsSlowVehicles = ToBool(*v, liquidsSlowVehicles);
@@ -298,6 +305,8 @@ namespace lc
 		if (auto v = get("debughazards")) debugHazards = ToBool(*v, debugHazards);
 		if (auto v = get("debugdrivethrottle")) debugDriveThrottle = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debughazardinject")) debugHazardInject = Lower(*v);
+		if (auto v = get("citymaterials")) cityMaterials = ToBool(*v, cityMaterials);
+		if (auto v = get("debugmaterials")) debugMaterials = std::atoi(v->c_str());
 		if (auto v = get("minecraftbody")) minecraftBody = ToBool(*v, minecraftBody);
 		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
 		if (auto v = get("minecraftbodyvehicles")) minecraftBodyVehicles = ToBool(*v, minecraftBodyVehicles);
@@ -323,9 +332,15 @@ namespace lc
 		if (debugVehicleSpeed > 0.0f) {
 			LC_LOG("config: DebugVehicleSpeed=%.1f%s", debugVehicleSpeed, debugSeatAB ? " DebugSeatAB=1" : "");
 		}
-		LC_LOG("config: Combat=%d PedDamageScale=%.1f PlayerDamageScale=%.1f ExplosionType=%d ExplosionRadiusScale=%.2f RagdollOnHit=%d%s%s", combat,
-			pedDamageScale, playerDamageScale, explosionType, explosionRadiusScale, ragdollOnHit, combatSelfTest ? " CombatSelfTest=1" : "",
-			debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
+		LC_LOG("config: Combat=%d PedDamageScale=%.1f PlayerDamageScale=%.1f ExplosionType=%d ExplosionRadiusScale=%.2f FireworkExplosionType=%d RagdollOnHit=%d%s%s",
+			combat, pedDamageScale, playerDamageScale, explosionType, explosionRadiusScale, fireworkExplosionType, ragdollOnHit,
+			combatSelfTest ? " CombatSelfTest=1" : "", debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
+		if (debugStumbleKind >= 0) {
+			LC_LOG("config: DebugStumbleKind=%d", debugStumbleKind);
+		}
+		if (debugFireworkTargets > 0) {
+			LC_LOG("config: DebugFireworkTargets=%d DebugFireworkHeliAhead=%.0f", debugFireworkTargets, debugFireworkHeliAhead);
+		}
 		LC_LOG("config: VehicleDamageScale=%.1f NpcBlocks=%d%s%s", vehicleDamageScale, npcBlocks, npcPushMethod ? " NpcPushMethod=1" : "",
 			debugKnockbackVariant >= 0 ? " DebugKnockbackVariant on" : "");
 		if (debugTestCar != 0) {
@@ -347,6 +362,9 @@ namespace lc
 		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
 			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyScale, minecraftBodyHide.c_str(),
 			debugBody ? " DebugBody=1" : "");
+		if (debugViewportRoom) {
+			LC_LOG("config: DebugViewportRoom=%d", debugViewportRoom);
+		}
 	}
 
 	std::uint8_t Config::MenuKeyDik() const

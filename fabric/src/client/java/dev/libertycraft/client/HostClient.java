@@ -119,10 +119,17 @@ public final class HostClient {
 			return;
 		}
 
-		// A new player object means we just joined or respawned: put it where GTA IV's player is.
+		// A new player object means we just joined or respawned: put it where GTA IV's player is. Not
+		// after a portal between the mirror world and the blocky city (same X/Z): the player stays where
+		// the portal put them and GTA IV's puppet follows.
+		boolean throughPortal = CityClient.frame(minecraft);
 		if (player != lastPlayer) {
 			lastPlayer = player;
-			teleportPending = true;
+			if (throughPortal) {
+				LibertyCraft.LOG.info("[LibertyCraft] through a portal to {} {} {}: GTA IV follows", player.getX(), player.getY(), player.getZ());
+			} else {
+				teleportPending = true;
+			}
 		}
 		if (HostDriveClient.frame(minecraft, player, sky)) {
 			// GTA IV drives (Niko mode, a vehicle, a cutscene): the player follows it every frame, so
@@ -424,6 +431,7 @@ public final class HostClient {
 		if (minecraft.gui.screen() != null) {
 			flags |= Proto.MC_SCREEN_OPEN;
 		}
+		flags |= CityClient.flags(); // the blocky city: GTA IV hides its map (CityClient)
 		mc.flags = flags;
 		mc.sensitivity = minecraft.options.sensitivity().get().floatValue();
 		mc.teleportAck = holdPos == null ? teleportAck : teleportAck - 1; // not "arrived" until we are released

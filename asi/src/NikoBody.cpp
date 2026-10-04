@@ -113,6 +113,9 @@ namespace lc::NikoBody
 
 		// stats / DebugBody
 		std::uint32_t frames = 0, failed = 0, headFrames = 0;
+		std::uint32_t heldHiddenFrames = 0, cameraInsideFrames = 0;  // held items away (seated); parts hidden around the camera
+		bool          lastSeated = false;
+		std::uint32_t lastInside = 0;
 		double        liftSum = 0.0, limbMotion = 0.0;
 		B::V3         lastLimbs[4]{};
 		bool          haveLimbs = false;
@@ -483,11 +486,12 @@ namespace lc::NikoBody
 			const bool any = frames || failed || staleFrames;
 			nextStats = now + 10000;
 			if (any) {
-				LC_LOG("stats 10s: Minecraft body posed in %u frames (%s, %s %d; %u failed reads, %u stale cutscene poses), lift %.2f m on average, head from its bone in %u",
+				LC_LOG("stats 10s: Minecraft body posed in %u frames (%s, %s %d; %u failed reads, %u stale cutscene poses), lift %.2f m on average, head from its bone in %u; "
+					   "held items hidden (seated) in %u, parts hidden around the camera in %u",
 					frames, WhyName(targetWhy), target ? "ped" : "cutscene object", target ? target : targetObjHandle, failed, staleFrames, frames ? liftSum / frames : 0.0,
-					headFrames);
+					headFrames, heldHiddenFrames, cameraInsideFrames);
 			}
-			frames = failed = headFrames = staleFrames = 0;
+			frames = failed = headFrames = staleFrames = heldHiddenFrames = cameraInsideFrames = 0;
 			liftSum = 0.0;
 		}
 	}
@@ -597,10 +601,39 @@ namespace lc::NikoBody
 			return false;
 		}
 		Calibrate(s);
-		const B::Pose pose = B::Solve(s, headMap, Config::Get().minecraftBodyScale);
+		B::Pose pose = B::Solve(s, headMap, Config::Get().minecraftBodyScale);
 		if (target ? !loggedFirst : !loggedFirstObj) {
 			LogFirst(target, s, pose);
 		}
+		// Seated in a vehicle the held items (a sword, a shield) poked through its roof and doors: away
+		// while he is in it.
+		const bool seated = target && S::IS_CHAR_IN_ANY_CAR(target);
+		if (seated) {
+			B::HideHeld(pose);
+			++heldHiddenFrames;
+		}
+		if (seated != lastSeated) {
+			lastSeated = seated;
+			LC_LOG("held items %s", seated ? "hidden: the body sits in a vehicle" : "shown again (out of the vehicle)");
+		}
+		// GTA's camera inside the body (a helicopter coming down pushed it in; the Minecraft body is
+		// bulkier than Niko): GTA's own camera (knocked over, vehicles) within 0.3 m of the body past its
+		// near plane hides all of it, as GTA fades its player; a cutscene's camera (close-ups) only the
+		// parts it is in, or so close that its near plane cuts them.
+		std::uint32_t inside = 0;
+		if (a_f.flags & render::kFrameCameraValid) {
+			const B::V3 cam{ float(a_f.camPos[0] - origin[0]), float(a_f.camPos[1] - origin[1]), float(a_f.camPos[2] - origin[2]) };
+			const bool  scene = targetWhy == drive::Why::kCutscene;
+			inside = B::HideNearCamera(pose, cam, std::clamp(a_f.nearZ, 0.05f, 0.5f) + (scene ? 0.1f : 0.3f), !scene);
+		}
+		if (inside) {
+			++cameraInsideFrames;
+		}
+		if ((inside != 0) != (lastInside != 0)) {
+			LC_LOG("camera %s the Minecraft body%s%s%s%s%s%s", inside ? "at (or in)" : "away from", inside ? ": hidden, near its" : "", (inside & (1u << 1)) ? " head" : "",
+				(inside & (1u << 2)) ? " torso" : "", (inside & (3u << 3)) ? " arm" : "", (inside & (3u << 5)) ? " leg" : "", inside ? "" : " again");
+		}
+		lastInside = inside;
 		static_assert(sizeof(cachedParts) == sizeof(pose.part));
 		std::memcpy(cachedParts, pose.part, sizeof(cachedParts));
 		std::memcpy(cachedOrigin, origin, sizeof(origin));

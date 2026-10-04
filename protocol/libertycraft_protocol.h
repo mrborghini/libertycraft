@@ -145,6 +145,14 @@ namespace libertycraft::proto
 		// blocks what comes from within 90 degrees of where the player looks (yaw): GTA IV keeps Niko
 		// quiet for those hits (no pain voice, no reaction), which Minecraft blocks.
 		kMcBlocking = 1u << 8,
+		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): Minecraft's player is
+		// in the blocky city (libertycraft:blocky_city, reached through a nether portal in the mirror world),
+		// a block copy of Liberty City at the same coordinates (1:1) that Minecraft streams like any blocks.
+		// Everything else goes on as usual (puppet mode, teleports, combat); the host hides its own map
+		// geometry meanwhile (buildings, terrain, props, their LODs and shadows; not the sky, water, peds,
+		// vehicles or the HUD), so the blocks are the city. The city's own blocks don't come in kRenSolids /
+		// kRenLiquids (GTA IV's collision is the same city); blocks the player placed there do.
+		kMcBlockyCity = 1u << 9,
 	};
 
 	struct McState
@@ -318,7 +326,8 @@ namespace libertycraft::proto
 	{
 		kEvHitActor = 1,    // formId, a = MC damage (after MC's own modifiers), b/c = knockback dir x/z (MC), d = knockback strength
 		kEvPlayerDied = 2,  // the Minecraft player died: kill the Skyrim player
-		kEvExplosion = 3,   // a Minecraft explosion (TNT, creeper, ...): a/b/c = centre (MC coords), d = radius (blocks)
+		kEvExplosion = 3,   // a Minecraft explosion (TNT, creeper, ...): a/b/c = centre (MC coords), d = radius (blocks);
+		                    // LibertyCraft: flags = ExplosionFlags (a firework rocket's burst also sets formId and weapon)
 		kEvArrowStuck = 4,  // an arrow stuck in a Skyrim actor: formId, a/b/c = where it hit (MC coords), d = flight yaw,
 		                    // flags = flight pitch (float bits), weapon = arrow texture (0 plain, 1 tipped, 2 spectral)
 		kEvSkillUse = 5,    // the player used a Skyrim skill in Minecraft: formId = Skyrim skill (ActorValue: 9 Block,
@@ -337,6 +346,19 @@ namespace libertycraft::proto
 		// flags = BumpFlags. Sent every tick of contact; the host pushes the ped out of the way, makes
 		// it stumble or knocks it down by the speed (and its own cooldowns).
 		kEvBump = 7,
+	};
+
+	// LibertyCraft addition (bits and conventions only; the layout and kVersion stay SkyCraft's): what a
+	// kEvExplosion is. SkyCraft sends 0 (any ServerExplosion: TNT, creepers, beds, crystals).
+	// kExplosionFirework: a firework rocket with stars burst (FireworkRocketEntity's explode, a crossbow
+	// shot, a hand launch or an elytra boost; no stars: no burst and no event). a/b/c = where it burst
+	// (where it struck something when it did, else where it was), d = the blast radius (blocks) the
+	// stars give, formId = the stand-in it struck (an ActorTable formId; 0: it burst in the air or on a
+	// surface), weapon = how many stars it carried.
+	enum ExplosionFlags : std::uint32_t
+	{
+		kExplosionFirework = 1u << 0,
+		kExplosionByPlayer = 1u << 1,  // the player launched it (the rocket's owner is the player)
 	};
 
 	enum BumpFlags : std::uint32_t
@@ -660,9 +682,15 @@ namespace libertycraft::proto
 		kTriGhost = 1u << 2,        // a diggable triangle as it was before blocks were dug out of it:
 		                            // not collision, only for telling what's inside Skyrim's geometry
 		kTriTerrain = 1u << 3,      // the land (a height field)
+		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): bits 16-23 hold the
+		// GTA IV material of the surface the triangle was probed on, as its index in GTA IV's
+		// common/data/materials/materials.dat (0 DEFAULT, 3 CONCRETE, 8 TARMAC, 16 PAVING_SLABS, 37 GRASS,
+		// ...), for the blocky city's blocks. Without the bit the material isn't known.
+		kTriGtaMaterial = 1u << 4,
 	};
 
 	inline constexpr std::uint32_t kTriMaterialShift = 8;
+	inline constexpr std::uint32_t kTriGtaMaterialShift = 16;  // kTriGtaMaterial
 
 	struct ColTri
 	{

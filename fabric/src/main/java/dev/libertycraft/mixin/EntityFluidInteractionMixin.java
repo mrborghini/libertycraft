@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.libertycraft.world.HostWater;
@@ -25,7 +26,7 @@ public abstract class EntityFluidInteractionMixin {
 		)
 	)
 	private static boolean libertycraft$hostWaterNearby(Level level, int x0, int y0, int z0, int x1, int y1, int z1, Operation<Boolean> original) {
-		return original.call(level, x0, y0, z0, x1, y1, z1) || HostWater.anyIn(x0, y0, z0, x1, y1, z1);
+		return original.call(level, x0, y0, z0, x1, y1, z1) || !BlockyCity.isCity(level) && HostWater.anyIn(x0, y0, z0, x1, y1, z1);
 	}
 
 	@WrapOperation(
@@ -34,7 +35,7 @@ public abstract class EntityFluidInteractionMixin {
 	)
 	private FluidState libertycraft$hostWater(BlockGetter level, BlockPos pos, Operation<FluidState> original) {
 		FluidState state = original.call(level, pos);
-		if (state.isEmpty() && HostWater.active()) {
+		if (state.isEmpty() && HostWater.active() && !BlockyCity.isCity(level)) {
 			FluidState water = HostWater.fluidAt(level, pos);
 			if (water != null) {
 				return water;
@@ -51,7 +52,7 @@ public abstract class EntityFluidInteractionMixin {
 		)
 	)
 	private float libertycraft$hostWaterHeight(FluidState state, BlockGetter level, BlockPos pos, Operation<Float> original) {
-		float height = HostWater.active() ? HostWater.substitutedHeight(level, pos) : -1.0F;
+		float height = HostWater.active() && !BlockyCity.isCity(level) ? HostWater.substitutedHeight(level, pos) : -1.0F;
 		return height >= 0.0F ? height : original.call(state, level, pos);
 	}
 
@@ -63,7 +64,7 @@ public abstract class EntityFluidInteractionMixin {
 		)
 	)
 	private float libertycraft$hostWaterEyeHeight(FluidState state, BlockGetter level, BlockPos pos, Operation<Float> original) {
-		float height = HostWater.active() ? HostWater.substitutedHeight(level, pos) : -1.0F;
+		float height = HostWater.active() && !BlockyCity.isCity(level) ? HostWater.substitutedHeight(level, pos) : -1.0F;
 		return height >= 0.0F ? height : original.call(state, level, pos);
 	}
 }

@@ -211,6 +211,10 @@ public final class WorldExporter {
 		java.util.Arrays.fill(SOLID_BITS, 0L);
 		int solidCount = 0;
 		MESH.cardinal = level.cardinalLighting();
+		// The blocky city: its own blocks are GTA IV's collision already (peds and cars walk on that), so
+		// only what the player built there goes to GTA IV as solid or liquid (no store: none of it).
+		boolean city = dev.libertycraft.world.city.BlockyCity.isCity(level);
+		var cityPlan = city ? dev.libertycraft.world.city.CityPlanCache.chunk(sx, sz, level.getMinY(), level.getMaxY()) : null;
 		if (!empty) {
 			BlockPos origin = SectionPos.of(sx, sy, sz).origin();
 			BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -222,8 +226,9 @@ public final class WorldExporter {
 						if (state.isAir()) {
 							continue;
 						}
+						boolean builtByPlayer = !city || cityPlan != null && !cityPlan.isCityBlock(pos.getX(), pos.getY(), pos.getZ(), state);
 						// Blocks GTA IV's NPCs can't walk through (anything with a collision shape).
-						if (!state.getCollisionShape(level, pos).isEmpty()) {
+						if (builtByPlayer && !state.getCollisionShape(level, pos).isEmpty()) {
 							int bit = x + 16 * z + 256 * y;
 							SOLID_BITS[bit >> 6] |= 1L << (bit & 63);
 							solidCount++;
@@ -238,13 +243,13 @@ public final class WorldExporter {
 						if (!fluid.isEmpty()) {
 							// Water and lava for GTA IV's vehicles (they struggle in them): kind and surface height.
 							int kind = fluid.is(net.minecraft.tags.FluidTags.LAVA) ? Proto.LIQUID_LAVA : fluid.is(net.minecraft.tags.FluidTags.WATER) ? Proto.LIQUID_WATER : 0;
-							if (kind != 0) {
+							if (kind != 0 && builtByPlayer) {
 								int surface = Math.max(1, Math.min(15, Math.round(fluid.getHeight(level, pos) * 15.0F)));
 								LIQUIDS.put((byte) x).put((byte) y).put((byte) z).put((byte) (surface | kind << 4));
 								liquidCount++;
 							}
 							// GTA IV ground in the cell: the fluid is drawn in the space above it.
-							MESH.fluidGround = dev.libertycraft.world.HostCollision.groundTop(pos);
+							MESH.fluidGround = city ? 0.0F : dev.libertycraft.world.HostCollision.groundTop(pos);
 							MESH.fluidBaseY = y;
 							fluidRenderer.tesselate(level, pos, MESH, state, fluid);
 							MESH.fluidGround = 0.0F;

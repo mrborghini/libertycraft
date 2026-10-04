@@ -37,4 +37,8 @@ namespace lc::Game
 	void OnIngameStartup();    // ingameStartupEvent: a save / new game / episode is about to load
 	// Pushes kInHurt (Combat calls it). a_damage is "host damage": Minecraft takes a_damage / 5.
 	void ReportHurt(std::uint16_t a_kind, float a_damage, std::uint32_t a_attacker, std::uint32_t a_flags);
+	// Puts a ped's root at a_x a_y a_z the way puppet mode moves the player (PuppetMove: without the
+	// natives' clearing of the destination, which deletes the cars and peds there). HostDrive moves a
+	// knocked-over player out of the vehicle that hit him with it. Game thread.
+	void PlacePed(int a_ped, float a_x, float a_y, float a_z);
 }

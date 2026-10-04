@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.libertycraft.world.HostClip;
@@ -21,6 +22,9 @@ public abstract class EntityPickMixin {
 		at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;clip(Lnet/minecraft/world/level/ClipContext;)Lnet/minecraft/world/phys/BlockHitResult;")
 	)
 	private BlockHitResult libertycraft$pickHost(Level level, ClipContext context, Operation<BlockHitResult> original) {
+		if (BlockyCity.isCity(level)) {
+			return original.call(level, context);
+		}
 		return HostClip.refine(context.getFrom(), context.getTo(), original.call(level, context), HostClip.Use.PICK);
 	}
 }

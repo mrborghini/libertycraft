@@ -253,9 +253,20 @@ namespace lc::render::body
 			m[2][0] * a_v.x + m[2][1] * a_v.y + m[2][2] * a_v.z + m[2][3] };
 	}
 
+	inline Part IdentityPart()
+	{
+		Part p;
+		p.m[0][0] = p.m[1][1] = p.m[2][2] = 1.0f;
+		return p;
+	}
+
 	struct Pose
 	{
-		Part  part[proto::kPartCount];  // kPartNone: as the body
+		// Per RagdollPart. part[kPartNone] (no batch is sent with it: Minecraft's parts are 1 to 6) is
+		// where the held items go in the standing body before their arm's part moves them: the
+		// identity (as Minecraft holds them), or collapsed (HideHeld). A batch with no valid part is
+		// drawn as the body.
+		Part  part[proto::kPartCount];
 		float lift = 0.0f;              // metres the sole match moved the figure (up positive)
 		float scale = 1.0f;             // the upper body's size against Minecraft's
 		float headScale = 1.0f;         // the head's
@@ -344,8 +355,86 @@ namespace lc::render::body
 		}
 		out.headScale = kh;
 		out.part[proto::kPartHead] = MakePart(head, NeckJoint(), hip + Apply(torso, (NeckJoint() - HipCentre()) * k), V3{ kh, kh, kh });
-		out.part[proto::kPartNone] = out.part[proto::kPartBody];
+		out.part[proto::kPartNone] = IdentityPart();
 		return out;
+	}
+
+	// A part shrunk to a point (its joint): its triangles have no area and draw nothing.
+	inline void Collapse(Part& a_p)
+	{
+		for (auto& row : a_p.m) {
+			row[0] = row[1] = row[2] = 0.0f;
+		}
+	}
+
+	// The held items (sword, shield, ...) out of sight: in a vehicle they poked through its roof.
+	inline void HideHeld(Pose& a_pose) { Collapse(a_pose.part[proto::kPartNone]); }
+
+	// Each part's box in the standing body (blocks; x left, y up, z forward), with Minecraft's outer
+	// skin layer and armour (a pixel all round). Held items aren't in it.
+	inline void PartBox(std::uint32_t a_part, V3& a_lo, V3& a_hi)
+	{
+		const float p = kPx;
+		switch (a_part) {
+		case proto::kPartHead:
+			a_lo = { -5 * p, kNeckY - p, -5 * p }, a_hi = { 5 * p, kNeckY + 9 * p, 5 * p };
+			return;
+		case proto::kPartRightArm:
+			a_lo = { -9 * p, kShoulderY - 11 * p, -3 * p }, a_hi = { -3 * p, kShoulderY + 3 * p, 3 * p };
+			return;
+		case proto::kPartLeftArm:
+			a_lo = { 3 * p, kShoulderY - 11 * p, -3 * p }, a_hi = { 9 * p, kShoulderY + 3 * p, 3 * p };
+			return;
+		case proto::kPartRightLeg:
+			a_lo = { -5 * p, -p, -3 * p }, a_hi = { 1.1f * p, kHipY + p, 3 * p };
+			return;
+		case proto::kPartLeftLeg:
+			a_lo = { -1.1f * p, -p, -3 * p }, a_hi = { 5 * p, kHipY + p, 3 * p };
+			return;
+		default:  // the body
+			a_lo = { -5 * p, kHipY - p, -3 * p }, a_hi = { 5 * p, kNeckY + p, 3 * p };
+			return;
+		}
+	}
+
+	// How far a_point (GTA, relative to the pose's origin) is from a_part's box as posed (metres; 0
+	// inside). The box's nearest point is found in the part's own axes (exact for the uniformly scaled
+	// parts, close for the legs).
+	inline float DistanceToPart(const Pose& a_pose, std::uint32_t a_part, V3 a_point)
+	{
+		const Part& p = a_pose.part[a_part];
+		const V3    c[3] = { { p.m[0][0], p.m[1][0], p.m[2][0] }, { p.m[0][1], p.m[1][1], p.m[2][1] }, { p.m[0][2], p.m[1][2], p.m[2][2] } };
+		const V3    d = a_point - V3{ p.m[0][3], p.m[1][3], p.m[2][3] };
+		V3          lo, hi;
+		PartBox(a_part, lo, hi);
+		float l[3];
+		for (int k = 0; k < 3; ++k) {
+			const float n2 = Dot(c[k], c[k]);
+			l[k] = n2 > 1e-12f ? Dot(c[k], d) / n2 : 0.0f;
+		}
+		const V3 q{ std::clamp(l[0], lo.x, hi.x), std::clamp(l[1], lo.y, hi.y), std::clamp(l[2], lo.z, hi.z) };
+		return Length(a_point - Transform(p, q));
+	}
+
+	// GTA's camera inside the body (or so close that its near plane cuts it: a_margin metres): the
+	// parts it is in are collapsed, so the view isn't a wall of skin texels (a helicopter dropping on
+	// the player pushed GTA's camera into the Minecraft body, which is bulkier than Niko). a_all: then
+	// the whole body goes, held items too (the parts next to the camera filled the view). Returns a
+	// bit per part within a_margin (1 << RagdollPart).
+	inline std::uint32_t HideNearCamera(Pose& a_pose, V3 a_camera, float a_margin, bool a_all = false)
+	{
+		std::uint32_t within = 0;
+		for (std::uint32_t part = proto::kPartHead; part < proto::kPartCount; ++part) {
+			if (DistanceToPart(a_pose, part, a_camera) < a_margin) {
+				within |= 1u << part;
+			}
+		}
+		for (std::uint32_t part = a_all && within ? proto::kPartNone : proto::kPartHead; part < proto::kPartCount; ++part) {
+			if ((a_all && within) || (within & (1u << part))) {
+				Collapse(a_pose.part[part]);
+			}
+		}
+		return within;
 	}
 
 	using Vertex = proto::RenVertex;
@@ -363,11 +452,17 @@ namespace lc::render::body
 	{
 		a_out.resize(a_in.size());
 		for (const auto& b : a_batches) {
-			const Part&               p = a_pose.part[PartOf(b.flags)];
-			const std::size_t         end = std::min<std::size_t>(a_in.size(), std::size_t(b.first) + b.count);
+			const std::uint32_t part = PartOf(b.flags);
+			const Part&         p = a_pose.part[part == proto::kPartNone ? proto::kPartBody : part];
+			const bool          held = (b.flags & proto::kRagdollHeld) != 0;
+			const std::size_t   end = std::min<std::size_t>(a_in.size(), std::size_t(b.first) + b.count);
 			for (std::size_t i = b.first; i < end; ++i) {
 				Vertex   v = a_in[i];
-				const V3 g = Transform(p, V3{ v.x, v.y, v.z });
+				V3       s{ v.x, v.y, v.z };
+				if (held) {
+					s = Transform(a_pose.part[proto::kPartNone], s);
+				}
+				const V3 g = Transform(p, s);
 				v.x = g.x;
 				v.y = g.z;
 				v.z = -g.y;

@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import dev.libertycraft.world.HostCollision;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -16,7 +17,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class FallingBlockMixin {
 	@Inject(method = "tick", at = @At("HEAD"), cancellable = true)
 	private void libertycraft$restOnHost(BlockState state, ServerLevel level, BlockPos pos, RandomSource random, CallbackInfo ci) {
-		if (HostCollision.supportsFromBelow(pos)) {
+		if (!BlockyCity.isCity(level) && HostCollision.supportsFromBelow(pos)) {
 			ci.cancel();
 		}
 	}

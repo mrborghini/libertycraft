@@ -24,17 +24,20 @@ static int failures = 0;
 
 struct STri
 {
-	float a[3], b[3], c[3], n[3];
+	float        a[3], b[3], c[3], n[3];
+	std::uint8_t mat = kNoMaterial;
 };
 
 struct Scene
 {
 	std::vector<STri> tris;
 	long              rays = 0;
+	std::uint8_t      mat = kNoMaterial;  // the material of what Add adds next
 
 	void Add(const float* a, const float* b, const float* c)
 	{
 		STri t{};
+		t.mat = mat;
 		for (int k = 0; k < 3; ++k) {
 			t.a[k] = a[k];
 			t.b[k] = b[k];
@@ -144,6 +147,7 @@ struct Scene
 			out.pos[k] = from[k] + d[k] * best;
 			out.n[k] = hit->n[k];
 		}
+		out.mat = hit->mat;
 		return true;
 	}
 };
@@ -731,6 +735,37 @@ static void TestDoorPush()
 	CHECK(std::fabs(WrapPi(3.5f) - (3.5f - 2.0f * 3.14159265f)) < 1e-5f);
 }
 
+// The blocky city: triangles carry the GTA material their surface was probed on (kTriGtaMaterial).
+static void TestMaterials()
+{
+	std::puts("materials: a tarmac street, a brick building");
+	Scene s;
+	s.mat = 8;  // TARMAC
+	s.Horizontal(880, 460, 920, 490, 14.5f, true);
+	s.mat = 14;  // BRICK_WALL
+	const float blo[3] = { 897.3f, 13.5f, 474.2f }, bhi[3] = { 899.8f, 27.0f, 478.6f };
+	s.Box(blo, bhi, true, false);
+	auto b = Probe(s, 112, 59, 0.0f, 40.0f);
+	int street = 0, streetTagged = 0, walls = 0, wallsTagged = 0, untagged = 0;
+	for (const auto& t : b.tris) {
+		const bool         tagged = (t.flags & libertycraft::proto::kTriGtaMaterial) != 0;
+		const std::uint32_t mat = (t.flags >> libertycraft::proto::kTriGtaMaterialShift) & 0xFF;
+		const float        y = (t.v[1] + t.v[4] + t.v[7]) / 3.0f;
+		if (t.kind == kFloor && std::fabs(y - 14.5f) < 0.01f) {
+			++street;
+			streetTagged += tagged && mat == 8 ? 1 : 0;
+		} else if (t.kind == kWall) {
+			++walls;
+			wallsTagged += tagged && mat == 14 ? 1 : 0;
+		}
+		untagged += tagged ? 0 : 1;
+	}
+	std::printf("  street triangles %d (%d tarmac), walls %d (%d brick), untagged %d\n", street, streetTagged, walls, wallsTagged, untagged);
+	CHECK(street > 0 && streetTagged == street);
+	CHECK(walls > 0 && wallsTagged * 10 >= walls * 9);  // (a wall found only from the far sample's solid has no probed face)
+	CHECK(std::fabs(FloorAt(b.tris, 898.5f, 476.0f, 30.0f) - 27.0f) < 0.01f);  // the roof is still there
+}
+
 int main()
 {
 	TestAwningAndBuilding();
@@ -743,6 +778,7 @@ int main()
 	TestBenchAndBin();
 	TestTiltedBin();
 	TestDoorPush();
+	TestMaterials();
 	if (failures) {
 		std::fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

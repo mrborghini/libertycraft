@@ -120,6 +120,17 @@ public class HostActorEntity extends LivingEntity {
 	}
 
 	@Override
+	public boolean hurtServer(ServerLevel level, DamageSource source, float amount) {
+		// A firework rocket's burst is GTA IV's own rocket blast there (FireworkRocketMixin), which hurts,
+		// knocks over and wrecks the real peds and vehicles itself: Minecraft's firework damage (and its
+		// push) on the stand-ins would hit them a second time.
+		if (source.is(net.minecraft.world.damagesource.DamageTypes.FIREWORKS) && dev.libertycraft.link.Link.active()) {
+			return false;
+		}
+		return super.hurtServer(level, source, amount);
+	}
+
+	@Override
 	protected void actuallyHurt(ServerLevel level, DamageSource source, float dmg) {
 		// Minecraft has applied everything (crit, sharpness, strength, cooldown, invulnerability
 		// frames). Hand the result to GTA IV instead of lowering our own health.

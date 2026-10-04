@@ -25,6 +25,8 @@
 #include "Doors.cpp"
 #include "NikoBody.cpp"
 #include "Hazards.cpp"
+#include "ViewportRoom.cpp"
+#include "BlockyCity.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

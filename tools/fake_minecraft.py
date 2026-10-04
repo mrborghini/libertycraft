@@ -66,6 +66,7 @@ OFF_EVENTS = 0x17000
 OFF_ACTORS = 0x12000
 EV_ENTRIES = 512
 EV_HIT_ACTOR, EV_PLAYER_DIED, EV_EXPLOSION, EV_HIT_POINT = 1, 2, 3, 6
+EXPLOSION_FIREWORK, EXPLOSION_BY_PLAYER = 1, 2  # LibertyCraft: kEvExplosion flags (a firework rocket's burst)
 EV_BUMP = 7  # LibertyCraft: the player ran into a ped's stand-in
 BUMP_SPRINTING, BUMP_FLYING, BUMP_NEW_CONTACT = 1, 2, 4
 ACTOR_FMT = "<II7fHH24s"  # formId, flags, x, y, z, yaw, width, height, healthFrac, level, pad, name
@@ -84,8 +85,9 @@ IN_ENTRIES = 4096
 # McFlags
 MC_IN_WORLD, MC_SCREEN_OPEN, MC_ON_GROUND = 1, 2, 4
 MC_BLOCKING = 1 << 8  # LibertyCraft: the shield is up (kMcBlocking)
+MC_BLOCKY_CITY = 1 << 9  # LibertyCraft: the player is in the blocky city (kMcBlockyCity)
 # SkyFlags
-SKY_FLAGS = {1: "InGame", 2: "MenuOpen", 4: "Loading"}
+SKY_FLAGS = {1: "InGame", 2: "MenuOpen", 4: "Loading", 8: "HostDrives", 16: "InVehicle"}
 
 SKY_FMT = "<IIIIdddffIIIf"
 MC_FMT = "<II3d4f2IQ3fI3dq3d3d7fIIf"
@@ -696,6 +698,13 @@ def combat_step(bridge, args, sky, t, t0, st):
         cx, cz = px - math.sin(r) * 6.0, pz + math.cos(r) * 6.0
         bridge.push_event(EV_EXPLOSION, 0, cx, py + 0.5, cz, 4.0)
         print(f"combat: explosion (radius 4) at MC {cx:.1f} {py + 0.5:.1f} {cz:.1f}, 6 blocks ahead (yaw {yaw:.0f})")
+    if args.firework_ahead > 0 and not st.get("firework_sent") and t >= t0:
+        st["firework_sent"] = True
+        r = math.radians(yaw)
+        cx, cz = px - math.sin(r) * 8.0, pz + math.cos(r) * 8.0
+        radius = min(3.0 + args.firework_ahead, 8.0)  # FireworkBlast.radius
+        bridge.push_event(EV_EXPLOSION, 0, cx, py + 1.0, cz, radius, EXPLOSION_FIREWORK | EXPLOSION_BY_PLAYER, args.firework_ahead)
+        print(f"combat: the player's firework rocket ({args.firework_ahead} star(s), radius {radius:.0f}) burst 8 blocks ahead at MC {cx:.1f} {py + 1.0:.1f} {cz:.1f}")
     if args.die_after > 0 and not st["died_sent"] and t >= t0 + args.die_after:
         st["died_sent"] = True
         bridge.push_event(EV_PLAYER_DIED, 0)
@@ -741,6 +750,8 @@ def main():
                     help="every --combat-interval s, hit the living actor nearest the player for DMG Minecraft damage")
     ap.add_argument("--explode-ahead", type=float, nargs="?", const=-1.0, default=None, metavar="EVERY",
                     help="a TNT explosion 6 blocks in front of the player (once, or every EVERY s)")
+    ap.add_argument("--firework-ahead", type=int, default=0, metavar="STARS",
+                    help="once: a firework rocket with STARS stars bursts 8 blocks in front of the player (kEvExplosion, firework flags)")
     ap.add_argument("--die-after", type=float, default=0.0, metavar="S", help="send kEvPlayerDied S s after combat starts")
     ap.add_argument("--combat-delay", type=float, default=10.0, metavar="S", help="combat flags start S s after the first teleport ack")
     ap.add_argument("--combat-interval", type=float, default=2.0, metavar="S", help="seconds between --hit-nearest-actor hits")
@@ -754,6 +765,8 @@ def main():
     ap.add_argument("--block", default="", metavar="ON,OFF",
                     help="hold the shield up (kMcBlocking) ON s, then down OFF s, in turn")
     ap.add_argument("--spin", type=float, default=0.0, metavar="DEG", help="turn on the spot, DEG degrees a second")
+    ap.add_argument("--city", default="", metavar="AT,FOR",
+                    help="the blocky city: AT s after the start report kMcBlockyCity for FOR s (the host hides its map geometry)")
     ap.add_argument("--vitals", default="", metavar="H,MAX,ARMOUR",
                     help="report Minecraft's health, max health and armour points in McState (GTA's HUD shows them)")
     ap.add_argument("--wall-ring", type=int, default=0, metavar="R",
@@ -885,6 +898,14 @@ def main():
                 f = min(1.0, (now_qpc() - tick_qpc) / 500_000) if tick_qpc else 1.0
                 pos = tuple(p + (c - p) * f for p, c in zip(prev, cur))
                 in_world = MC_IN_WORLD | MC_ON_GROUND | (MC_SCREEN_OPEN if args.screen else 0)
+                # --city AT,FOR: in the blocky city for a while (the host hides its map meanwhile).
+                if args.city:
+                    cv = [float(v) for v in args.city.split(",")]
+                    if cv[0] <= t - start < cv[0] + cv[1]:
+                        in_world |= MC_BLOCKY_CITY
+                        if not combat_state.get("city_logged"):
+                            combat_state["city_logged"] = True
+                            print(f"city: kMcBlockyCity for {cv[1]:.0f} s")
                 # --block ON,OFF: the shield up ON s, down OFF s, in turn (from the first teleport).
                 if args.block:
                     on_s, off_s = (float(v) for v in args.block.split(","))

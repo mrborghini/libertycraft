@@ -74,18 +74,29 @@ namespace lc::col
 	inline constexpr int kDirI[4] = { 1, -1, 0, 0 };
 	inline constexpr int kDirJ[4] = { 0, 0, 1, -1 };
 
+	// GTA IV's material of a surface (its materials.dat index), or this when not known.
+	inline constexpr std::uint8_t kNoMaterial = 0xFF;
+
 	struct Hit
 	{
-		float pos[3];
-		float n[3];  // unit, facing the ray
+		float        pos[3];
+		float        n[3];                // unit, facing the ray
+		std::uint8_t mat = kNoMaterial;  // the hit surface's material (Rays.h), for the blocky city
 	};
 
 	struct Event
 	{
-		float y;
-		float n[3];
-		bool  top;  // seen from above (a floor); else an underside (a ceiling)
+		float        y;
+		float        n[3];
+		bool         top;  // seen from above (a floor); else an underside (a ceiling)
+		std::uint8_t mat = kNoMaterial;
 	};
+
+	// ColTri flags for a triangle of this material (kTriGtaMaterial, bits 16-23), 0 if not known.
+	inline std::uint32_t MaterialFlags(std::uint8_t a_mat)
+	{
+		return a_mat == kNoMaterial ? 0u : proto::kTriGtaMaterial | (std::uint32_t(a_mat) << proto::kTriGtaMaterialShift);
+	}
 
 	// Top-down events of one sample: is the gap between a_upper (null: above them all) and
 	// a_lower (null: below them all) solid? See the header comment, step 2.
@@ -122,6 +133,7 @@ namespace lc::col
 		float         oLo = 0.0f, oHi = 0.0f;       // kWallEvidence: the far sample's solid within the free space
 		float         topGuess = 0.0f;              // kWallProbe: how high the wall goes if the head probe hits
 		std::int32_t  parent = -1;                  // kWallFollow
+		std::uint8_t  mat = kNoMaterial;            // the wall's material where the probe hit it
 		// results
 		bool         done = false;
 		bool         hit = false;  // a steep face was hit
@@ -185,6 +197,7 @@ namespace lc::col
 		float n[3];
 		float open;   // free space on the open side, up to the next event (kInf: none)
 		float thick;  // solid on the other side (kInf: to the end of the span; 0: a sheet, free beyond)
+		std::uint8_t mat = kNoMaterial;
 	};
 
 	inline void Surfaces(const Column& a_c, int a_s, bool a_floors, std::vector<Surf>& a_out)
@@ -205,6 +218,7 @@ namespace lc::col
 			Surf f{};
 			f.y = e[k].y;
 			std::memcpy(f.n, e[k].n, sizeof(f.n));
+			f.mat = e[k].mat;
 			f.open = openNext ? std::fabs(openNext->y - e[k].y) : kInf;
 			// solid on the back side: through every solid gap in a row
 			f.thick = 0.0f;
@@ -393,6 +407,7 @@ namespace lc::col
 				e.y = h.pos[1];
 				std::memcpy(e.n, h.n, sizeof(e.n));
 				e.top = a_down;
+				e.mat = h.mat;
 				a_out.push_back(e);
 				y = h.pos[1] + (a_down ? -kChainStep : kChainStep);
 			}
@@ -438,6 +453,7 @@ namespace lc::col
 			}
 			w.done = true;
 			w.hit = hit && std::fabs(h.n[1]) < kWalkableNy;
+			w.mat = w.hit ? h.mat : kNoMaterial;
 			if (hit) {
 				std::memcpy(w.pos, h.pos, sizeof(w.pos));
 				std::memcpy(w.n, h.n, sizeof(w.n));
@@ -672,11 +688,27 @@ namespace lc::col
 					if (count < 3) {
 						continue;
 					}
-					std::uint32_t flags = 0;
+					// the sheet's material: the one most of its corners were probed on
+					std::uint8_t mat = kNoMaterial;
+					int          matVotes = 0;
+					for (int k = 0; k < 4; ++k) {
+						if (cl.member[k] < 0 || surfs[k][cl.member[k]].mat == kNoMaterial) {
+							continue;
+						}
+						int votes = 0;
+						for (int l = 0; l < 4; ++l) {
+							votes += cl.member[l] >= 0 && surfs[l][cl.member[l]].mat == surfs[k][cl.member[k]].mat ? 1 : 0;
+						}
+						if (votes > matVotes) {
+							matVotes = votes;
+							mat = surfs[k][cl.member[k]].mat;
+						}
+					}
+					std::uint32_t flags = MaterialFlags(mat);
 					if (a_floors) {
 						fill = thickMin <= 0.0f ? kSheet : std::min(kFillDepth, thickMin);
 						if (thickMin >= kTerrainThick) {
-							flags = proto::kTriTerrain | proto::kTriDiggable;  // material below, per triangle
+							flags |= proto::kTriTerrain | proto::kTriDiggable;  // material below, per triangle
 						}
 					}
 					float v[4][3];
@@ -722,7 +754,8 @@ namespace lc::col
 	}
 
 	// Vertical quad pieces between y0 and y1, split at region boundaries.
-	inline void EmitWall(std::vector<Tri>& a_out, const float a_w[2], const float a_t[2], float a_hw, const float a_n[3], float a_y0, float a_y1)
+	inline void EmitWall(std::vector<Tri>& a_out, const float a_w[2], const float a_t[2], float a_hw, const float a_n[3], float a_y0, float a_y1,
+		std::uint32_t a_flags = 0)
 	{
 		const float x0 = a_w[0] - a_t[0] * a_hw, z0 = a_w[1] - a_t[1] * a_hw;
 		const float x1 = a_w[0] + a_t[0] * a_hw, z1 = a_w[1] + a_t[1] * a_hw;
@@ -730,8 +763,8 @@ namespace lc::col
 		while (y < a_y1 - 1e-4f) {
 			const float next = std::min(a_y1, (std::floor(y / float(kRegion) + 1e-4f) + 1.0f) * float(kRegion));
 			const float a[3] = { x0, y, z0 }, b[3] = { x1, y, z1 }, c[3] = { x1, next, z1 }, d[3] = { x0, next, z0 };
-			Emit(a_out, a, b, c, a_n, 0, kWall);
-			Emit(a_out, a, c, d, a_n, 0, kWall);
+			Emit(a_out, a, b, c, a_n, a_flags, kWall);
+			Emit(a_out, a, c, d, a_n, a_flags, kWall);
 			y = next;
 		}
 	}
@@ -789,7 +822,7 @@ namespace lc::col
 			const float lateral = std::fabs(dx) > 0.5f ? std::fabs(t[1]) : std::fabs(t[0]);
 			const float hw = std::min(0.75f, 0.5f * kSpacing / std::max(lateral, 0.3f)) + 0.02f;
 			const float n3[3] = { hn[0], 0.0f, hn[1] };
-			EmitWall(a_out, at, t, hw, n3, lo, hi);
+			EmitWall(a_out, at, t, hw, n3, lo, hi, MaterialFlags(w.mat));
 		}
 	}
 

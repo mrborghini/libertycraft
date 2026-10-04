@@ -1,0 +1,10 @@
+{
+  "type": "libertycraft:blocky_city",
+  "generator": {
+    "type": "libertycraft:blocky_city",
+    "biome_source": {
+      "type": "minecraft:fixed",
+      "biome": "minecraft:the_void"
+    }
+  }
+}

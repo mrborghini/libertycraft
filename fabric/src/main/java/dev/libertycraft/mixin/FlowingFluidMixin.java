@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import dev.libertycraft.world.HostCollision;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -36,7 +37,7 @@ public abstract class FlowingFluidMixin {
 		Direction direction, BlockGetter level, BlockPos sourcePos, BlockState sourceState, BlockPos targetPos, BlockState targetState,
 		CallbackInfoReturnable<Boolean> cir
 	) {
-		if (!targetState.isAir() || !HostCollision.active() || direction == Direction.UP) {
+		if (!targetState.isAir() || !HostCollision.active() || direction == Direction.UP || BlockyCity.isCity(level)) {
 			return;
 		}
 		if (!HostCollision.isKnown(targetPos.getX(), targetPos.getY(), targetPos.getZ())) {

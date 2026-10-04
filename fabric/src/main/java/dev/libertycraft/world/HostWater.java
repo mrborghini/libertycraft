@@ -27,6 +27,7 @@ public final class HostWater {
 		Link.WaterGrid read = Link.readWaterGrid();
 		if (read != null) {
 			grid = new Grid(read.originX, read.originZ, read.size, read.surface);
+			dev.libertycraft.world.city.CityRecorder.water(read.originX, read.originZ, read.size, read.surface); // kept for the blocky city
 		}
 	}
 

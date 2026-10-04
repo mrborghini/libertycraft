@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.libertycraft.world.HostCollision;
@@ -31,6 +32,9 @@ public abstract class BlockCollisionsMixin {
 		CollisionContext context, BlockState state, CollisionGetter level, BlockPos pos, Operation<VoxelShape> original
 	) {
 		VoxelShape blockShape = original.call(context, state, level, pos);
+		if (BlockyCity.isCity(level)) {
+			return blockShape; // the blocky city is made of real blocks
+		}
 		// The walls of holes dug into GTA IV's ground: solid for everyone.
 		if (state.isAir()) {
 			VoxelShape wall = dev.libertycraft.world.HostDig.wallShape(level, pos);

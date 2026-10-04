@@ -31,7 +31,7 @@ namespace lc::Combat
 		using namespace ::lc::combat;
 
 		constexpr float    kActorRange = 80.0f;            // metres from the player
-		constexpr float    kVehicleRange = 60.0f;          // vehicles (several records each) within this
+		constexpr float    kVehicleRange = 60.0f;          // ground vehicles (several records each) within this (helicopters: kAircraftRange)
 		constexpr std::size_t kMaxPedRecords = proto::kMaxActors - 112;  // room for a dozen vehicles in a crowd
 		constexpr float    kActorWidth = 0.6f;             // blocks
 		constexpr float    kActorHeight = 1.8f;
@@ -175,8 +175,10 @@ namespace lc::Combat
 		std::vector<Recent> reacted;
 		struct WantedTest
 		{
-			bool  started = false;
-			float timer = 0.0f, logTimer = 0.0f, since = 0.0f;
+			bool          started = false;
+			float         timer = 0.0f, logTimer = 0.0f, since = 0.0f;
+			std::uint32_t shots = 0, shotFrames = 0, frames = 0;  // this window: cop shots (per frame), frames with one
+			std::uint32_t gunHits = 0, gunHitsLogged = 0;         // the player hurt by gunfire (BridgePlayerDamage)
 		} wantedTest;
 
 		// DebugTestCar: a parked car with people in it, east of the player, then shown to the camera.
@@ -617,18 +619,22 @@ namespace lc::Combat
 				const auto& m = veh->m_pMatrix->pos;
 				const float dx = m.x - a_px, dy = m.y - a_py, dz = m.z - a_pz;
 				const float d2 = dx * dx + dy * dy + dz * dz;
-				if (d2 <= kVehicleRange * kVehicleRange) {
-					vehicleCandidates.emplace_back(d2, slot);
+				// Helicopters out to a crossbow firework's reach (CombatMath.h kAircraftRange).
+				const float range = veh->m_nVehicleType == VEHICLE_TYPE_HELI ? kAircraftRange : kVehicleRange;
+				if (d2 <= range * range) {
+					vehicleCandidates.emplace_back(VehicleSortKey(d2, range), slot);
 					NoteVehicle(static_cast<int>(pool->GetIndex(veh)));
 				}
 			}
 			std::sort(vehicleCandidates.begin(), vehicleCandidates.end());
-			for (const auto& [d2, slot] : vehicleCandidates) {
+			for (const auto& [key, slot] : vehicleCandidates) {
 				CVehicle* veh = pool->Get(slot);
 				const int handle = veh ? static_cast<int>(pool->GetIndex(veh)) : 0;
 				if (!handle || handle == playerCar || !S::DOES_VEHICLE_EXIST(handle)) {
 					continue;
 				}
+				const auto& vp = veh->m_pMatrix->pos;
+				const float d2 = (vp.x - a_px) * (vp.x - a_px) + (vp.y - a_py) * (vp.y - a_py) + (vp.z - a_pz) * (vp.z - a_pz);
 				float lo[3], hi[3];
 				if (!NpcBlocks::ModelBox(handle, veh->m_nModelIndex, lo, hi)) {
 					continue;
@@ -826,6 +832,13 @@ namespace lc::Combat
 		// 15 deg off it on average; 1 and 2 only work for peds facing north and throw others sideways
 		// or back toward the attacker (heading 120: 4 m the wrong way), which is what players saw.
 		constexpr int kKnockVariant = 0;
+
+		// SWITCH_PED_TO_RAGDOLL with its kind (CombatMath.h kRagdollFall / kRagdollBalance): IV-SDK declares
+		// that argument a bool, so the native is called with plain ints.
+		bool SwitchToRagdoll(int a_ped, int a_minMs, int a_maxMs, int a_kind)
+		{
+			return ::NativeInvoke::Invoke<b8>(NATIVE_SWITCH_PED_TO_RAGDOLL, a_ped, a_minMs, a_maxMs, a_kind, 0, 0, 0);
+		}
 
 		void Knock(int a_ped, float a_gx, float a_gy, float a_force, float a_headingDeg, int a_variant)
 		{
@@ -1139,7 +1152,7 @@ namespace lc::Combat
 			}
 			const bool  projectile = (a_ev.flags & proto::kHitProjectile) != 0;
 			const float force = CorpseHitForce(a_ev.d, a_ev.a, projectile);
-			const bool  ragdoll = PushCorpse(a_ped, gx, gy, force, force * 0.3f, 2.0f);
+			const bool  ragdoll = PushCorpse(a_ped, gx, gy, force, force * 0.6f, 1.5f);
 			++counters.corpseHits;
 			LC_LOG("hit corpse %08X for %.2f Minecraft (knockback %.2f%s): %s along GTA %.2f %.2f", a_ev.formId, a_ev.a, a_ev.d, projectile ? ", projectile" : "",
 				ragdoll ? "its ragdoll pushed (force)" : "thrown as it lies (settled)", gx, gy);
@@ -1195,10 +1208,11 @@ namespace lc::Combat
 				float heading = 0.0f;
 				S::GET_CHAR_HEADING(ped, &heading);
 				S::UNLOCK_RAGDOLL(ped, true);
-				bool switched = S::SWITCH_PED_TO_RAGDOLL(ped, o.ragdollMs, o.ragdollMs, false, false, false, false);
+				const int kind = o.kind == BumpOutcome::kStumble && Cfg().debugStumbleKind >= 0 ? Cfg().debugStumbleKind : o.ragdollKind;
+				bool      switched = SwitchToRagdoll(ped, o.ragdollMs, o.ragdollMs, kind);
 				if (!switched && o.kind == BumpOutcome::kKnockdown) {
 					S::CLEAR_CHAR_TASKS_IMMEDIATELY(ped);
-					switched = S::SWITCH_PED_TO_RAGDOLL(ped, o.ragdollMs, o.ragdollMs, false, false, false, false);
+					switched = SwitchToRagdoll(ped, o.ragdollMs, o.ragdollMs, kind);
 				}
 				if (switched) {
 					cooldown = o.kind == BumpOutcome::kKnockdown ? 2.0f : 1.5f;
@@ -1210,9 +1224,10 @@ namespace lc::Combat
 					}
 					unsigned type = 0;
 					S::GET_PED_TYPE(ped, &type);
-					LC_LOG("bump: the player hit %s %08X at %.1f m/s%s%s: %s, ragdoll %d ms, force %.1f along GTA %.2f %.2f, %.0f GTA damage", PedTypeName(type),
+					LC_LOG("bump: the player hit %s %08X at %.1f m/s%s%s: %s, ragdoll %d ms (%s), force %.1f along GTA %.2f %.2f, %.0f GTA damage", PedTypeName(type),
 						a_ev.formId, speed, (a_ev.flags & proto::kBumpSprinting) ? " (sprinting)" : "", (a_ev.flags & proto::kBumpFlying) ? " (flying)" : "",
-						o.kind == BumpOutcome::kKnockdown ? "knocked down" : "stumbles", o.ragdollMs, o.force, gx, gy, o.gtaDamage);
+						o.kind == BumpOutcome::kKnockdown ? "knocked down" : "stumbles", o.ragdollMs, kind >= kRagdollBalance ? "balance" : kind == 1 ? "kind 1" : "fall",
+						o.force, gx, gy, o.gtaDamage);
 					if (o.gtaDamage > 0.0f) {
 						proto::McEvent hurt{};
 						hurt.type = proto::kEvBump;
@@ -1363,7 +1378,7 @@ namespace lc::Combat
 					S::CLEAR_CHAR_TASKS_IMMEDIATELY(ped);
 					switched = S::SWITCH_PED_TO_RAGDOLL(ped, 4000, 4000, false, false, false, false);
 				}
-				const float force = 4.0f + 8.0f * std::clamp(a_ev.d, 0.0f, 2.0f);
+				const float force = HitShoveForce(a_ev.d);
 				Knock(ped, gx, gy, force, heading, kKnockVariant);
 				++counters.ragdolls;
 				pendingKills.push_back({ ped, a_ev, before, 0.0f, 0, x, y, z, gx, gy });
@@ -1385,7 +1400,7 @@ namespace lc::Combat
 					S::GET_CHAR_HEADING(ped, &heading);
 					S::SWITCH_PED_TO_RAGDOLL(ped, ragdollMs, ragdollMs, false, false, false, false);
 					// Minecraft's knockback: 0.4 for a plain hit, more for sprint hits / Knockback.
-					const float force = 4.0f + 8.0f * std::clamp(a_ev.d, 0.0f, 2.0f);
+					const float force = HitShoveForce(a_ev.d);
 					int         variant = kKnockVariant;
 					if (Cfg().debugKnockbackVariant >= 0) {
 						if (knockVariantNext < 0) {
@@ -1442,7 +1457,7 @@ namespace lc::Combat
 						PedTypeName(type), k.ev.formId, k.ev.a, damage, how, k.age, ragdolled ? "ragdolled" : "NOT ragdolled", before, after, killed ? ", killed" : "",
 						(k.ev.flags & proto::kHitProjectile) ? ", projectile" : "", (x - k.x) * k.gx + (y - k.y) * k.gy);
 					if (shoves.size() < 16) {
-						const float force = 4.0f + 8.0f * std::clamp(k.ev.d, 0.0f, 2.0f);
+						const float force = HitShoveForce(k.ev.d);
 						shoves.push_back({ k.ped, k.x, k.y, k.z, kKnockbackCheckSeconds, force, k.gx, k.gy, 0.0f, kKnockVariant });
 					}
 					if (damage > 0) {
@@ -1832,8 +1847,14 @@ namespace lc::Combat
 		}
 
 		// ---- Minecraft explosions ----------------------------------------------------------------------------
+		void FireworkBlast(const proto::McEvent& a_ev, const Frame& a_frame);
+
 		void Explode(const proto::McEvent& a_ev, const Frame& a_frame)
 		{
+			if (a_ev.flags & proto::kExplosionFirework) {
+				FireworkBlast(a_ev, a_frame);
+				return;
+			}
 			const GtaVec c = McToGta(a_ev.a, a_ev.b, a_ev.c);
 			const float  radius = ExplosionRadius(a_ev.d, Cfg().explosionRadiusScale);
 			if (radius <= 0.0f) {
@@ -1858,6 +1879,136 @@ namespace lc::Combat
 			if (Cfg().gtaCrimes && a_frame.exists && dist < 40.0f && ReportGtaCrime(kCrimeCauseExplosion, nullptr)) {
 				++counters.crimes;
 				LC_LOG("crime: Minecraft's explosion -> GTA IV's report CAUSE_EXPLOSION");
+			}
+		}
+
+		// ---- firework rockets: Minecraft's crossbow RPG (proto::kExplosionFirework) -------------------------
+		// A rocket with stars bursts as GTA's rocket blast (FireworkExplosionType, 2: what an RPG's rocket
+		// makes), as wide as its stars make it (the event's radius, FireworkBlast.java: 4 m for one star up
+		// to the full 8 m), at full RPG damage within that. Minecraft's own firework damage never reaches
+		// the stand-ins (HostActorEntity.hurtServer), so peds and vehicles are hurt once, by GTA's blast.
+		// A rocket that struck a vehicle itself also does the rest of an RPG's hit to it once the blast has
+		// had its frames (FireworkStrikes, CombatMath.h FireworkHitDamage): helicopters come down.
+		constexpr float kFireworkSettleSeconds = 0.25f;  // GTA's blast has reached the struck vehicle by then
+		struct FireworkStrike
+		{
+			int      veh;
+			unsigned stars;
+			float    age;
+			unsigned bodyBefore;
+			float    engineBefore;
+			bool     heli;
+		};
+		std::vector<FireworkStrike> fireworkStrikes;
+
+		void FireworkBlast(const proto::McEvent& a_ev, const Frame& a_frame)
+		{
+			const GtaVec c = McToGta(a_ev.a, a_ev.b, a_ev.c);
+			const float  radius = ExplosionRadius(a_ev.d, Cfg().explosionRadiusScale);
+			if (radius <= 0.0f) {
+				return;
+			}
+			const int             type = std::clamp(Cfg().fireworkExplosionType, 0, 24);
+			const tExplosionInfo* info = CExplosion::ms_ExplosionInfo;
+			const float           endRadius = info ? info[type].m_fEndRadius : 0.0f;
+			const float           size = ExplosionSizeScale(radius, endRadius);
+			float                 px = 0, py = 0, pz = 0;
+			if (a_frame.exists) {
+				S::GET_CHAR_COORDINATES(a_frame.ped, &px, &py, &pz);
+			}
+			const float dist = a_frame.exists ? static_cast<float>(std::sqrt((c.x - px) * (c.x - px) + (c.y - py) * (c.y - py) + (c.z - pz) * (c.z - pz))) : 1e9f;
+			if (owned.engaged && dist < radius * 3.0f + 5.0f) {
+				// Minecraft hurt its player already (its own firework damage); GTA's blast mustn't too.
+				blastProof = kBlastProofSeconds;
+				SetBlastProof(a_frame.ped, true);
+			}
+			// The vehicle the rocket struck, as it was before the blast.
+			std::uint32_t handle = 0, piece = 0;
+			int           struck = 0;
+			if (a_ev.formId && VehicleFromActorId(a_ev.formId, handle, piece) && handle && S::DOES_VEHICLE_EXIST(static_cast<int>(handle)) &&
+				!S::IS_CAR_DEAD(static_cast<int>(handle))) {
+				struck = static_cast<int>(handle);
+			}
+			CVehicle* car = struck && CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(handle) : nullptr;
+			unsigned  body = 0;
+			if (struck) {
+				S::GET_CAR_HEALTH(struck, &body);
+			}
+			const float shake = ExplosionShake(radius, dist);
+			S::ADD_EXPLOSION(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), type, size, true, false, shake);
+			++counters.explosions;
+			char what[96] = "";
+			if (struck) {
+				unsigned model = 0;
+				S::GET_CAR_MODEL(struck, &model);
+				std::snprintf(what, sizeof(what), ", struck vehicle %d (%s)", struck, S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model));
+			} else if (a_ev.formId) {
+				std::snprintf(what, sizeof(what), ", struck actor %08X", a_ev.formId);
+			}
+			LC_LOG("Minecraft firework (%u star(s), radius %.1f blocks) -> ADD_EXPLOSION type %d, %.1f m (size %.2f of its %.1f m) at GTA %.1f %.1f %.1f, %.1f m "
+				   "from the player, shake %.2f%s%s%s",
+				a_ev.weapon, a_ev.d, type, radius, size, endRadius, c.x, c.y, c.z, dist, shake, what, (a_ev.flags & proto::kExplosionByPlayer) ? ", the player's" : "",
+				proofSet ? " (player explosion-proof)" : "");
+			if (struck && fireworkStrikes.size() < 8) {
+				fireworkStrikes.push_back({ struck, a_ev.weapon, 0.0f, body, car ? car->m_fEngineHealth : 1000.0f, car && car->m_nVehicleType == VEHICLE_TYPE_HELI });
+			}
+			// The player's own rocket is his doing as far as it flies; anyone else's only near him.
+			const float crimeRange = (a_ev.flags & proto::kExplosionByPlayer) ? kAircraftRange : 40.0f;
+			if (Cfg().gtaCrimes && a_frame.exists && dist < crimeRange && ReportGtaCrime(kCrimeCauseExplosion, nullptr)) {
+				++counters.crimes;
+				LC_LOG("crime: Minecraft's firework -> GTA IV's report CAUSE_EXPLOSION");
+			}
+		}
+
+		void FireworkStrikes(const Frame& a_frame)
+		{
+			for (auto it = fireworkStrikes.begin(); it != fireworkStrikes.end();) {
+				FireworkStrike& f = *it;
+				if ((f.age += a_frame.dt) < kFireworkSettleSeconds) {
+					++it;
+					continue;
+				}
+				const FireworkStrike s = f;
+				it = fireworkStrikes.erase(it);
+				if (!S::DOES_VEHICLE_EXIST(s.veh)) {
+					LC_LOG("firework strike: vehicle %d is gone", s.veh);
+					continue;
+				}
+				CVehicle* car = CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(s.veh)) : nullptr;
+				unsigned  body = 0;
+				S::GET_CAR_HEALTH(s.veh, &body);
+				const float engine = car ? car->m_fEngineHealth : 0.0f;
+				const bool  deadAlready = S::IS_CAR_DEAD(s.veh);
+				const float damage = FireworkHitDamage(s.stars);
+				const char* what = "wrecked by GTA's blast already";
+				if (!deadAlready && damage > 0.0f) {
+					const float engineAfter = engine - damage;
+					S::SET_CAR_HEALTH(s.veh, static_cast<unsigned>(std::max(1.0f, static_cast<float>(body) - damage)));
+					if (engineAfter < 0.0f) {
+						// An RPG's rocket blows up what it hits: at once, not after GTA's few seconds of fire.
+						S::EXPLODE_CAR(s.veh, true, false);
+						what = "blown up";
+						++counters.wrecked;
+					} else {
+						S::SET_ENGINE_HEALTH(s.veh, engineAfter);
+						what = "damaged";
+					}
+				}
+				unsigned bodyNow = 0;
+				S::GET_CAR_HEALTH(s.veh, &bodyNow);
+				// Whoever flies or drives it: an attack on the police for a police vehicle, else damage to property.
+				if (Cfg().gtaCrimes) {
+					if (const int driver = Occupant(s.veh, kSeatDriver, a_frame.ped)) {
+						unsigned type = 0;
+						S::GET_PED_TYPE(driver, &type);
+						AfterAttack(driver, type, false, a_frame, s.veh,
+							type == kPedTypeCop ? kCrimeHitCop : (S::IS_CAR_DEAD(s.veh) ? kCrimeDestroyVehicle : kCrimeDamageToProperty));
+					}
+				}
+				LC_LOG("firework struck %s %d: body %u engine %.0f before; after GTA's blast body %u engine %.0f%s; the rocket's own hit (%u star(s), %.0f) -> %s: "
+					   "body %u engine %.0f, %s",
+					s.heli ? "helicopter" : "vehicle", s.veh, s.bodyBefore, s.engineBefore, body, engine, deadAlready ? " (wrecked)" : "", s.stars, damage, what,
+					bodyNow, car ? car->m_fEngineHealth : 0.0f, S::IS_CAR_DEAD(s.veh) ? "wrecked" : "still going");
 			}
 		}
 
@@ -2270,6 +2421,9 @@ namespace lc::Combat
 					hurtFlags = HurtDirectionFlags(from->m_pMatrix->pos.x - p->m_pMatrix->pos.x, from->m_pMatrix->pos.y - p->m_pMatrix->pos.y);
 				}
 				++counters.hurtFrames;
+				if (cls == HurtClass::kProjectile) {
+					++wantedTest.gunHits;  // (DebugWanted)
+				}
 				if (blastProof > 0.0f && (weapon == kWeaponExplosion || cls == HurtClass::kOther)) {
 					++counters.hurtDroppedBlast;  // our own (Minecraft's) explosion: Minecraft hurt its player itself
 				} else if (cls == HurtClass::kIgnore) {
@@ -2380,9 +2534,11 @@ namespace lc::Combat
 		// passenger who stay put; its windows and its people's health are logged as they change. 90 s
 		// later it is moved 6 m in front of the camera, left side on, for a screenshot. Minecraft can
 		// then shoot it from where the player stands (config/libertycraft-autorun.txt).
-		// DebugWanted=N (not in the default ini): N s into play, 2 wanted stars; then, every 3 s for a
-		// minute, how interested the police are: the wanted level, cops within 80 m and how many of
-		// them are in combat or shooting, and what GTA has done to the player.
+		// DebugWanted=N (not in the default ini): N s into play, 2 wanted stars; then for a minute, every 3
+		// s, how interested the police are: the wanted level, cops within 80 m and how many of them are in
+		// combat, the shots they fired in those 3 s (IS_CHAR_SHOOTING holds for the frame of a shot only, so
+		// every frame is counted: QA's one sample every 3 s read "0 shooting" while they fired several
+		// shots a second), and how often their gunfire hurt the player.
 		void WantedHook(const Frame& a_frame)
 		{
 			auto& w = wantedTest;
@@ -2393,18 +2549,17 @@ namespace lc::Combat
 			if (!w.started) {
 				if (w.timer >= static_cast<float>(Cfg().debugWanted)) {
 					w.started = true;
+					w.logTimer = 3.0f;
+					w.gunHitsLogged = w.gunHits;
 					S::ALTER_WANTED_LEVEL(a_frame.player, 2);
 					S::APPLY_WANTED_LEVEL_CHANGE_NOW(a_frame.player);
 					LC_LOG("DebugWanted: 2 stars (player control %s, puppeting %d)", S::IS_PLAYER_CONTROL_ON(a_frame.player) ? "on" : "off", a_frame.puppeting);
 				}
 				return;
 			}
-			if ((w.since += a_frame.dt) > 60.0f || (w.logTimer -= a_frame.dt) > 0.0f) {
+			if ((w.since += a_frame.dt) > 60.0f) {
 				return;
 			}
-			w.logTimer = 3.0f;
-			unsigned wanted = 0;
-			S::STORE_WANTED_LEVEL(a_frame.player, &wanted);
 			float px = 0, py = 0, pz = 0;
 			S::GET_CHAR_COORDINATES(a_frame.ped, &px, &py, &pz);
 			unsigned cops = 0, fighting = 0, shooting = 0, nearest = 9999;
@@ -2431,10 +2586,22 @@ namespace lc::Combat
 				fighting += S::IS_PED_IN_COMBAT(h) ? 1u : 0u;
 				shooting += S::IS_CHAR_SHOOTING(h) ? 1u : 0u;
 			}
-			unsigned health = 0;
+			w.shots += shooting;
+			w.shotFrames += shooting ? 1u : 0u;
+			++w.frames;
+			if ((w.logTimer -= a_frame.dt) > 0.0f) {
+				return;
+			}
+			w.logTimer = 3.0f;
+			unsigned wanted = 0, health = 0;
+			S::STORE_WANTED_LEVEL(a_frame.player, &wanted);
 			S::GET_CHAR_HEALTH(a_frame.ped, &health);
-			LC_LOG("DebugWanted +%.0fs: wanted %u, %u cops within 80 m (nearest %u m), %u in combat, %u shooting; player health %u, control %s, puppeting %d",
-				w.since, wanted, cops, cops ? nearest : 0u, fighting, shooting, health, S::IS_PLAYER_CONTROL_ON(a_frame.player) ? "on" : "off", a_frame.puppeting);
+			LC_LOG("DebugWanted +%.0fs: wanted %u, %u cops within 80 m (nearest %u m), %u in combat; %u shots in the last 3 s (in %u of %u frames), the player "
+				   "hit by gunfire %u times; player health %u, control %s, puppeting %d",
+				w.since, wanted, cops, cops ? nearest : 0u, fighting, w.shots, w.shotFrames, w.frames, w.gunHits - w.gunHitsLogged, health,
+				S::IS_PLAYER_CONTROL_ON(a_frame.player) ? "on" : "off", a_frame.puppeting);
+			w.shots = w.shotFrames = w.frames = 0;
+			w.gunHitsLogged = w.gunHits;
 		}
 
 		// DebugTestCar=-N: a lethal arrow through side window a_window (0 front left .. 3 rear right) of
@@ -2462,10 +2629,13 @@ namespace lc::Combat
 			hitPoint.at[0] = at.x, hitPoint.at[1] = at.y, hitPoint.at[2] = at.z;
 			hitPoint.yaw = GtaHeadingToMcYaw(std::atan2(-dx, dy) * kRadToDeg);
 			hitPoint.pitch = 0.0f;
+			// 12 Minecraft damage: 120 off the occupant behind the glass (lethal: 200 health, dead at 100),
+			// 180 off the body and engine (VehicleDamageScale 15), so the car lasts all four windows (at
+			// 30 the third or fourth arrow set it on fire and wrecked it).
 			proto::McEvent ev{};
 			ev.type = proto::kEvHitActor;
 			ev.formId = hitPoint.formId;
-			ev.a = 30.0f;
+			ev.a = 12.0f;
 			ev.flags = proto::kHitProjectile;
 			ev.weapon = proto::kWeaponArrow;
 			LC_LOG("DebugTestCar: an arrow through the %s", WindowName(a_window));
@@ -2576,10 +2746,8 @@ namespace lc::Combat
 					heading, x, y, z, t.driver, t.passenger);
 				t.stage = 2;
 				t.timer = Cfg().debugTestCar < 0 ? -1e9f : 0.0f;  // (in view already: never moved)
-				if (Cfg().debugTestCar < 0) {
-					// One more arrow at once, while the car is brand new: its windows and seats must be left alone.
-					TestCarArrow(a_frame, t.car, kWindowLF);
-				}
+				// (No arrow while the car is brand new: Occupant and the window natives leave a vehicle
+				// alone for its first kSettledFrames, so it would only scratch the body.)
 				return;
 			}
 			if (!S::DOES_VEHICLE_EXIST(t.car)) {
@@ -2628,6 +2796,186 @@ namespace lc::Combat
 			}
 		}
 
+		// DebugFireworkTargets=N (not in the default ini): N s into puppet mode, targets for crossbow
+		// fireworks in the direction the player looks (fired by an autorun: config/libertycraft-autorun.txt,
+		// the rockets summoned with their motion toward the spots logged here in Minecraft's coordinates):
+		// a police Maverick with a police pilot hovers DebugFireworkHeliAhead (40) m ahead and 18 m up (a
+		// quarter of any extra distance higher; turned or lifted to where GTA's map leaves it room), side
+		// on (held there until something hurts it: 100 health off, then it's GTA's), and 14 m ahead two
+		// peds stand still
+		// left of a spot and a parked Admiral right of it. What happens to them is logged as it changes (at
+		// most every 0.25 s) for 60 s.
+		struct FireworkTargets
+		{
+			int   stage = 0;  // 0 waiting, 1 models requested, 2 placed, 3 done
+			float timer = 0.0f, since = 0.0f, logTimer = 0.0f;
+			int   heli = 0, pilot = 0, car = 0, peds[2]{};
+			float hover[3]{};
+			float baseZ = 0.0f;
+			bool  holding = false;
+			char  last[240] = "";
+		} fwTargets;
+
+		void FireworkTargetsHook(const Frame& a_frame)
+		{
+			auto& t = fwTargets;
+			if (Cfg().debugFireworkTargets <= 0 || t.stage >= 3 || !a_frame.exists || a_frame.loading || a_frame.dead || !a_frame.mcInWorld) {
+				return;
+			}
+			const unsigned heliModel = S::GET_HASH_KEY("polmav"), copModel = S::GET_HASH_KEY("m_y_cop"), carModel = S::GET_HASH_KEY("admiral");
+			if (t.stage == 0) {
+				if (!a_frame.puppeting || (t.timer += a_frame.dt) < static_cast<float>(Cfg().debugFireworkTargets)) {
+					return;
+				}
+				for (const unsigned m : { heliModel, copModel, carModel }) {
+					CStreaming::ScriptRequestModel(static_cast<std::int32_t>(m));
+				}
+				t.stage = 1;
+				return;
+			}
+			if (t.stage == 1) {
+				if (!S::HAS_MODEL_LOADED(heliModel) || !S::HAS_MODEL_LOADED(copModel) || !S::HAS_MODEL_LOADED(carModel)) {
+					return;
+				}
+				float x = 0, y = 0, z = 0, heading = 0;
+				S::GET_CHAR_COORDINATES(a_frame.ped, &x, &y, &z);
+				S::GET_CHAR_HEADING(a_frame.ped, &heading);
+				if (a_frame.mc) {
+					heading = McYawToGtaHeading(a_frame.mc->yaw);
+				}
+				const float r = heading * kDegToRad, fx = -std::sin(r), fy = std::cos(r), rx = std::cos(r), ry = std::sin(r);
+				t.baseZ = z;
+				// The helicopter: ahead of the player, turned up to 40 degrees either way and lifted up to 20 m
+				// until GTA's map is clear from the player's eyes to it and round it (rotor span, below).
+				const float ahead = std::clamp(Cfg().debugFireworkHeliAhead, 10.0f, 150.0f);
+				const float up = 18.0f + std::max(0.0f, ahead - 40.0f) * 0.25f;  // (farther: over the roofs)
+				auto        blocked = [](float a_x0, float a_y0, float a_z0, float a_x1, float a_y1, float a_z1) {
+					const float         from[3] = { a_x0, a_y0, a_z0 }, to[3] = { a_x1, a_y1, a_z1 };
+					tLineOfSightResults res;
+					return col::CastGta(from, to, res, STATIC_COLLISION | BUILDINGS | OBJECTS);
+				};
+				float heliHeading = heading, lifted = 0.0f;
+				bool  clear = false;
+				for (const float turn : { 0.0f, -10.0f, 10.0f, -20.0f, 20.0f, -30.0f, 30.0f, -40.0f, 40.0f }) {
+					for (const float lift : { 0.0f, 10.0f, 20.0f }) {
+						const float hr = (heading + turn) * kDegToRad, hfx = -std::sin(hr), hfy = std::cos(hr);
+						const float cx = x + hfx * ahead, cy = y + hfy * ahead, cz = z + up + lift;
+						if (!blocked(x, y, z + 0.6f, cx, cy, cz) && !blocked(cx - hfy * 8.0f, cy + hfx * 8.0f, cz, cx + hfy * 8.0f, cy - hfx * 8.0f, cz) &&
+							!blocked(cx, cy, cz + 3.0f, cx, cy, cz - 5.0f)) {
+							heliHeading = heading + turn, lifted = lift, clear = true;
+							t.hover[0] = cx, t.hover[1] = cy, t.hover[2] = cz;
+							break;
+						}
+					}
+					if (clear) {
+						break;
+					}
+				}
+				if (!clear) {
+					t.hover[0] = x + fx * ahead, t.hover[1] = y + fy * ahead, t.hover[2] = z + up;
+				}
+				S::CREATE_CAR(heliModel, t.hover[0], t.hover[1], t.hover[2], &t.heli, true);
+				if (t.heli) {
+					S::SET_CAR_HEADING(t.heli, heliHeading + 90.0f);
+					S::SET_CAR_ENGINE_ON(t.heli, true, true);
+					S::SET_HELI_BLADES_FULL_SPEED(t.heli);
+					S::CREATE_CHAR_INSIDE_CAR(t.heli, 6 /* PEDTYPE_COP */, copModel, &t.pilot);
+					if (t.pilot) {
+						S::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(t.pilot, true);
+					}
+				}
+				const float sx = x + fx * 14.0f, sy = y + fy * 14.0f;  // the spot on the ground
+				float       spotZ = z - 1.0f;
+				S::GET_GROUND_Z_FOR_3D_COORD(sx, sy, z + 1.0f, &spotZ);
+				S::CREATE_CAR(carModel, sx + rx * 3.5f, sy + ry * 3.5f, z, &t.car, true);
+				if (t.car) {
+					PlaceCar(t.car, sx + rx * 3.5f, sy + ry * 3.5f, z, heading + 90.0f);
+				}
+				for (int i = 0; i < 2; ++i) {
+					const float side = 1.5f + 1.5f * static_cast<float>(i), ahead = 0.8f * static_cast<float>(i);
+					const float px = sx - rx * side + fx * ahead, py = sy - ry * side + fy * ahead;
+					S::CREATE_RANDOM_CHAR(px, py, z, &t.peds[i]);
+					if (t.peds[i]) {
+						float ground = z - 1.0f;
+						S::GET_GROUND_Z_FOR_3D_COORD(px, py, z + 1.0f, &ground);
+						S::SET_CHAR_COORDINATES(t.peds[i], px, py, ground);
+						S::SET_CHAR_HEADING(t.peds[i], heading + 180.0f);  // facing the player
+						S::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(t.peds[i], true);
+						S::TASK_PAUSE(t.peds[i], 600000);
+					}
+				}
+				for (const unsigned m : { heliModel, copModel, carModel }) {
+					S::MARK_MODEL_AS_NO_LONGER_NEEDED(m);
+				}
+				t.holding = t.heli != 0;
+				t.stage = 2;
+				const McVec feet = GtaToMc(x, y, z - Cfg().rootToFeet), heliMc = GtaToMc(t.hover[0], t.hover[1], t.hover[2]), spotMc = GtaToMc(sx, sy, spotZ);
+				float       pedAt[3] = { sx, sy, spotZ + 1.0f };  // the nearer ped's middle (its root)
+				if (t.peds[0]) {
+					S::GET_CHAR_COORDINATES(t.peds[0], &pedAt[0], &pedAt[1], &pedAt[2]);
+				}
+				const McVec pedMc = GtaToMc(pedAt[0], pedAt[1], pedAt[2]);
+				LC_LOG("DebugFireworkTargets: player at GTA %.1f %.1f %.1f heading %.0f; police helicopter %d (pilot %d) %.0f m away at heading %.0f, %.0f m up%s; car "
+					   "%d and peds %d %d round the spot 14 m ahead",
+					x, y, z, heading, t.heli, t.pilot, ahead, heliHeading, up + lifted, clear ? "" : " (no clear spot found)", t.car, t.peds[0], t.peds[1]);
+				LC_LOG("DebugFireworkTargets: aim (Minecraft): feet %.2f %.2f %.2f heli %.2f %.2f %.2f spot %.2f %.2f %.2f ped %.2f %.2f %.2f", feet.x, feet.y, feet.z,
+					heliMc.x, heliMc.y, heliMc.z, spotMc.x, spotMc.y, spotMc.z, pedMc.x, pedMc.y, pedMc.z);
+				return;
+			}
+			t.since += a_frame.dt;
+			CVehicle* heli = t.heli && S::DOES_VEHICLE_EXIST(t.heli) && CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(t.heli)) : nullptr;
+			unsigned  heliBody = 0;
+			if (heli) {
+				S::GET_CAR_HEALTH(t.heli, &heliBody);
+			}
+			if (t.holding) {
+				if (!heli || !heli->m_pMatrix || S::IS_CAR_DEAD(t.heli) || heliBody < 900 || heli->m_fEngineHealth < 900.0f) {
+					t.holding = false;
+					LC_LOG("DebugFireworkTargets: the helicopter was hit: no longer held (body %u, engine %.0f)", heliBody, heli ? heli->m_fEngineHealth : 0.0f);
+				} else {
+					// Hover: a spring toward the spot, through the physics collider's velocity.
+					const auto& p = heli->m_pMatrix->pos;
+					CVector     v{ std::clamp((t.hover[0] - p.x) * 1.5f, -4.0f, 4.0f), std::clamp((t.hover[1] - p.y) * 1.5f, -4.0f, 4.0f),
+							std::clamp((t.hover[2] - p.z) * 1.5f, -4.0f, 4.0f) };
+					if (auto* c = heli->GetConstrainedCollider()) {
+						c->SetVelocity(&v);
+					}
+					S::SET_HELI_BLADES_FULL_SPEED(t.heli);
+				}
+			}
+			if ((t.logTimer -= a_frame.dt) <= 0.0f) {
+				t.logTimer = 0.25f;
+				unsigned carBody = 0, pilotHealth = 0, pedHealth[2]{};
+				if (t.car && S::DOES_VEHICLE_EXIST(t.car)) {
+					S::GET_CAR_HEALTH(t.car, &carBody);
+				}
+				if (t.pilot && S::DOES_CHAR_EXIST(t.pilot)) {
+					S::GET_CHAR_HEALTH(t.pilot, &pilotHealth);
+				}
+				for (int i = 0; i < 2; ++i) {
+					if (t.peds[i] && S::DOES_CHAR_EXIST(t.peds[i])) {
+						S::GET_CHAR_HEALTH(t.peds[i], &pedHealth[i]);
+					}
+				}
+				CVehicle* car = t.car && S::DOES_VEHICLE_EXIST(t.car) && CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(t.car)) : nullptr;
+				char line[240];
+				std::snprintf(line, sizeof(line), "helicopter body %u engine %.0f%s at %.0f m up%s, pilot %u; car body %u engine %.0f%s; peds %u%s %u%s", heliBody,
+					heli ? heli->m_fEngineHealth : 0.0f, heli && S::IS_CAR_DEAD(t.heli) ? " WRECKED" : "",
+					heli && heli->m_pMatrix ? std::floor(heli->m_pMatrix->pos.z - t.baseZ) : -1.0f, heli && S::IS_CAR_ON_FIRE(t.heli) ? " burning" : "",
+					pilotHealth, carBody, car ? car->m_fEngineHealth : 0.0f, car && S::IS_CAR_DEAD(t.car) ? " WRECKED" : "", pedHealth[0],
+					t.peds[0] && S::DOES_CHAR_EXIST(t.peds[0]) && S::IS_PED_RAGDOLL(t.peds[0]) ? " (ragdoll)" : "", pedHealth[1],
+					t.peds[1] && S::DOES_CHAR_EXIST(t.peds[1]) && S::IS_PED_RAGDOLL(t.peds[1]) ? " (ragdoll)" : "");
+				if (std::strcmp(line, t.last) != 0) {
+					std::strcpy(t.last, line);
+					LC_LOG("DebugFireworkTargets +%.2fs: %s", t.since, line);
+				}
+			}
+			if (t.since > 60.0f) {
+				t.stage = 3;
+				LC_LOG("DebugFireworkTargets: over");
+			}
+		}
+
 		// ---- test hooks (LibertyCraft.ini CombatSelfTest / DebugWarpOutdoors; not in the default ini) -----
 		void TestHooks(const Frame& a_frame)
 		{
@@ -2658,6 +3006,7 @@ namespace lc::Combat
 			TestCarHook(a_frame);
 			WantedHook(a_frame);
 			BumpPedHook(a_frame);
+			FireworkTargetsHook(a_frame);
 		}
 
 		// ---- Diagnostics=1: who called into the game when it faulted ----------------------------------------
@@ -2785,9 +3134,11 @@ namespace lc::Combat
 		shoves.clear();
 		warpTimer = 0.0f;
 		testCar = TestCar{};
+		fwTargets = FireworkTargets{};
 		seenVehicles.clear();
 		shield = Shield{};  // (the ped is going away)
 		pendingKills.clear();
+		fireworkStrikes.clear();
 		bumpCooldown.clear();
 		speechCooldown.clear();
 		corpseFlings.clear();
@@ -2888,6 +3239,7 @@ namespace lc::Combat
 		UpdateShield(a_frame);
 		UpdateHudHealth(a_frame);
 		PendingKills(a_frame);
+		FireworkStrikes(a_frame);
 		CorpseFlings(a_frame.dt);
 		TickBumps(a_frame.dt);
 		UpdateKill(a_frame);

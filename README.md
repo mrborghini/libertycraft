@@ -18,10 +18,12 @@ This is a port of the idea (and most of the Minecraft-side code) of
 
 | | |
 |---|---|
-| ![TNT in Roman's apartment](docs/screenshots/apartment-tnt.jpg) | ![The Minecraft player plays Niko in the opening cutscene](docs/screenshots/cutscene.jpg) |
-| Blocks indoors, with the Minecraft HUD | Your Minecraft character plays Niko in cutscenes |
+| ![TNT in Roman's apartment](docs/screenshots/apartment-tnt.jpg) | ![Blocky Liberty City, a block copy of Broker drawn by GTA IV](docs/screenshots/blocky-city.jpg) |
+| Blocks indoors, with the Minecraft HUD | Through a nether portal: Blocky Liberty City, with GTA's sky and traffic |
 | ![Driving a convertible as the Minecraft player](docs/screenshots/driving.jpg) | ![Bailing out of a moving car](docs/screenshots/bailout.jpg) |
 | Driving (F steals a car the GTA way) | Bailing out of a moving car: GTA's ragdoll, Minecraft's body |
+| ![Minecraft water flooding a Broker street](docs/screenshots/flood.jpg) | ![A car wrecked by crossbow fire](docs/screenshots/car-wreck.jpg) |
+| Minecraft water floods the street and stalls the cars | Crossbow fire wrecks a car (fireworks bring down helicopters) |
 
 ## How it works
 
@@ -104,6 +106,27 @@ as usual (`E` inventory, `T` chat, `F5` third person). GTA IV only keeps a few k
 Keys and the boat/horse/minecart mount can be changed in `GTAIV/plugins/LibertyCraft.ini` and
 Minecraft's `config/libertycraft.properties`.
 
+## Blocky Liberty City
+
+Build a nether portal frame of obsidian anywhere in Liberty City and light it: it leads to **Blocky
+Liberty City**, a Minecraft dimension (`libertycraft:blocky_city`) that copies the city block for block,
+at the same coordinates (1:1), built from the collision GTA IV has streamed to Minecraft. Every street
+you walk down in GTA IV is remembered in the world save (`saves/LibertyCraft/libertycraft_city/`, about
+150 KiB per street block, written in the background), so the copy grows as you explore, also while you walk
+around in it; where nobody has been yet there is nothing but air behind an invisible wall. GTA IV's own
+surface materials pick the blocks: tarmac becomes gray concrete, pavements smooth stone, brick walls
+bricks, glass glass, grass grass, roofs gray concrete, metal iron, wood planks; GTA IV's water becomes
+Minecraft water. Parts built before newer data arrived fill in when you are there (what is already
+built stays, so your own builds are safe).
+
+You stay in GTA IV: it hides its own buildings, terrain and props while you are in the blocky city and
+draws the city's blocks in their place, around the same streets, with its sky, weather, water, people,
+traffic and HUD. Peds and cars still walk and drive on GTA IV's own (invisible) city, which the blocks
+copy. A nether portal there (the one you arrived through, or one you build) leads back to the same spot
+in Liberty City, and GTA IV's map comes back.
+
+`blockyCity=false` in Minecraft's `config/libertycraft.properties` makes nether portals do nothing.
+
 ## Milestones
 
 - [x] **M0**: repo, scripted downgrade (`tools/install.sh`), plugin loads in-game under Proton
@@ -125,9 +148,14 @@ Minecraft's `config/libertycraft.properties`.
 - [x] **M10**: walking into peds pushes them (sprinting makes them stumble), elytra, falls and sprint-jumps knock
   them down by speed, corpses can be hit and dragged, doors swing open and shut on GTA's own hinges, every vehicle
   (helicopters and their rotors too) knocks you over, and entering interiors no longer drops Minecraft mode
+- [x] **M11**: fireworks fired from a crossbow explode like GTA rockets (they bring down helicopters), nether
+  portals lead to Blocky Liberty City, softer knockdowns and corpse pushes, cops shoot back at the Minecraft player,
+  held items hidden in vehicles, no void when the camera is outside an interior's door
 
 Known gaps: no shadows on blocks indoors; peds wade instead of swim in Minecraft water; cutscene support needs
-1.0.8.0; peds take double damage from Minecraft explosions. (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
+1.0.8.0; peds take double damage from Minecraft's TNT and creepers (not from fireworks). Blocky Liberty City is drawn
+128 m out, loses lamp posts and other thin street furniture, and can sit up to half a block off GTA's ground.
+GTA's own ladders can't be climbed in Minecraft mode (Minecraft ladders can). (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
 
 ## Licenses
 

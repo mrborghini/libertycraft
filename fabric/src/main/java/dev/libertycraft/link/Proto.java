@@ -84,6 +84,14 @@ public final class Proto {
 	public static final int EV_HIT_ACTOR = 1;
 	public static final int EV_PLAYER_DIED = 2;
 	public static final int EV_EXPLOSION = 3;
+	/**
+	 * LibertyCraft: EV_EXPLOSION flags (kExplosionFirework): a firework rocket with stars burst; then
+	 * a/b/c = where (MC), d = the blast radius (blocks), formId = the stand-in it struck (0: none),
+	 * weapon = its star count.
+	 */
+	public static final int EXPLOSION_FIREWORK = 1;
+	/** LibertyCraft: EV_EXPLOSION flags (kExplosionByPlayer): the player launched it. */
+	public static final int EXPLOSION_BY_PLAYER = 1 << 1;
 	public static final int EV_ARROW_STUCK = 4;
 	public static final int EV_SKILL_USE = 5;
 	/** LibertyCraft: where the next EV_HIT_ACTOR on the same vehicle piece landed (see kEvHitPoint). */
@@ -232,6 +240,8 @@ public final class Proto {
 	public static final int MC_FLYING = 1 << 7;
 	/** LibertyCraft: the player's shield is up and blocking (kMcBlocking). */
 	public static final int MC_BLOCKING = 1 << 8;
+	/** LibertyCraft: the player is in the blocky city; GTA IV hides its own map geometry (kMcBlockyCity). */
+	public static final int MC_BLOCKY_CITY = 1 << 9;
 
 	// Overlay
 	public static final long OC_STATE = 0x00;
@@ -269,6 +279,9 @@ public final class Proto {
 	public static final int TRI_DIGGABLE = 2;
 	public static final int TRI_GHOST = 4;
 	public static final int TRI_TERRAIN = 8;
+	/** LibertyCraft: bits 16-23 hold GTA IV's material of the surface (materials.dat index, kTriGtaMaterial). */
+	public static final int TRI_GTA_MATERIAL = 1 << 4;
+	public static final int TRI_GTA_MATERIAL_SHIFT = 16;
 	public static final int TRI_MATERIAL_SHIFT = 8;
 	// DigMaterial (libertycraft_protocol.h)
 	public static final int DIG_NONE = 0, DIG_GRASS = 1, DIG_DIRT = 2, DIG_STONE = 3, DIG_COBBLE = 4, DIG_SNOW = 5, DIG_ICE = 6, DIG_SAND = 7,

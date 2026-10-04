@@ -106,6 +106,28 @@ static void TestKnockback()
 	CHECK(Near(ExplosionShake(4.0f, 2.0f), 1.0f));
 	CHECK(Near(ExplosionShake(4.0f, 24.0f), 0.0f));
 	CHECK(Near(ExplosionShake(4.0f, 14.0f), 0.5f));
+	// ADD_EXPLOSION's size: a share of the type's END_RADIUS, 0.01 to 1 as the game clamps it.
+	CHECK(Near(ExplosionSizeScale(4.0f, 8.0f), 0.5f));
+	CHECK(Near(ExplosionSizeScale(8.0f, 8.0f), 1.0f));
+	CHECK(Near(ExplosionSizeScale(30.0f, 8.0f), 1.0f));
+	CHECK(Near(ExplosionSizeScale(0.01f, 8.0f), 0.01f));
+	CHECK(ExplosionSizeScale(0.0f, 8.0f) == 0.0f);
+	CHECK(Near(ExplosionSizeScale(4.0f, 0.0f), 1.0f));  // no table: full size
+}
+
+static void TestFireworks()
+{
+	// A crossbow rocket at flight duration 3: 1.6 blocks a tick for at most 52 ticks.
+	CHECK(Near(kFireworkReach, 83.2f, 1e-3f));
+	CHECK(kAircraftRange > kFireworkReach && kAircraftRange < 100.0f);
+	CHECK(FireworkHitDamage(0) == 0.0f);
+	CHECK(Near(FireworkHitDamage(1), 500.0f));
+	CHECK(Near(FireworkHitDamage(2), 1000.0f));  // one hit wrecks a helicopter (1000 engine health)
+	CHECK(Near(FireworkHitDamage(7), 1500.0f));
+	// A helicopter 90 m away sorts with a car 58 m away: both near the edge of their ranges.
+	CHECK(VehicleSortKey(90.0f * 90.0f, kAircraftRange) > VehicleSortKey(50.0f * 50.0f, 60.0f));
+	CHECK(VehicleSortKey(40.0f * 40.0f, kAircraftRange) < VehicleSortKey(30.0f * 30.0f, 60.0f));
+	CHECK(Near(VehicleSortKey(30.0f * 30.0f, 60.0f), 0.25f));
 }
 
 // Minecraft's convention end to end: LivingEntity.knockback(power, xd, zd) moves the victim along
@@ -579,6 +601,9 @@ static void TestBumps()
 	// knocks it down, and from 10 m/s on hurts it, more the faster.
 	CHECK(BumpOf(0.0f).kind == BumpOutcome::kNudge && BumpOf(4.3f).kind == BumpOutcome::kNudge && BumpOf(4.3f).gtaDamage == 0.0f);
 	CHECK(BumpOf(5.6f).kind == BumpOutcome::kStumble && BumpOf(5.6f).ragdollMs > 0 && BumpOf(5.6f).gtaDamage == 0.0f);
+	// A stumble is a balance ragdoll with a light push (the ped stays up); a knockdown a limp fall.
+	CHECK(BumpOf(6.0f).ragdollKind == kRagdollBalance && BumpOf(6.0f).force < 2.5f && BumpOf(7.9f).force < 3.0f);
+	CHECK(BumpOf(8.0f).kind == BumpOutcome::kKnockdown && BumpOf(8.0f).ragdollKind == kRagdollFall && BumpOf(8.0f).force > BumpOf(7.9f).force);
 	CHECK(BumpOf(9.0f).kind == BumpOutcome::kKnockdown && BumpOf(9.0f).gtaDamage == 0.0f);
 	const auto e20 = BumpOf(20.0f), e30 = BumpOf(30.0f);
 	CHECK(Near(e20.gtaDamage, 80.0f) && e30.gtaDamage > e20.gtaDamage && e30.force > e20.force && e30.ragdollMs >= e20.ragdollMs);
@@ -588,9 +613,13 @@ static void TestBumps()
 	// Nudges: the overlap and a bit, capped.
 	CHECK(Near(NudgeStep(0.1f), 0.13f) && Near(NudgeStep(2.0f), 0.25f) && NudgeStep(-1.0f) == 0.0f);
 	// Corpses: a walk drags, faster throws further; hits push by knockback and damage.
-	CHECK(CorpseBumpForce(4.3f) > 4.0f && CorpseBumpForce(20.0f) > CorpseBumpForce(4.3f) && CorpseBumpForce(500.0f) <= 14.0f);
+	CHECK(CorpseBumpForce(1.5f) <= 1.1f && CorpseBumpForce(20.0f) > CorpseBumpForce(4.3f) && CorpseBumpForce(500.0f) <= 6.0f);
 	CHECK(CorpseHitForce(0.4f, 7.0f, false) > CorpseHitForce(0.0f, 1.0f, false) && CorpseHitForce(0.4f, 7.0f, true) < CorpseHitForce(0.4f, 7.0f, false));
-	CHECK(CorpseHitForce(5.0f, 100.0f, false) <= 20.0f);
+	CHECK(CorpseHitForce(5.0f, 100.0f, false) <= 4.5f);
+	// QA: a 30-damage blow on a body was force 18.4 (25 m in a second); now a couple of metres' worth.
+	CHECK(CorpseHitForce(0.4f, 30.0f, false) < 3.0f && CorpseHitForce(0.4f, 6.0f, true) < 1.5f);
+	// A hit's shove on a ped as it goes over: a plain hit (0.4) about 1.6, the hardest 4.
+	CHECK(Near(HitShoveForce(0.4f), 1.6f) && Near(HitShoveForce(0.0f), 1.0f) && Near(HitShoveForce(2.0f), 4.0f) && Near(HitShoveForce(9.0f), 4.0f));
 }
 
 static void TestCrimes()
@@ -708,6 +737,7 @@ int main()
 	TestDamage();
 	TestHealth();
 	TestKnockback();
+	TestFireworks();
 	TestKnockbackChain();
 	TestVehicles();
 	TestVehicleShapes();

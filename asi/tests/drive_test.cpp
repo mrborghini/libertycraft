@@ -545,7 +545,11 @@ static void TestBlows()
 	const auto car = hit::BodyBlow(10.0f, hit::Kind::kCar), heli = hit::BodyBlow(10.0f, hit::Kind::kHeli);
 	CHECK(heli.gtaDamage > car.gtaDamage && heli.force > car.force && heli.ms >= car.ms);
 	CHECK(hit::RotorBlow(true).gtaDamage >= 150.0f && hit::RotorBlow(true).force > heli.force);
-	CHECK(hit::BodyBlow(100.0f, hit::Kind::kTrain).force <= 50.0f && hit::BodyBlow(100.0f, hit::Kind::kTrain).ms <= 5000);
+	CHECK(hit::BodyBlow(100.0f, hit::Kind::kTrain).force * hit::kForceToSpeed <= hit::kMaxThrowSpeed + 1e-4f && hit::BodyBlow(100.0f, hit::Kind::kTrain).ms <= 5000);
+	// A car at 10 m/s throws him as GTA's own run-over throws a pedestrian (about 8.7 m/s), slow ones gently.
+	CHECK(std::fabs(car.force * hit::kForceToSpeed - 8.7f) < 0.1f);
+	CHECK(hit::BodyBlow(3.0f, hit::Kind::kCar).force * hit::kForceToSpeed <= hit::kMinThrowSpeed + 1e-4f);
+	CHECK(hit::RotorBlow(true).force * hit::kForceToSpeed <= hit::kMaxThrowSpeed);
 }
 
 int main()

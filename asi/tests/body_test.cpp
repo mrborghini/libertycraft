@@ -280,6 +280,58 @@ static void TestPoseMesh()
 	CHECK(bounds[proto::kPartHead].vertices == 3);
 	NEAR(bounds[proto::kPartRightArm].lo[0], 0.3f, 1e-5f);
 	NEAR(bounds[proto::kPartRightArm].hi[1], 1.25f, 1e-5f);
+
+	// The held items hidden (in a vehicle): their vertices collapse onto one point; the rest stay.
+	Pose hidden = pose;
+	HideHeld(hidden);
+	std::vector<Vertex> out2;
+	PoseMesh(batches, in, hidden, out2);
+	for (std::size_t i = 0; i < in.size(); ++i) {
+		const bool held = i >= 3 && i < 6;
+		if (held) {
+			NEAR(out2[i].x, out2[3].x, 1e-6f);
+			NEAR(out2[i].y, out2[3].y, 1e-6f);
+			NEAR(out2[i].z, out2[3].z, 1e-6f);
+		} else {
+			NEAR(out2[i].x, out[i].x, 1e-6f);
+			NEAR(out2[i].z, out[i].z, 1e-6f);
+		}
+	}
+	CHECK(std::fabs(out[3].x - out[5].x) + std::fabs(out[3].y - out[5].y) + std::fabs(out[3].z - out[5].z) > 0.1f);  // (posed as usual they are apart)
+}
+
+// GTA's camera inside the body: the parts it is in (or within the margin of) collapse, the rest stay.
+static void TestCameraInside()
+{
+	const Placement p = Place(30.0f, { 4, -2, 7 });
+	const Skeleton  s = FromModel(p);
+	Pose            pose = Solve(s, kNikoHead);
+	const V3        headMid = p(NeckJoint() + V3{ 0, 4 * kPx, 0 });
+	NEAR(DistanceToPart(pose, proto::kPartHead, headMid), 0.0f, 1e-5f);
+	CHECK(DistanceToPart(pose, proto::kPartBody, headMid) > 0.1f);
+	// 0.5 m in front of the face: outside every part.
+	const V3 front = p(NeckJoint() + V3{ 0, 4 * kPx, 0.5f });
+	NEAR(DistanceToPart(pose, proto::kPartHead, front), 0.5f - 5 * kPx, 1e-3f);
+	Pose clear = pose;
+	CHECK(HideNearCamera(clear, front, 0.15f) == 0u);
+	// In the head: only the head goes.
+	Pose inHead = pose;
+	const std::uint32_t mask = HideNearCamera(inHead, headMid, 0.15f);
+	CHECK(mask == (1u << proto::kPartHead));
+	NEAR(Det(inHead.part[proto::kPartHead]), 0.0f, 1e-9f);
+	NEAR(Det(inHead.part[proto::kPartBody]), Det(pose.part[proto::kPartBody]), 1e-6f);
+	// Just above the neck, inside the head's and within 0.15 m of the body's: both go.
+	Pose neck = pose;
+	CHECK(HideNearCamera(neck, p(NeckJoint() + V3{ 0, 0.02f, 0 }), 0.15f) == ((1u << proto::kPartHead) | (1u << proto::kPartBody)));
+	// The whole body: everything collapses (held items too) once a part is near; nothing near, nothing.
+	Pose all = pose;
+	CHECK(HideNearCamera(all, headMid, 0.15f, true) == (1u << proto::kPartHead));
+	for (std::uint32_t part = 0; part < proto::kPartCount; ++part) {
+		NEAR(Det(all.part[part]), 0.0f, 1e-9f);
+	}
+	Pose none = pose;
+	CHECK(HideNearCamera(none, front, 0.15f, true) == 0u);
+	NEAR(Det(none.part[proto::kPartBody]), Det(pose.part[proto::kPartBody]), 1e-6f);
 }
 
 int main()
@@ -291,6 +343,7 @@ int main()
 	TestSeated();
 	TestArmRaised();
 	TestPoseMesh();
+	TestCameraInside();
 	if (failures) {
 		std::fprintf(stderr, "body_test: %d failure(s)\n", failures);
 		return 1;

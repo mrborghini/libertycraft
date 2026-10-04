@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import dev.libertycraft.world.HostCollision;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -23,7 +24,7 @@ public abstract class BlockStateBaseMixin {
 		cancellable = true
 	)
 	private void libertycraft$hostIsSturdy(BlockGetter level, BlockPos pos, Direction direction, SupportType type, CallbackInfoReturnable<Boolean> cir) {
-		if (!((BlockBehaviour.BlockStateBase) (Object) this).isAir()) {
+		if (!((BlockBehaviour.BlockStateBase) (Object) this).isAir() || BlockyCity.isCity(level)) {
 			return;
 		}
 		boolean sturdy = direction == Direction.UP ? HostCollision.supportsFromBelow(pos.above()) : HostCollision.solidFraction(pos) >= 0.4F;

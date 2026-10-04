@@ -21,6 +21,9 @@ public abstract class CameraZoomMixin {
 		at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;clip(Lnet/minecraft/world/level/ClipContext;)Lnet/minecraft/world/phys/BlockHitResult;")
 	)
 	private BlockHitResult libertycraft$zoomAgainstHost(Level level, ClipContext context, Operation<BlockHitResult> original) {
+		if (dev.libertycraft.world.city.BlockyCity.isCity(level)) {
+			return original.call(level, context);
+		}
 		return HostClip.refine(context.getFrom(), context.getTo(), original.call(level, context), HostClip.Use.PROJECTILE);
 	}
 }

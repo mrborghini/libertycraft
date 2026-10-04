@@ -15,12 +15,15 @@
 //    ahead).
 #pragma once
 
+#include "Config.h"
+#include "Log.h"
 #include "Sdk.h"
 #include "collision/Geometry.h"
 
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 
@@ -48,6 +51,20 @@ namespace lc::col
 		return CWorld::ProcessLineOfSight(&from, &to, nullptr, &a_res, a_flags, 1, 0, kLosSeeShoot, 4);
 	}
 
+	// GTA IV's materials.dat has this many materials (DEFAULT 0 ... POOLTABLE_POCKET 155).
+	inline constexpr std::uint32_t kGtaMaterials = 156;
+
+	// The material of the surface a probe hit: the low byte of the result's dword at +0x48 is its
+	// index in common/data/materials/materials.dat (measured with DebugMaterials, 1.0.8.0: 8 TARMAC on
+	// the street, 3 CONCRETE and 16 PAVING_SLABS on the pavement, 54 LEAD_ROOFING on a roof, 87 CARPET,
+	// 86 LINOLEUM and 20 WOOD_BOARD in Roman's flat). The bytes above it hold other things (0x0001xxxx,
+	// 0x0060xxxx, 0x02xxxxxx seen). kNoMaterial when CityMaterials=0 or out of range.
+	inline std::uint8_t HitMaterial(const tLineOfSightResults& a_res)
+	{
+		const std::uint32_t id = a_res.m_nUnkFlags4 & 0xFF;
+		return Config::Get().cityMaterials && id < kGtaMaterials ? static_cast<std::uint8_t>(id) : kNoMaterial;
+	}
+
 	// A hit (GTA space, from -> to) as a Minecraft-space Hit; junk (see the header) gets a NaN position.
 	inline void HitToMc(const float a_from[3], const float a_to[3], const tLineOfSightResults& a_res, Hit& a_out)
 	{
@@ -72,6 +89,7 @@ namespace lc::col
 		a_out.n[0] = n[0];
 		a_out.n[1] = n[2];
 		a_out.n[2] = -n[1];
+		a_out.mat = HitMaterial(a_res);
 	}
 
 	// Object probes (collision/Objects.h), counted apart from the map's.
@@ -123,6 +141,57 @@ namespace lc::col
 		return false;
 	}
 
+	// DebugMaterials: where in a probe's result is the material of the surface it hit? Histograms of
+	// the result's unnamed fields (dwords at 0x04, 0x08, 0x0C, 0x48, 0x4C, 0x50) over many hits, and
+	// the first downward hits in full with where they hit, logged every 20000 hits. Game thread.
+	struct MaterialProbe
+	{
+		static constexpr int kFields = 6;
+		static constexpr int kOffsets[kFields] = { 0x04, 0x08, 0x0C, 0x48, 0x4C, 0x50 };
+		std::uint32_t        values[kFields][48]{};
+		std::uint32_t        counts[kFields][48]{};
+		std::uint32_t        distinct[kFields]{};
+		std::uint32_t        hits = 0, samplesLogged = 0;
+
+		void Sample(const tLineOfSightResults& a_res, const float* a_from, const float* a_to)
+		{
+			const auto* raw = reinterpret_cast<const std::uint8_t*>(&a_res);
+			std::uint32_t v[kFields];
+			for (int f = 0; f < kFields; ++f) {
+				std::memcpy(&v[f], raw + kOffsets[f], 4);
+				int k = 0;
+				while (k < 48 && counts[f][k] && values[f][k] != v[f]) {
+					++k;
+				}
+				if (k < 48) {
+					if (!counts[f][k]) {
+						values[f][k] = v[f];
+						++distinct[f];
+					}
+					++counts[f][k];
+				}
+			}
+			const bool down = a_from[2] > a_to[2] + 1.0f && std::fabs(a_from[0] - a_to[0]) < 0.01f;
+			if (down && samplesLogged < 60 && (hits % 97) == 0) {
+				++samplesLogged;
+				LC_LOG("DebugMaterials: down-probe hit at GTA %.2f %.2f %.2f normal %.2f %.2f %.2f: +04 %08X +08 %08X +0C %08X +48 %08X +4C %08X +50 %08X inst %p",
+					a_res.m_vEndPosition.x, a_res.m_vEndPosition.y, a_res.m_vEndPosition.z, a_res.m_vUnk.x, a_res.m_vUnk.y, a_res.m_vUnk.z, v[0], v[1], v[2],
+					v[3], v[4], v[5], static_cast<const void*>(a_res.m_pInst));
+			}
+			if (++hits % 20000 == 0) {
+				for (int f = 0; f < kFields; ++f) {
+					char line[1024];
+					int  n = std::snprintf(line, sizeof line, "DebugMaterials: %u hits, field +%02X: %u distinct values:", hits, kOffsets[f], distinct[f]);
+					for (int k = 0; k < 48 && counts[f][k] && n < 900; ++k) {
+						n += std::snprintf(line + n, sizeof line - n, " %08X x%u", values[f][k], counts[f][k]);
+					}
+					LC_LOG("%s", line);
+				}
+			}
+		}
+	};
+	inline MaterialProbe materialProbe;  // game thread only
+
 	// One-sided probe in Minecraft space (Geometry.h's ray callback).
 	inline bool CastMc(const float a_from[3], const float a_to[3], Hit& a_out)
 	{
@@ -135,6 +204,9 @@ namespace lc::col
 		}
 		++rayCounters.hits;
 		HitToMc(from, to, res, a_out);
+		if (Config::Get().debugMaterials) {
+			materialProbe.Sample(res, from, to);
+		}
 		return true;
 	}
 }

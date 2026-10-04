@@ -219,11 +219,26 @@ namespace lc::drive::hit
 		int   ms = 0;
 	};
 
+	// The push (APPLY_FORCE_TO_PED, world axes) sends the knocked-over player off at about 1.8 m/s per
+	// unit of force (measured 0.1 s after it: 12 -> 21 m/s, 19 -> 34 m/s, 25 -> 52 m/s). The old forces
+	// (2 per m/s of the vehicle) threw him 40 to 90 m.
+	inline constexpr float kForceToSpeed = 1.8f;
+	// GTA's own run-over, measured (DebugVehicleHit=ped): a pedestrian standing still, hit by a car at
+	// 10.1 m/s, went off at 8.8 m/s and came to rest 10.9 m away. The player goes off at this share of
+	// the vehicle's speed, at least kMinThrowSpeed, and never faster than kMaxThrowSpeed (any knockdown).
+	inline constexpr float kThrowShare = 0.87f;
+	inline constexpr float kMinThrowSpeed = 3.5f, kMaxThrowSpeed = 20.0f;
+	// The push goes up by this share of its force.
+	inline constexpr float kBodyUp = 0.3f;
+
+	// The force for a throw at a_speed m/s (capped).
+	inline float ForceForThrow(float a_speed) { return std::clamp(a_speed, 0.0f, kMaxThrowSpeed) / kForceToSpeed; }
+
 	inline Blow BodyBlow(float a_speed, Kind a_k)
 	{
 		Blow b;
 		const float heavy = Heavy(a_k) ? 1.5f : 1.0f;
-		b.force = std::clamp(2.0f * a_speed * (Heavy(a_k) ? 1.3f : 1.0f), 8.0f, 50.0f);
+		b.force = ForceForThrow(std::max(kThrowShare * a_speed * (Heavy(a_k) ? 1.15f : 1.0f), kMinThrowSpeed));
 		b.ms = static_cast<int>(std::clamp(1500.0f + 150.0f * a_speed * heavy, 1500.0f, 5000.0f));
 		b.gtaDamage = std::clamp(2.5f * a_speed * heavy, 8.0f, 150.0f);
 		return b;
@@ -234,7 +249,7 @@ namespace lc::drive::hit
 	{
 		Blow b;
 		b.gtaDamage = a_main ? 180.0f : 120.0f;
-		b.force = a_main ? 70.0f : 50.0f;
+		b.force = ForceForThrow(a_main ? 16.0f : 12.0f);
 		b.ms = 5000;
 		return b;
 	}

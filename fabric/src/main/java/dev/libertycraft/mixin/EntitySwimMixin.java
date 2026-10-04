@@ -1,5 +1,6 @@
 package dev.libertycraft.mixin;
 
+import dev.libertycraft.world.city.BlockyCity;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import dev.libertycraft.world.HostWater;
@@ -19,7 +20,7 @@ public abstract class EntitySwimMixin {
 	)
 	private FluidState libertycraft$swimInHostWater(Level level, BlockPos pos, Operation<FluidState> original) {
 		FluidState state = original.call(level, pos);
-		if (state.isEmpty() && HostWater.active()) {
+		if (state.isEmpty() && HostWater.active() && !BlockyCity.isCity(level)) {
 			FluidState water = HostWater.fluidAt(level, pos);
 			if (water != null) {
 				return water;

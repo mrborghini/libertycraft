@@ -295,6 +295,7 @@ public final class HostCollision {
 		if (msgEpoch != epoch) {
 			return; // stale region from before a world change
 		}
+		dev.libertycraft.world.city.CityRecorder.region(s, p); // kept for the blocky city
 
 		// Build the new shapes first so readers never see a half-empty region.
 		java.util.HashMap<Long, VoxelShape> fresh = new java.util.HashMap<>(count * 2);
@@ -347,6 +348,7 @@ public final class HostCollision {
 		if (msgEpoch != epoch) {
 			return;
 		}
+		dev.libertycraft.world.city.CityRecorder.tris(s, p); // the materials, for the blocky city
 		HostTri[] tris = new HostTri[count];
 		java.util.List<HostTri> ghosts = new java.util.ArrayList<>();
 		float[] v = new float[9];

@@ -62,7 +62,8 @@ public final class LibertyCraftClient implements ClientModInitializer {
 		// dip into a voxel and teleports the player back every few ticks.
 		// GTA IV's vehicle mounts (HostDrive) are only seats: they never collide with GTA IV's voxels
 		// either, so the server takes the client's moves of them as they come.
-		dev.libertycraft.world.HostCollision.setSmoothCollider(e -> (e instanceof net.minecraft.world.entity.player.Player && HostClient.linked())
+		dev.libertycraft.world.HostCollision.setSmoothCollider(e -> (e instanceof net.minecraft.world.entity.player.Player && HostClient.linked()
+			&& !dev.libertycraft.world.city.BlockyCity.isCity(e.level()))
 			|| dev.libertycraft.world.HostDrive.isMount(e));
 	}
 }

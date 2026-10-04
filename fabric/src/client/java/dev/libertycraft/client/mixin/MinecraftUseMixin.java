@@ -25,6 +25,9 @@ public abstract class MinecraftUseMixin {
 	private InteractionResult libertycraft$useOnHost(
 		MultiPlayerGameMode gameMode, LocalPlayer player, InteractionHand hand, BlockHitResult hit, Operation<InteractionResult> original
 	) {
+		if (dev.libertycraft.world.city.BlockyCity.isCity(player.level())) {
+			return original.call(gameMode, player, hand, hit);
+		}
 		return original.call(gameMode, player, hand, HostClip.forItem(player.getItemInHand(hand), hit));
 	}
 }

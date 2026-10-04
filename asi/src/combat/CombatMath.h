@@ -588,6 +588,23 @@ namespace lc::combat
 		return std::clamp(ms, 500, 3000);
 	}
 
+	// The shove a Minecraft hit gives a ped as it goes over (APPLY_FORCE_TO_PED's force as Knock applies
+	// it, a third of it upward), by Minecraft's knockback (0.4 a plain hit, about 0.9 with a sprint or
+	// Knockback I, up to 2 with Knockback II on a sprint). Measured in game (a ragdolling ped or body on
+	// a pavement, how far it went in 1 s): force 7.2 sent them 7 to 9 m and 18.4 25 m, a gunshot moves a
+	// body a metre or so; this gives a plain hit about 1.5 m and the hardest about 4.
+	inline float HitShoveForce(float a_knockback)
+	{
+		return std::clamp(1.0f + 1.5f * std::clamp(a_knockback, 0.0f, 2.0f), 1.0f, 4.0f);
+	}
+
+	// GTA IV's SWITCH_PED_TO_RAGDOLL takes a ragdoll kind in its fourth argument (the script headers' first
+	// flag), seen in the game's code (1.0.8.0: the native's body at 0xB49300): 0 a limp fall (NM task 0x838),
+	// 1 a scripted one (0x840), 2 and up a balance (0x83D): the ped is knocked off its feet's balance and
+	// tries to keep standing, stumbling a few steps, as a shove makes it in GTA.
+	inline constexpr int kRagdollFall = 0;
+	inline constexpr int kRagdollBalance = 2;
+
 	// ---- the Minecraft player running into GTA's peds (proto::kEvBump) --------------------------------
 	// How fast (m/s; Minecraft walks at 4.3, sprints at 5.6) the player has to be going for a ped he
 	// runs into to stumble (a short ragdoll), be knocked down (sprint-jumps, falls, elytra), or get hurt.
@@ -605,6 +622,7 @@ namespace lc::combat
 		} kind = kNudge;
 		float force = 0.0f;    // APPLY_FORCE_TO_PED's (as Knock gives it)
 		int   ragdollMs = 0;
+		int   ragdollKind = kRagdollFall;  // kRagdollBalance: a stumble the ped can stay on its feet through
 		float gtaDamage = 0.0f;  // health off the ped (GTA units; a ped has 200, dies at 100)
 	};
 
@@ -616,9 +634,12 @@ namespace lc::combat
 			return o;
 		}
 		if (s < kBumpKnockdownSpeed) {
+			// A balance ragdoll and a light push: the ped staggers a step or two and stays up (a limp 0.9 s
+			// ragdoll with force 3.8 threw it on its back at 6 m/s; balance with 1.3 only swayed it).
 			o.kind = BumpOutcome::kStumble;
-			o.force = 3.0f + (s - kBumpStumbleSpeed);
-			o.ragdollMs = 900;
+			o.force = 1.8f + 0.3f * (s - kBumpStumbleSpeed);
+			o.ragdollMs = 1500;
+			o.ragdollKind = kRagdollBalance;
 			return o;
 		}
 		o.kind = BumpOutcome::kKnockdown;
@@ -638,17 +659,20 @@ namespace lc::combat
 		return std::clamp(a_overlap + 0.03f, 0.0f, a_max);
 	}
 
-	// The push a corpse gets from a walk into it (dragged and rolled) or a run at speed.
+	// The push a corpse gets from a walk into it (dragged and rolled) or a run at speed: a walk drags it
+	// along (about a metre a push), a sprint rolls it a couple of metres, an elytra pass throws it.
 	inline float CorpseBumpForce(float a_speed)
 	{
-		return std::clamp(2.0f + std::max(a_speed, 0.0f) * 0.5f, 2.5f, 14.0f);
+		return std::clamp(0.5f + std::max(a_speed, 0.0f) * 0.35f, 1.0f, 6.0f);
 	}
 
-	// The push a corpse gets from a Minecraft hit: its knockback and damage (MC units) together.
+	// The push a corpse gets from a Minecraft hit: its knockback (HitShoveForce) and a little for its damage
+	// (MC units); a projectile pushes less. A plain 30-damage blow about 2 m, an arrow about 1 (QA: the
+	// old force 18.4 sent a body 25 m in a second).
 	inline float CorpseHitForce(float a_knockback, float a_mcDamage, bool a_projectile)
 	{
-		const float f = 4.0f + 6.0f * std::clamp(a_knockback, 0.0f, 2.0f) + 0.4f * std::clamp(a_mcDamage, 0.0f, 30.0f);
-		return std::clamp(a_projectile ? f * 0.8f : f, 3.0f, 20.0f);
+		const float f = HitShoveForce(a_knockback) + 0.02f * std::clamp(a_mcDamage, 0.0f, 30.0f);
+		return std::clamp(a_projectile ? f * 0.7f : f, 0.8f, 4.5f);
 	}
 
 	// ---- vehicles -------------------------------------------------------------------------------
@@ -756,6 +780,54 @@ namespace lc::combat
 		}
 		const float fadeEnd = a_radius * 6.0f;
 		return std::clamp(1.0f - (a_distance - a_radius) / (fadeEnd - a_radius), 0.0f, 1.0f);
+	}
+
+	// ADD_EXPLOSION's fifth argument (1.0.8.0, seen in the game's code: the native at 0xB13340 hands it to
+	// CExplosionManager::AddExplosion at 0x9940D0) is no radius in metres: the game clamps it to 0.01..1
+	// and the explosion multiplies its type's END_RADIUS (explosionFx.dat) and expansion speed by it. The
+	// damage still falls off over the full END_RADIUS. So a blast a_radius metres across is this fraction.
+	inline float ExplosionSizeScale(float a_radius, float a_endRadius)
+	{
+		if (!(a_radius > 0.0f)) {
+			return 0.0f;
+		}
+		if (!(a_endRadius > 0.0f)) {
+			return 1.0f;
+		}
+		return std::clamp(a_radius / a_endRadius, 0.01f, 1.0f);
+	}
+
+	// ---- firework rockets (proto::kExplosionFirework) ----------------------------------------------
+	// How far a crossbow's firework rocket flies in Minecraft 26.3 (its code): CrossbowItem shoots it at
+	// 1.6 blocks a tick (FIREWORK_POWER) and, shot at an angle, it keeps that speed with no gravity or drag;
+	// it bursts on the tick its life passes its lifetime, 10 * (1 + flight duration) + nextInt(6) +
+	// nextInt(7) ticks, having moved lifetime + 1 times. A crafted rocket flies 3 at most (three
+	// gunpowder): 52 moves, 83.2 blocks (= metres). Hand-launched rockets climb about 58.
+	inline constexpr float kFireworkReach = 1.6f * (10.0f * (1.0f + 3.0f) + 5.0f + 6.0f + 1.0f);
+	// Helicopters are Minecraft stand-ins (kActorVehicle) out to the rocket's reach plus half a big
+	// helicopter's length, so a rocket can strike one anywhere it can fly (93 m; Minecraft keeps entities
+	// that far loaded and hittable from a render distance of 7 chunks).
+	inline constexpr float kAircraftRange = kFireworkReach + 10.0f;
+
+	// What a firework rocket that struck a vehicle itself (its burst names the vehicle's stand-in) does
+	// to it on top of GTA's rocket blast there, by its stars (body and engine health; an engine run below
+	// 0 blows it up at once, as an RPG's rocket does). In game GTA's blast took a struck police
+	// Maverick's body to 0 (wrecking it outright twice in three) and this blew up the rest: one star
+	// brings a helicopter down, two wreck anything with 1000 engine health.
+	inline float FireworkHitDamage(unsigned a_stars)
+	{
+		if (a_stars == 0) {
+			return 0.0f;
+		}
+		return std::min(500.0f * static_cast<float>(a_stars), 1500.0f);
+	}
+
+	// Vehicles nearer than their range (ground vehicles kVehicleRange, helicopters kAircraftRange) go to
+	// Minecraft nearest first by this key: the distance as a share of the range, so a helicopter far up
+	// isn't crowded out by the cars on the street below.
+	inline float VehicleSortKey(float a_dist2, float a_range)
+	{
+		return a_range > 0.0f ? a_dist2 / (a_range * a_range) : a_dist2;
 	}
 
 	// ---- where a hurt came from (proto::kHurtHasDirection) -----------------------------------------

@@ -1,5 +1,6 @@
 package dev.libertycraft.client.mixin;
 
+import dev.libertycraft.client.CityClient;
 import dev.libertycraft.client.HostClient;
 import dev.libertycraft.client.HostCollider;
 import net.minecraft.client.player.LocalPlayer;
@@ -18,7 +19,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class EntityCollideMixin {
 	@Inject(method = "collide", at = @At("RETURN"), cancellable = true)
 	private void libertycraft$smoothHostCollision(Vec3 movement, CallbackInfoReturnable<Vec3> cir) {
-		if ((Object) this instanceof LocalPlayer player && HostClient.linked() && !player.noPhysics) {
+		if ((Object) this instanceof LocalPlayer player && HostClient.linked() && !player.noPhysics && !CityClient.inCity()) {
 			cir.setReturnValue(HostCollider.collide(player, cir.getReturnValue()));
 		}
 	}

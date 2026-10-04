@@ -58,6 +58,10 @@ dependencies {
 
 test {
 	useJUnitPlatform()
+	// Minecraft's log4j config writes logs/ into the working directory (the city store logs): keep it in build/.
+	workingDir = layout.buildDirectory.dir("test-run").get().asFile
+	def runDir = workingDir
+	doFirst { runDir.mkdirs() }
 	testLogging { events "passed", "failed"; exceptionFormat "full" }
 }
 
