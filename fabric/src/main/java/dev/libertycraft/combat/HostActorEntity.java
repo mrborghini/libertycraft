@@ -48,6 +48,9 @@ public class HostActorEntity extends LivingEntity {
 	private double pushX, pushZ;
 	private float pushStrength;
 	private boolean hitThisTick;
+	// Who dealt this tick's damage: the player (or anything else), or only Minecraft's mobs (Proto.HIT_BY_MOB).
+	private boolean hitByPlayer, hitByMob;
+	private static final float MOB_PLAIN_KNOCKBACK = 0.45F;
 	// Vehicles: where this tick's biggest hit landed and the way it travelled (kEvHitPoint).
 	private @Nullable Vec3 hitAt, hitDir;
 	private float hitAtDamage;
@@ -145,6 +148,11 @@ public class HostActorEntity extends LivingEntity {
 			return;
 		}
 		this.pendingDamage += dmg;
+		if (source.getEntity() instanceof net.minecraft.world.entity.Mob) {
+			this.hitByMob = true; // a zombie's blow, a skeleton's arrow, a creeper's blast (PedTargets)
+		} else {
+			this.hitByPlayer = true;
+		}
 		if (source.getDirectEntity() instanceof Projectile) {
 			this.pendingFlags |= Proto.HIT_PROJECTILE;
 		}
@@ -216,7 +224,7 @@ public class HostActorEntity extends LivingEntity {
 	}
 
 	/** Which kind of GTA IV weapon impact this hit should look and sound like. */
-	private static int weaponClass(DamageSource source) {
+	static int weaponClass(DamageSource source) {
 		if (source.getDirectEntity() instanceof net.minecraft.world.entity.projectile.arrow.ThrownTrident) {
 			return Proto.WEAPON_PIERCE;
 		}
@@ -250,6 +258,13 @@ public class HostActorEntity extends LivingEntity {
 		if (!this.hitThisTick) {
 			return null;
 		}
+		if (this.hitByMob && !this.hitByPlayer) {
+			this.pendingFlags |= Proto.HIT_BY_MOB;
+			// A mob's plain blow or arrow (knockback 0.4) doesn't knock the ped over (GTA IV would ragdoll
+			// it every time, and the police could never shoot back); a heavier one (a ravager, a sprinting
+			// Knockback enchantment) does, by what it has beyond that.
+			this.pushStrength = Math.max(0.0F, this.pushStrength - MOB_PLAIN_KNOCKBACK);
+		}
 		float[] hit = { this.pendingDamage, (float) this.pushX, (float) this.pushZ, this.pushStrength, Float.intBitsToFloat(this.pendingFlags),
 			Float.intBitsToFloat(this.pendingWeapon), 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F };
 		if (this.hitAt != null && this.hitDir != null) {
@@ -267,6 +282,7 @@ public class HostActorEntity extends LivingEntity {
 		this.pushX = this.pushZ = 0.0;
 		this.pushStrength = 0.0F;
 		this.hitThisTick = false;
+		this.hitByPlayer = this.hitByMob = false;
 		return hit;
 	}
 
@@ -298,6 +314,31 @@ public class HostActorEntity extends LivingEntity {
 			return this.isHostVehicle() && this.level().isClientSide();
 		}
 		return true;
+	}
+
+	/**
+	 * Minecraft's mobs see the ped GTA IV shows, not an invisible entity (vanilla would let them notice
+	 * it only from 2 blocks away).
+	 */
+	@Override
+	public double getVisibilityPercent(ServerLevel level, @Nullable Entity targetingEntity) {
+		return 1.0;
+	}
+
+	/**
+	 * Something for Minecraft's mobs to fight (PedTargets, a wither's own targeting): a living ped on foot,
+	 * or a piece of a vehicle someone sits in; not a body, a wreck or an empty car.
+	 */
+	@Override
+	public boolean canBeSeenAsEnemy() {
+		int flags = this.hostFlags();
+		boolean target = this.isHostVehicle() ? (flags & (Proto.ACTOR_OCCUPIED | Proto.ACTOR_DEAD)) == Proto.ACTOR_OCCUPIED : !this.isHostCorpse();
+		return target && super.canBeSeenAsEnemy();
+	}
+
+	/** An occupied vehicle's piece (kActorOccupied), not a wreck. */
+	public boolean isOccupiedVehicle() {
+		return this.isHostVehicle() && (this.hostFlags() & (Proto.ACTOR_OCCUPIED | Proto.ACTOR_DEAD)) == Proto.ACTOR_OCCUPIED;
 	}
 
 	@Override

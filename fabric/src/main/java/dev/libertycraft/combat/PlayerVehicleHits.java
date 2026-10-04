@@ -1,0 +1,75 @@
+package dev.libertycraft.combat;
+
+import dev.libertycraft.LibertyCraft;
+import dev.libertycraft.link.Link;
+import dev.libertycraft.link.Proto;
+import dev.libertycraft.world.HostDrive;
+import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.phys.Vec3;
+
+/**
+ * Mobs attack the player's own vehicle while the player sits in it. That vehicle has no stand-in (the
+ * player's mount sits inside it: {@link Proto#ACTOR_PLAYER_VEHICLE}), so hostile mobs go for the player
+ * as usual; a mob's blow or arrow that reaches the seated player hits the vehicle instead, through the
+ * same path as hits on any vehicle's stand-in (body and engine damage, windows, fire; an arrow through
+ * a window hits whoever sits behind it, in GTA IV), flagged as a mob's (no crime). A mob's blast is
+ * GTA IV's own explosion at that spot already (ServerExplosionMixin): it reaches the vehicle there.
+ * Runs before HostDrive's rule that the player takes no damage while GTA IV drives them.
+ */
+public final class PlayerVehicleHits {
+	private static final Identifier EARLY = Identifier.fromNamespaceAndPath(LibertyCraft.MOD_ID, "player_vehicle_hits");
+	private static int logs;
+
+	private PlayerVehicleHits() {
+	}
+
+	public static void init() {
+		ServerLivingEntityEvents.ALLOW_DAMAGE.addPhaseOrdering(EARLY, net.fabricmc.fabric.api.event.Event.DEFAULT_PHASE);
+		ServerLivingEntityEvents.ALLOW_DAMAGE.register(EARLY, (entity, source, amount) -> {
+			if (!(entity instanceof ServerPlayer player) || !(source.getEntity() instanceof Mob) || !Link.active() || !HostDrive.isMount(player.getVehicle())) {
+				return true;
+			}
+			if (!source.is(DamageTypeTags.IS_EXPLOSION)) {
+				hitVehicle(player, source, amount);
+			}
+			return false; // the vehicle takes it, not the player in it
+		});
+	}
+
+	private static void hitVehicle(ServerPlayer player, DamageSource source, float amount) {
+		Vec3 from = source.getSourcePosition() != null ? source.getSourcePosition() : player.position();
+		int piece = VehicleRunOver.nearestPlayerPiece(from.x, from.z);
+		if (piece == 0 || amount <= 0.0F) {
+			return;
+		}
+		double dx = player.getX() - from.x, dz = player.getZ() - from.z, len = Math.sqrt(dx * dx + dz * dz);
+		float px = len > 1.0E-6 ? (float) (dx / len) : 0.0F, pz = len > 1.0E-6 ? (float) (dz / len) : 0.0F;
+		int flags = Proto.HIT_BY_MOB;
+		if (source.getDirectEntity() instanceof Projectile projectile) {
+			flags |= Proto.HIT_PROJECTILE;
+			Vec3 v = projectile.getDeltaMovement();
+			if (v.lengthSqr() > 1.0E-8) {
+				// Where it struck and which way it flew (kEvHitPoint): the host follows it into the car (a window, who sits behind it).
+				Vec3 d = v.normalize();
+				float yaw = (float) Math.toDegrees(Math.atan2(-d.x, d.z)), pitch = (float) Math.toDegrees(-Math.asin(Math.clamp(d.y, -1.0, 1.0)));
+				Link.pushEvent(Proto.EV_HIT_POINT, piece, (float) projectile.getX(), (float) projectile.getY(), (float) projectile.getZ(), yaw, Float.floatToRawIntBits(pitch));
+			}
+		}
+		if (source.is(DamageTypeTags.IS_FIRE)) {
+			flags |= Proto.HIT_FIRE;
+		}
+		Link.pushEvent(Proto.EV_HIT_ACTOR, piece, amount, px, pz, 0.0F, flags, HostActorEntity.weaponClass(source));
+		if (logs++ < 100) {
+			Entity attacker = source.getEntity();
+			LibertyCraft.LOG.info("[LibertyCraft] {} hit the player's vehicle (piece {}) for {}{}", attacker.getType().toShortString(), Integer.toHexString(piece),
+				String.format("%.1f", amount), (flags & Proto.HIT_PROJECTILE) != 0 ? " (projectile)" : "");
+		}
+	}
+}

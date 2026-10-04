@@ -86,6 +86,8 @@ public final class HostDrive {
 	private static volatile MountType mountType = MountType.BOAT;
 	/** The client's own mount while GTA IV drives (client thread writes, collision mixins read). */
 	public static volatile @Nullable Entity clientMount;
+	/** Set while HostCombat applies one of GTA IV's own hits (kInHurt): it reaches a player GTA IV drives. Server thread. */
+	public static boolean applyingHostHurt;
 
 	private HostDrive() {
 	}
@@ -94,8 +96,10 @@ public final class HostDrive {
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> loadConfig());
 		ServerLifecycleEvents.SERVER_STOPPING.register(HostDrive::releaseAll);
 		ServerTickEvents.END_SERVER_TICK.register(HostDrive::serverTick);
-		// While GTA IV has them, the player can't be hurt in Minecraft: it isn't Minecraft moving them.
-		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !isFollowing(entity) && !isMount(entity));
+		// While GTA IV has them, the player can't be hurt in Minecraft: it isn't Minecraft moving them. GTA IV's
+		// own hits (HostCombat.hurtPlayer) still reach them: seated in a vehicle or knocked over, the host
+		// sends what GTA IV did to them, and Minecraft owns their health there too.
+		ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> !isMount(entity) && (!isFollowing(entity) || applyingHostHurt));
 		ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
 			if (entity.entityTags().contains(MOUNT_TAG) && !isActiveMount(entity)) {
 				LibertyCraft.LOG.info("[LibertyCraft] removing a leftover vehicle mount ({})", entity.getType().toShortString());
@@ -143,7 +147,7 @@ public final class HostDrive {
 		if (st == null) {
 			st = new State();
 			STATES.put(player.getUUID(), st);
-			LibertyCraft.LOG.info("[LibertyCraft] GTA IV drives {}: following it (no physics, no damage)", player.getPlainTextName());
+			LibertyCraft.LOG.info("[LibertyCraft] GTA IV drives {}: following it (no physics; only GTA IV's own hits hurt)", player.getPlainTextName());
 		}
 		st.lastTick = server != null ? server.getTickCount() : 0;
 		player.resetFallDistance();

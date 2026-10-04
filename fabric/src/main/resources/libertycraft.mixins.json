@@ -14,15 +14,23 @@
     "FallingBlockMixin",
     "FireworkRocketMixin",
     "FlowingFluidMixin",
+    "GroundPathNavigationMixin",
     "HostMountBoatMixin",
     "ItemMixin",
+    "MeleeAttackGoalMixin",
     "MinecraftServerFlightMixin",
+    "MobSightMixin",
+    "MobTargetSelectorAccessor",
+    "NearestAttackableTargetGoalAccessor",
+    "PathfindingContextMixin",
     "PlayerEdgeMixin",
     "PressurePlateMixin",
     "ProjectileMixin",
     "ProjectileUtilMixin",
     "ServerExplosionMixin",
-    "ServerPlayerMixin"
+    "ServerPlayerMixin",
+    "TargetGoalAccessor",
+    "WalkNodeEvaluatorMixin"
   ],
   "injectors": { "defaultRequire": 1 }
 }

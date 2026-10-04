@@ -20,7 +20,6 @@ public final class LibertyCraft implements ModInitializer {
 	public static final String MOD_ID = "libertycraft";
 	public static final String WORLD_NAME = "LibertyCraft";
 	public static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
-	private static final String KIT2_TAG = "libertycraft_builder_kit";
 
 	@Override
 	public void onInitialize() {
@@ -30,11 +29,8 @@ public final class LibertyCraft implements ModInitializer {
 		dev.libertycraft.world.HostDrive.init();
 		dev.libertycraft.world.city.BlockyCity.init();
 		ServerLifecycleEvents.SERVER_STARTED.register(LibertyCraft::configureServer);
-		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
-			giveStarterKit(handler.getPlayer());
-			giveBuilderKit(handler.getPlayer());
-			dressTestGuest(handler.getPlayer());
-		});
+		dev.libertycraft.kit.KitGiver.init(); // the starter kit: on first join, and /libertycraft kit
+		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> dressTestGuest(handler.getPlayer()));
 	}
 
 	/** The mirror world is a void that only exists to host the player; GTA IV drives time and spawning. */
@@ -75,58 +71,5 @@ public final class LibertyCraft implements ModInitializer {
 			player.setItemSlot(slots[i], new ItemStack(pieces[i][random.nextBoolean() ? 1 : 0]));
 		}
 		LOG.info("[LibertyCraft] dressed test guest {} in iron and diamond", player.getName().getString());
-	}
-
-	private static void giveStarterKit(ServerPlayer player) {
-		if (!player.getInventory().isEmpty()) {
-			return;
-		}
-		player.getInventory().add(new ItemStack(Items.DIAMOND_SWORD));
-		player.getInventory().add(new ItemStack(Items.DIAMOND_PICKAXE));
-		player.getInventory().add(new ItemStack(Items.BOW));
-		player.getInventory().add(new ItemStack(Items.COOKED_BEEF, 32));
-		player.getInventory().add(new ItemStack(Items.OAK_PLANKS, 64));
-		player.getInventory().add(new ItemStack(Items.TORCH, 32));
-		player.getInventory().add(new ItemStack(Items.ARROW, 64));
-		player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.OFFHAND, new ItemStack(Items.SHIELD));
-		LOG.info("[LibertyCraft] gave starter kit to {}", player.getName().getString());
-	}
-
-	/**
-	 * Once per player: armor (GTA IV's enemies hit back now) and building materials, since there is
-	 * no Minecraft terrain to mine in GTA IV.
-	 */
-	private static void giveBuilderKit(ServerPlayer player) {
-		if (player.entityTags().contains(KIT2_TAG)) {
-			return;
-		}
-		equipIfEmpty(player, EquipmentSlot.HEAD, Items.IRON_HELMET);
-		equipIfEmpty(player, EquipmentSlot.CHEST, Items.IRON_CHESTPLATE);
-		equipIfEmpty(player, EquipmentSlot.LEGS, Items.IRON_LEGGINGS);
-		equipIfEmpty(player, EquipmentSlot.FEET, Items.IRON_BOOTS);
-		var inventory = player.getInventory();
-		inventory.add(new ItemStack(Items.COBBLESTONE, 64));
-		inventory.add(new ItemStack(Items.STONE_BRICKS, 64));
-		inventory.add(new ItemStack(Items.OAK_LOG, 64));
-		inventory.add(new ItemStack(Items.GLASS, 64));
-		inventory.add(new ItemStack(Items.OAK_STAIRS, 64));
-		inventory.add(new ItemStack(Items.OAK_SLAB, 64));
-		inventory.add(new ItemStack(Items.OAK_DOOR, 8));
-		inventory.add(new ItemStack(Items.LADDER, 32));
-		inventory.add(new ItemStack(Items.LANTERN, 16));
-		inventory.add(new ItemStack(Items.CRAFTING_TABLE));
-		inventory.add(new ItemStack(Items.WATER_BUCKET));
-		inventory.add(new ItemStack(Items.ARROW, 64));
-		inventory.add(new ItemStack(Items.GOLDEN_APPLE, 4));
-		player.addTag(KIT2_TAG);
-		LOG.info("[LibertyCraft] gave builder kit to {}", player.getName().getString());
-	}
-
-	private static void equipIfEmpty(ServerPlayer player, EquipmentSlot slot, net.minecraft.world.item.Item item) {
-		if (player.getItemBySlot(slot).isEmpty()) {
-			player.setItemSlot(slot, new ItemStack(item));
-		} else {
-			player.getInventory().add(new ItemStack(item));
-		}
 	}
 }

@@ -830,7 +830,12 @@ namespace lc::Game
 		// GTA IV brought the player back after "wasted" (at a hospital): Minecraft heals him and fills his
 		// food bar too. (Minecraft respawns at once with both full when it died first, but GTA can kill him
 		// without Minecraft dying, in a car or in Niko mode, and hurt the respawned player meanwhile.)
-		if (exists && dead) {
+		// Dying, the player stops playing at once (GET_PLAYER_CHAR gives no ped while the wasted flow runs:
+		// seen when his car blew up), so IS_PLAYER_DEAD has to say it.
+		if ((exists && dead) || (!playing && S::IS_PLAYER_DEAD(player))) {
+			if (!wasDead) {
+				LC_LOG("the player died (GTA's wasted flow)");
+			}
 			wasDead = true;
 		} else if (exists && wasDead) {
 			wasDead = false;
@@ -865,6 +870,8 @@ namespace lc::Game
 		driveFrame.cutscene = cutscene;
 		driveFrame.puppeting = puppeting;
 		driveFrame.mcInWorld = mcInWorld;
+		driveFrame.haveMc = haveMc;
+		driveFrame.mcCreative = haveMc && (mc.flags & proto::kMcCreative);
 		driveFrame.dt = dt;
 		driveFrame.heading = heading;
 		driveFrame.resyncing = mcInWorld && !loading && exists && mc.teleportAck != teleportSeq;
@@ -1135,6 +1142,8 @@ namespace lc::Game
 			cf.loading = loading;
 			cf.dead = dead;
 			cf.puppeting = puppeting || HostDrive::KnockedOver();  // knocked over: Minecraft still owns the player's health
+			cf.vehicle = HostDrive::VehicleInMinecraftMode();        // ...and in a vehicle (getting in, seated, getting out)
+			cf.seated = inCar;
 			cf.mcInWorld = mcInWorld;
 			cf.mc = haveMc ? &mc : nullptr;
 			cf.dt = dt;

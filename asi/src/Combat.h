@@ -17,12 +17,15 @@
 //    it (Minecraft already hurt its player).
 //  - kEvPlayerDied: kills the player ped, so GTA's "wasted" flow runs; Game leaves puppet mode
 //    and resyncs Minecraft after the respawn (the game moves the player).
-//  - While puppeting: the player ped is vulnerable but sits on a 1000-health buffer (the cap,
-//    CPlayerInfo::m_nMaxHealth, raised before every refill) refilled every frame, so GTA IV can't
-//    kill it; what it lost (health + armour) goes to Minecraft as kInHurt, divided by
-//    PlayerDamageScale and paced to Minecraft's 0.5 s hurt cooldown (falls and drowning are
-//    Minecraft's). If the buffer can't be held, the ped turns invincible instead. Leaving puppet
-//    mode (for longer than 0.5 s) puts back the max health, health and armour it had before.
+//  - In Minecraft mode (puppeting, knocked over, or GTA animating the player for a vehicle: getting
+//    in, seated, bailing out, getting back up): the player ped is vulnerable but sits on a
+//    1000-health buffer (the cap, CPlayerInfo::m_nMaxHealth, raised before every refill) refilled
+//    every frame, so GTA IV can't kill it; what it lost (health + armour) goes to Minecraft as
+//    kInHurt, divided by PlayerDamageScale and paced to Minecraft's 0.5 s hurt cooldown (falls and
+//    drowning are Minecraft's while it moves the player). If the buffer can't be held, the ped turns
+//    invincible instead. Niko mode (for longer than 0.5 s) puts back the max health, health and
+//    armour it had before. Seated, he is explosion-proof (GTA kills a vehicle's occupants outright
+//    when it blows up) and the blow-up goes to Minecraft as a point-blank blast's worth of kInHurt.
 // With Combat=0, events are drained and logged only, and Game keeps the puppeted ped invincible.
 #pragma once
 
@@ -42,6 +45,11 @@ namespace lc::Combat
 		bool                  loading = true;  // screen faded / no ped: the world isn't playable
 		bool                  dead = false;
 		bool                  puppeting = false;
+		// Minecraft mode, GTA animates the player for a vehicle (the vehicle key's walk to a door,
+		// getting in, seated, bailing out, getting out and back up; HostDrive::VehicleInMinecraftMode):
+		// Minecraft owns his health there too. Niko mode: false.
+		bool                  vehicle = false;
+		bool                  seated = false;  // in a vehicle right now (IS_CHAR_IN_ANY_CAR)
 		bool                  mcInWorld = false;
 		const proto::McState* mc = nullptr;  // this frame's McState, null if it couldn't be read
 		float                 dt = 0.0f;

@@ -153,6 +153,10 @@ namespace libertycraft::proto
 		// vehicles or the HUD), so the blocks are the city. The city's own blocks don't come in kRenSolids /
 		// kRenLiquids (GTA IV's collision is the same city); blocks the player placed there do.
 		kMcBlockyCity = 1u << 9,
+		// LibertyCraft addition (a bit only; the layout and kVersion stay SkyCraft's): the Minecraft player is in
+		// creative or spectator mode, so nothing hurts it. The host keeps GTA IV's peds from dragging it out of a
+		// vehicle then (in survival and adventure GTA's own dragging stays).
+		kMcCreative = 1u << 10,
 	};
 
 	struct McState
@@ -247,7 +251,14 @@ namespace libertycraft::proto
 		// LibertyCraft addition (a new type only): GTA IV brought the player back after dying (wasted, at
 		// a hospital). No fields. Minecraft sets the player's health and food to full.
 		kInRestore = 10,
+		// LibertyCraft addition (a new type only): one of GTA IV's bullets hit a Minecraft mob (one Minecraft
+		// sent as kEvMob). code = GTA IV's weapon type, a = the mob's entity id, b = the ActorTable formId
+		// of the ped that fired (0: not known, kMobHitByPlayer: the player), c = the Minecraft damage * 100
+		// (GTA IV's damage for the weapon / kMobDamageScale). Minecraft hurts the mob as from that ped.
+		kInMobHit = 11,
 	};
+	inline constexpr std::int32_t kMobHitByPlayer = -1;
+	inline constexpr float        kMobDamageScale = 5.0f;  // GTA IV damage / this = Minecraft damage (a pistol's 25: 5)
 
 	enum HurtKind : std::uint16_t
 	{
@@ -290,6 +301,15 @@ namespace libertycraft::proto
 		// Minecraft makes them hittable and solid like the ped records; a kEvHitActor on any piece hits
 		// the vehicle (where it landed: kEvHitPoint). Peds sitting in a vehicle get no record of their own.
 		kActorVehicle = 1u << 4,
+		// LibertyCraft addition (a bit only): with kActorVehicle, a piece of the vehicle the player sits in
+		// (drives, rides in, or is getting into). Minecraft makes no stand-in of it (the player's own mount
+		// sits inside it), only uses it to run Minecraft's mobs over and push them aside; whatever it runs
+		// over is the player's doing. A host that doesn't set it leaves the player's vehicle out.
+		kActorPlayerVehicle = 1u << 5,
+		// LibertyCraft addition (a bit only): with kActorVehicle, someone sits in the vehicle (a driver or
+		// passengers, the player too). Minecraft's hostile mobs go for such vehicles as for peds on foot
+		// (they bang on it, shoot it, blow up beside it); empty ones they leave alone.
+		kActorOccupied = 1u << 6,
 	};
 
 	inline constexpr std::uint32_t kActorVehicleTag = 0x56000000u;  // 'V'
@@ -314,7 +334,12 @@ namespace libertycraft::proto
 	{
 		std::uint32_t seq;
 		std::uint32_t count;
-		std::uint8_t  pad[0x40 - 8];
+		// LibertyCraft addition (in SkyCraft's padding; the layout and kVersion stay): when the host wrote
+		// this table, QueryPerformanceCounter in 100 ns units (the clock of McState::tickQpc), 0 if it
+		// doesn't say. Minecraft takes the vehicles' speeds from how far their records moved between two
+		// tables over the difference of their stamps.
+		std::uint64_t stamp;
+		std::uint8_t  pad[0x40 - 16];
 		ActorRecord   actors[kMaxActors];
 	};
 	static_assert(sizeof(ActorTable) == 0x40 + 64 * kMaxActors);
@@ -349,7 +374,24 @@ namespace libertycraft::proto
 		// flags = BumpFlags. Sent every tick of contact; the host pushes the ped out of the way, makes
 		// it stumble or knocks it down by the speed (and its own cooldowns).
 		kEvBump = 7,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): a hostile Minecraft mob near the
+		// player, sent every 5 ticks for each one within kMobRange of the player (at most kMaxMobs, nearest
+		// first, and only while the ring is at most half full). flags = its entity id (Minecraft's),
+		// formId = the ActorTable formId of the ped it is after (0: none, or the player), a/b/c = its feet
+		// (MC coords), d = its height (blocks), weapon = its width in hundredths of a block (bits 0 to 15)
+		// | MobFlags. The host makes GTA IV's peds deal with it (armed ones and police nearby shoot at it,
+		// the rest run) and lets GTA IV's bullets hit it (kInMobHit). Not sent again for kMobGoneSeconds:
+		// gone (dead, unloaded, out of range).
+		kEvMob = 8,
 	};
+
+	enum MobFlags : std::uint32_t
+	{
+		kMobAfterPlayer = 1u << 16,  // it is after the player
+	};
+	inline constexpr float         kMobRange = 80.0f;  // blocks from the player
+	inline constexpr std::uint32_t kMaxMobs = 32;
+	inline constexpr float         kMobGoneSeconds = 0.75f;
 
 	// LibertyCraft addition (bits and conventions only; the layout and kVersion stay SkyCraft's): what a
 	// kEvExplosion is. SkyCraft sends 0 (any ServerExplosion: TNT, creepers, beds, crystals).
@@ -362,6 +404,9 @@ namespace libertycraft::proto
 	{
 		kExplosionFirework = 1u << 0,
 		kExplosionByPlayer = 1u << 1,  // the player launched it (the rocket's owner is the player)
+		// LibertyCraft addition: a Minecraft mob caused it (a creeper, a ghast's fireball), not the player:
+		// GTA IV's blast still happens, but it is no crime of the player's.
+		kExplosionByMob = 1u << 2,
 	};
 
 	enum BumpFlags : std::uint32_t
@@ -380,6 +425,10 @@ namespace libertycraft::proto
 		// LibertyCraft addition: the hit came from an explosion (Minecraft's blast hurt the stand-in;
 		// the host's own blast from kEvExplosion already hits the real thing).
 		kHitExplosion = 1u << 4,
+		// LibertyCraft addition: Minecraft mobs dealt all of this hit (a zombie's blow, a skeleton's arrow,
+		// a creeper's blast), the player none of it. The host hurts the ped as usual, but it is no crime of
+		// the player's and the ped doesn't turn on the player.
+		kHitByMob = 1u << 5,
 	};
 
 	// What landed a kEvHitActor (Skyrim plays that weapon class's impact effect and sounds).

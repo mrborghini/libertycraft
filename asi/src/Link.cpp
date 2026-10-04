@@ -302,6 +302,15 @@ namespace lc
 		core::FenceRelease();
 		const auto count = a_count < proto::kMaxActors ? a_count : proto::kMaxActors;
 		table->count = count;
+		{
+			// When this table was written (QPC in 100 ns units, as McState::tickQpc): Minecraft takes the
+			// vehicles' speeds from it. Wine's counter runs at 10 MHz already.
+			LARGE_INTEGER q{}, f{};
+			::QueryPerformanceCounter(&q);
+			::QueryPerformanceFrequency(&f);
+			const auto ticks = static_cast<std::uint64_t>(q.QuadPart), freq = static_cast<std::uint64_t>(f.QuadPart);
+			table->stamp = freq == 10'000'000u || freq == 0 ? ticks : ticks / freq * 10'000'000u + ticks % freq * 10'000'000u / freq;
+		}
 		if (count) {
 			std::memcpy(table->actors, a_records, sizeof(proto::ActorRecord) * count);
 		}

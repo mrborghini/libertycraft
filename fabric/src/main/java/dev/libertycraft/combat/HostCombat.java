@@ -61,6 +61,7 @@ public final class HostCombat {
 
 	private static final Map<Integer, HostActorEntity> PROXIES = new HashMap<>();
 	private static final List<Link.Actor> ACTORS = new ArrayList<>();
+	private static final long[] ACTORS_STAMP = new long[1];
 
 	private HostCombat() {
 	}
@@ -68,6 +69,9 @@ public final class HostCombat {
 	public static void init() {
 		FabricDefaultAttributeRegistry.register(HOST_ACTOR, LivingEntity.createLivingAttributes());
 		ServerTickEvents.END_SERVER_TICK.register(HostCombat::serverTick);
+		PedTargets.init();
+		PlayerVehicleHits.init();
+		dev.libertycraft.world.MobSpawner.init();
 	}
 
 	public static @Nullable HostActorEntity proxy(int formId) {
@@ -84,7 +88,10 @@ public final class HostCombat {
 		for (ServerPlayer player : players) {
 			pickUpNearby(player);
 		}
-		if (Link.readActors(ACTORS)) {
+		HostMobs.report(level, players.getFirst()); // the hostile mobs near the player, for GTA IV's peds
+		if (Link.readActors(ACTORS, ACTORS_STAMP)) {
+			// Vehicles run mobs over first: it looks at where the mobs were before the stand-ins shove them.
+			VehicleRunOver.tick(level, ACTORS, ACTORS_STAMP[0], players);
 			sync(level);
 		}
 		// Hits land during the tick (melee, sweeps, arrows, fire); send one combined hit per actor, and
@@ -124,7 +131,9 @@ public final class HostCombat {
 				Integer.toHexString(proxy.formId()), hit[0], hit[3], hit[7], hit[8], hit[9], hit[10], hit[11],
 				(Float.floatToRawIntBits(hit[4]) & Proto.HIT_PROJECTILE) != 0 ? " (projectile)" : "");
 		} else {
-			LibertyCraft.LOG.info("[LibertyCraft] hit {} for {} (knockback {})", proxy.getName().getString(), hit[0], hit[3]);
+			int flags = Float.floatToRawIntBits(hit[4]);
+			LibertyCraft.LOG.info("[LibertyCraft] hit {} for {} (knockback {}){}{}", proxy.getName().getString(), hit[0], hit[3],
+				(flags & Proto.HIT_PROJECTILE) != 0 ? " (projectile)" : "", (flags & Proto.HIT_BY_MOB) != 0 ? " by a mob" : "");
 		}
 	}
 
@@ -162,7 +171,9 @@ public final class HostCombat {
 		for (Link.Actor a : ACTORS) {
 			// A dead ped stays as a low stand-in over its body: hits and the player push the corpse
 			// around (it isn't solid); a wreck still stands there.
-			live.put(a.formId(), a);
+			if ((a.flags() & Proto.ACTOR_PLAYER_VEHICLE) == 0) {
+				live.put(a.formId(), a); // (the player's own vehicle gets no stand-in: VehicleRunOver)
+			}
 		}
 		for (Iterator<Map.Entry<Integer, HostActorEntity>> it = PROXIES.entrySet().iterator(); it.hasNext(); ) {
 			Map.Entry<Integer, HostActorEntity> e = it.next();
@@ -247,6 +258,7 @@ public final class HostCombat {
 		}
 		PROXIES.values().forEach(Entity::discard);
 		PROXIES.clear();
+		VehicleRunOver.clear();
 	}
 
 	/**
@@ -267,7 +279,14 @@ public final class HostCombat {
 		float healthBefore = player.getHealth();
 		boolean blocking = player.isBlocking();
 		// (SkyCraft fed Skyrim's Block / Armor skills from here; GTA IV has no skill XP.)
-		boolean hurt = player.hurtServer(level, source, damage);
+		// It reaches the player while GTA IV drives them too (seated in a vehicle, knocked over: HostDrive).
+		boolean hurt;
+		dev.libertycraft.world.HostDrive.applyingHostHurt = true;
+		try {
+			hurt = player.hurtServer(level, source, damage);
+		} finally {
+			dev.libertycraft.world.HostDrive.applyingHostHurt = false;
+		}
 		LibertyCraft.LOG.info("[LibertyCraft] GTA IV hit the player for {} ({} Minecraft, {}{}): health {} -> {}{}", hostDamage, damage, source.typeHolder().getRegisteredName(),
 			source.getSourcePosition() != null ? String.format(" from %.0f deg off the look", lookAngle(player, source.getSourcePosition())) : "", healthBefore,
 			player.getHealth(), hurt ? "" : blocking ? " (blocked by the shield)" : " (immune)");

@@ -158,6 +158,11 @@ namespace lc
 		bool debugCarCover = false;  // DebugTestCar parks it empty, front axle beside the player, a ped in cover beyond its bonnet
 		int debugBulletWall = 0;  // N s into play, a ped beside the player shoots across the blocks ahead of him (NpcBlocks)
 		int debugBumpPed = 0;  // N s into play, a ped stands still 3 m ahead of the player (Combat)
+		// GTA IV's peds fight back against Minecraft's hostile mobs (MobFight): armed peds and police
+		// shoot at a mob that goes after a ped, the rest run; GTA IV's bullets hurt the mobs.
+		bool pedsFightMobs = true;
+		int  debugMobShoot = 0;  // test hook: how peds shoot at mobs (0 TASK_SHOOT_AT_COORD, 1 aim + FIRE_PED_WEAPON)
+		int  debugMobFight = 0;  // test hook: N s into play, a cop and a civilian stand still ahead of the player (MobFight)
 		// N s into puppet mode, targets for crossbow fireworks where the player looks: a police helicopter
 		// hovers DebugFireworkHeliAhead m ahead, two peds and a car stand 14 m ahead (Combat.cpp
 		// FireworkTargetsHook); 0 off.
@@ -173,6 +178,10 @@ namespace lc
 		// Test hook (not in the default ini): occupants Minecraft kills alternately die the old way
 		// (no SET_CHAR_FORCE_DIE_IN_CAR), to compare where their bodies end up.
 		bool debugDieInCarAB = false;
+		// Test hook (not in the default ini): GTA hurts the player in a vehicle in Minecraft mode, a comma
+		// list of steps run in turn from 20 s into puppet mode (shoot, crash, explode, exit, niko, heal;
+		// Combat.cpp SeatedHurtHook).
+		std::string debugSeatedHurt;
 		// ---- vehicles and Niko mode (HostDrive.h) ----
 		// While Minecraft drives the player: hand Niko back to GTA IV and enter/steal the nearest
 		// vehicle (GTA's own enter control). In the vehicle GTA drives (and its own F gets out).

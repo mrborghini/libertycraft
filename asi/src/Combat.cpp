@@ -11,6 +11,7 @@
 #include "HostDrive.h"
 #include "Link.h"
 #include "Log.h"
+#include "MobFight.h"
 #include "NpcBlocks.h"
 #include "collision/Rays.h"
 #include "combat/CombatMath.h"
@@ -84,6 +85,9 @@ namespace lc::Combat
 		int       proofPed = 0;       // who got the proof (cleared by the timer, puppeted or not)
 		float     releaseGrace = 0.0f;  // puppet mode just ended: keep the health this long before handing it back
 		bool      safetyInvincible = false;  // the buffer couldn't be held: the puppeted player is invincible instead
+		// Running totals (never reset; DebugSeatedHurt): kInHurt sent and their GTA damage, health handed back to GTA.
+		std::uint32_t hurtsTotal = 0, releasesTotal = 0;
+		float         hurtGtaTotal = 0.0f;
 		float     selfTestTimer = kSelfTestSeconds;
 
 		// ---- the Minecraft player died ---------------------------------------------------------------
@@ -597,7 +601,8 @@ namespace lc::Combat
 		}
 
 		// Vehicles near the player, nearest first, as pieces along their length (proto::kActorVehicle)
-		// in whatever room the peds left. Not the one the player uses (sits in or is getting into).
+		// in whatever room the peds left. The one the player uses (sits in or is getting into) goes too, as
+		// kActorPlayerVehicle: no stand-in in Minecraft, only what runs Minecraft's mobs over.
 		void AddVehicles(const Frame& a_frame, float a_px, float a_py, float a_pz)
 		{
 			sentVehicles.clear();
@@ -630,9 +635,10 @@ namespace lc::Combat
 			for (const auto& [key, slot] : vehicleCandidates) {
 				CVehicle* veh = pool->Get(slot);
 				const int handle = veh ? static_cast<int>(pool->GetIndex(veh)) : 0;
-				if (!handle || handle == playerCar || !S::DOES_VEHICLE_EXIST(handle)) {
+				if (!handle || !S::DOES_VEHICLE_EXIST(handle)) {
 					continue;
 				}
+				const bool players = handle == playerCar;
 				const auto& vp = veh->m_pMatrix->pos;
 				const float d2 = (vp.x - a_px) * (vp.x - a_px) + (vp.y - a_py) * (vp.y - a_py) + (vp.z - a_pz) * (vp.z - a_pz);
 				float lo[3], hi[3];
@@ -643,7 +649,7 @@ namespace lc::Combat
 				// (|cos| + |sin| of its heading against the world axes: how much its boxes must shrink.)
 				const float axisLen = std::hypot(mat.up.x, mat.up.y);
 				const float e = axisLen > 1e-3f ? (std::fabs(mat.up.x) + std::fabs(mat.up.y)) / axisLen : 1.0f;
-				const VehicleShape& shape = ShapeOf(handle, veh, lo, hi, d2);
+				const VehicleShape& shape = ShapeOf(handle, veh, lo, hi, players ? 1e12f : d2);  // (never probe the player's own)
 				const auto          layout = VehiclePieces(shape, e);
 				auto it = shapes.find(veh->m_nModelIndex);
 				if (it != shapes.end() && it->second.measured && !it->second.logged && Cfg().diagnostics && veh->m_nVehicleType == VEHICLE_TYPE_AUTOMOBILE) {
@@ -670,6 +676,13 @@ namespace lc::Combat
 				const bool     dead = S::IS_CAR_DEAD(handle);
 				unsigned       health = 0;
 				S::GET_CAR_HEALTH(handle, &health);
+				int      driver = 0;
+				unsigned passengers = 0;
+				if (!dead) {
+					S::GET_DRIVER_OF_CAR(handle, &driver);
+					S::GET_NUMBER_OF_PASSENGERS(handle, &passengers);
+				}
+				const bool occupied = driver != 0 || passengers > 0;  // (Minecraft's mobs go for it: kActorOccupied)
 				unsigned model = 0;
 				S::GET_CAR_MODEL(handle, &model);
 				const char* name = S::GET_DISPLAY_NAME_FROM_VEHICLE_MODEL(model);
@@ -677,7 +690,7 @@ namespace lc::Combat
 				for (std::uint32_t piece = 0; piece < layout.count; ++piece) {
 					proto::ActorRecord r{};
 					r.formId = VehicleActorId(static_cast<std::uint32_t>(handle), piece);
-					r.flags = proto::kActorVehicle | (dead ? proto::kActorDead : 0u);
+					r.flags = proto::kActorVehicle | (dead ? proto::kActorDead : 0u) | (players ? proto::kActorPlayerVehicle : 0u) | (occupied ? proto::kActorOccupied : 0u);
 					// The piece's bottom centre, in the vehicle's frame and then the world's.
 					float at[3];
 					LocalToWorld(mat, shape.centreX + layout.side[piece], shape.Middle() + layout.offset[piece], shape.bottom, at);
@@ -966,10 +979,20 @@ namespace lc::Combat
 			}
 		}
 
+		// The hit being applied came from Minecraft's mobs alone (proto::kHitByMob; set around ApplyHit and
+		// the kills it defers), and the way it pushed (GTA x/y, unit; 0 0: none): the mob is the other way.
+		bool  hitByMob = false;
+		float mobHitPush[2]{};
+
 		// After Minecraft hurt or killed a_ped (of GET_PED_TYPE a_type; a_driving: it sits at the wheel of a_vehicle),
 		// a_crime (CombatMath.h CrimeForAttack) with it as the victim (or a_vehicle, for damage to property).
 		void AfterAttack(int a_ped, unsigned a_type, bool a_killed, const Frame& a_frame, int a_vehicle, int a_crime)
 		{
+			if (hitByMob) {
+				// A Minecraft mob's doing: no crime of the player's, and the ped deals with the mob (MobFight).
+				MobFight::Attacked(a_ped, a_killed, a_vehicle, mobHitPush[0], mobHitPush[1]);
+				return;
+			}
 			if (!Cfg().gtaCrimes || !a_frame.ped) {
 				return;
 			}
@@ -1461,7 +1484,10 @@ namespace lc::Combat
 						shoves.push_back({ k.ped, k.x, k.y, k.z, kKnockbackCheckSeconds, force, k.gx, k.gy, 0.0f, kKnockVariant });
 					}
 					if (damage > 0) {
+						hitByMob = (k.ev.flags & proto::kHitByMob) != 0;
+						mobHitPush[0] = k.gx, mobHitPush[1] = k.gy;
 						AfterAttack(k.ped, type, killed, a_frame, 0, CrimeForAttack(k.ev.flags, k.ev.weapon, type == kPedTypeCop));
+						hitByMob = false;
 					}
 				}
 				it = pendingKills.erase(it);
@@ -1865,8 +1891,9 @@ namespace lc::Combat
 				S::GET_CHAR_COORDINATES(a_frame.ped, &px, &py, &pz);
 			}
 			const float dist = a_frame.exists ? static_cast<float>(std::sqrt((c.x - px) * (c.x - px) + (c.y - py) * (c.y - py) + (c.z - pz) * (c.z - pz))) : 1e9f;
-			if (owned.engaged && dist < radius * 3.0f + 5.0f) {
+			if (owned.engaged && !a_frame.vehicle && dist < radius * 3.0f + 5.0f) {
 				// Minecraft hurt its player already; GTA's blast mustn't do it again (or ragdoll the puppet).
+				// (In a vehicle GTA moves the player and Minecraft doesn't hurt him: GTA's blast does.)
 				blastProof = kBlastProofSeconds;
 				SetBlastProof(a_frame.ped, true);
 			}
@@ -1875,8 +1902,8 @@ namespace lc::Combat
 			++counters.explosions;
 			LC_LOG("Minecraft explosion (radius %.1f blocks) -> ADD_EXPLOSION type %d radius %.1f m at GTA %.1f %.1f %.1f, %.1f m from the player, shake %.2f%s",
 				a_ev.d, Cfg().explosionType, radius, c.x, c.y, c.z, dist, shake, proofSet ? " (player explosion-proof)" : "");
-			// (Only a blast near the player is his doing as far as GTA's police can tell.)
-			if (Cfg().gtaCrimes && a_frame.exists && dist < 40.0f && ReportGtaCrime(kCrimeCauseExplosion, nullptr)) {
+			// (Only a blast near the player is his doing as far as GTA's police can tell; a creeper's never is.)
+			if (Cfg().gtaCrimes && a_frame.exists && dist < 40.0f && !(a_ev.flags & proto::kExplosionByMob) && ReportGtaCrime(kCrimeCauseExplosion, nullptr)) {
 				++counters.crimes;
 				LC_LOG("crime: Minecraft's explosion -> GTA IV's report CAUSE_EXPLOSION");
 			}
@@ -1917,7 +1944,7 @@ namespace lc::Combat
 				S::GET_CHAR_COORDINATES(a_frame.ped, &px, &py, &pz);
 			}
 			const float dist = a_frame.exists ? static_cast<float>(std::sqrt((c.x - px) * (c.x - px) + (c.y - py) * (c.y - py) + (c.z - pz) * (c.z - pz))) : 1e9f;
-			if (owned.engaged && dist < radius * 3.0f + 5.0f) {
+			if (owned.engaged && !a_frame.vehicle && dist < radius * 3.0f + 5.0f) {
 				// Minecraft hurt its player already (its own firework damage); GTA's blast mustn't too.
 				blastProof = kBlastProofSeconds;
 				SetBlastProof(a_frame.ped, true);
@@ -2357,8 +2384,9 @@ namespace lc::Combat
 			S::CLEAR_CHAR_LAST_WEAPON_DAMAGE(a_ped);
 			pacer.Reset();
 			selfTestTimer = kSelfTestSeconds;
-			LC_LOG("player health handed to Minecraft: GTA health %u (max %.0f, player max %u) armour %u -> buffer %u; GTA damage / %.1f goes to Minecraft",
-				owned.savedHealth, owned.savedMax, owned.savedInfoMax, owned.savedArmour, owned.base, Cfg().playerDamageScale);
+			LC_LOG("player health handed to Minecraft%s: GTA health %u (max %.0f, player max %u) armour %u -> buffer %u; GTA damage / %.1f goes to Minecraft",
+				S::IS_CHAR_IN_ANY_CAR(a_ped) ? " (in a vehicle)" : "", owned.savedHealth, owned.savedMax, owned.savedInfoMax, owned.savedArmour, owned.base,
+				Cfg().playerDamageScale);
 			if (owned.base <= kDeathHealth + 100.0f) {
 				LC_LOG("WARNING: the health buffer is only %u: a big GTA hit could kill the player in one frame", owned.base);
 			}
@@ -2396,9 +2424,45 @@ namespace lc::Combat
 			}
 			safetyInvincible = false;
 			releaseGrace = 0.0f;
+			++releasesTotal;
 			LC_LOG("player health back to GTA IV (%s): %s", a_why, a_restore && alive ? "restored what it had before" : "max health restored, health left as is");
 			owned = Owned{};
 			pacer.Reset();
+		}
+
+		// ---- the player's vehicle blows up with him inside --------------------------------------------------
+		// GTA IV kills a vehicle's occupants outright when it blows up: EXPLODE_CAR took the seated player's
+		// 1000 buffer straight to 0 within the native and he died, in creative too (measured). Seated in
+		// Minecraft mode he is explosion-proof instead (Tick), and the blow-up reaches Minecraft as a hit of
+		// its own, a point-blank blast's worth: kSeatedBlowUpGtaDamage / PlayerDamageScale (40 at the default
+		// 10, about what a creeper going off next to a Minecraft player does), so Minecraft decides: creative
+		// takes nothing, armour and a totem count.
+		constexpr float kSeatedBlowUpGtaDamage = 400.0f;
+		struct RideWatch
+		{
+			int  veh = 0;
+			bool wrecked = false;
+		} ride;
+
+		void WatchSeatedVehicle(const Frame& a_frame)
+		{
+			int veh = 0;
+			if (a_frame.seated) {
+				S::GET_CAR_CHAR_IS_USING(a_frame.ped, &veh);
+			}
+			if (veh && !S::DOES_VEHICLE_EXIST(veh)) {
+				veh = 0;
+			}
+			// (A car that sank counts as dead too: not a blow-up.)
+			const bool wrecked = veh && S::IS_CAR_DEAD(veh) && !S::IS_CAR_IN_WATER(veh);
+			if (veh && veh == ride.veh && wrecked && !ride.wrecked) {
+				pacer.Add(proto::kHurtOther, kSeatedBlowUpGtaDamage, 0u, 0u);
+				LC_LOG("the player's vehicle %d blew up with him inside: %.0f GTA damage goes to Minecraft (GTA kills its occupants outright; seated, he is "
+					   "explosion-proof)",
+					veh, kSeatedBlowUpGtaDamage);
+			}
+			ride.veh = veh;
+			ride.wrecked = wrecked;
 		}
 
 		void BridgePlayerDamage(const Frame& a_frame)
@@ -2426,19 +2490,20 @@ namespace lc::Combat
 				}
 				if (blastProof > 0.0f && (weapon == kWeaponExplosion || cls == HurtClass::kOther)) {
 					++counters.hurtDroppedBlast;  // our own (Minecraft's) explosion: Minecraft hurt its player itself
-				} else if (cls == HurtClass::kIgnore) {
-					++counters.hurtDroppedIgnored;
+				} else if (cls == HurtClass::kIgnore && !a_frame.vehicle) {
+					++counters.hurtDroppedIgnored;  // (in or out of a vehicle GTA moves the player: its falls count, as kHurtOther)
 				} else {
 					pacer.Add(HurtKindOf(cls), deficit, attacker ? ActorIdFromHandle(attacker) : 0u, hurtFlags);
 					NoteAttacker(attacker);
 				}
-				if (Cfg().diagnostics) {
-					LC_LOG("player lost %.0f (health %u/%u armour %u/%u), weapon %d, attacker %s%08X%s", deficit, health, owned.base, armour, owned.lastArmour,
-						weapon, attacker ? "ped " : "", attacker, (hurtFlags & proto::kHurtHasDirection) ? ", from a direction" : "");
+				if (Cfg().diagnostics || !Cfg().debugSeatedHurt.empty()) {
+					LC_LOG("player lost %.0f (health %u/%u armour %u/%u), weapon %d, attacker %s%08X%s%s", deficit, health, owned.base, armour, owned.lastArmour,
+						weapon, attacker ? "ped " : "", attacker, (hurtFlags & proto::kHurtHasDirection) ? ", from a direction" : "",
+						a_frame.seated ? ", seated in a vehicle" : a_frame.vehicle ? ", getting in or out of a vehicle" : "");
 				}
 				// One of GTA's explosions (not our own): it knocks the player over (HostDrive, RagdollOnVehicleHit),
-				// away from what blew up when that is known.
-				if (weapon == kWeaponExplosion && blastProof <= 0.0f && deficit >= 20.0f && p && p->m_pMatrix) {
+				// away from what blew up when that is known. Not in a vehicle: the vehicle takes the blast.
+				if (weapon == kWeaponExplosion && blastProof <= 0.0f && deficit >= 20.0f && p && p->m_pMatrix && !a_frame.seated && !a_frame.vehicle) {
 					const CEntity* src = p->m_pLastDamageEntity;
 					float          gx = -p->m_pMatrix->up.x, gy = -p->m_pMatrix->up.y;  // else backwards
 					if (src && src->m_pMatrix) {
@@ -2470,7 +2535,7 @@ namespace lc::Combat
 			if (!safetyInvincible && health < static_cast<unsigned>(kDeathHealth) + 100u) {
 				safetyInvincible = true;
 				S::SET_CHAR_INVINCIBLE(a_frame.ped, true);
-				LC_LOG("WARNING: couldn't refill the player's health (%u of %u): invincible until puppet mode ends", health, owned.base);
+				LC_LOG("WARNING: couldn't refill the player's health (%u of %u): invincible until GTA has his health back", health, owned.base);
 			}
 			HurtPacer::Batch batch;
 			if (pacer.Tick(a_frame.dt, batch)) {
@@ -2478,6 +2543,8 @@ namespace lc::Combat
 				Game::ReportHurt(static_cast<std::uint16_t>(batch.kind), HostDamageForMc(mcDamage), batch.attacker, batch.flags);
 				++counters.hurtsSent;
 				counters.hurtGtaDamage += batch.damage;
+				++hurtsTotal;
+				hurtGtaTotal += batch.damage;
 				LC_LOG("GTA IV hurt the player: %.0f GTA damage (%u hit%s, %s, attacker %08X, from yaw %d) -> %.2f Minecraft damage", batch.damage, batch.hits,
 					batch.hits == 1 ? "" : "s", batch.kind == proto::kHurtMelee ? "melee" : batch.kind == proto::kHurtProjectile ? "projectile" : "other",
 					batch.attacker, (batch.flags & proto::kHurtHasDirection) ? static_cast<int>((batch.flags >> proto::kHurtDirectionShift) & 0x1FFu) : -1, mcDamage);
@@ -2977,6 +3044,600 @@ namespace lc::Combat
 		}
 
 		// ---- test hooks (LibertyCraft.ini CombatSelfTest / DebugWarpOutdoors; not in the default ini) -----
+		// ---- DebugSeatedHurt: GTA hurts the player in a vehicle in Minecraft mode ---------------------------
+		// A comma list of steps (Config.h), run in turn from 20 s into puppet mode. Before each step but
+		// `heal` the player is put in a car unless he sits in one: an Admiral parked beside him and the
+		// vehicle key (GTA's own way in; indoors he is moved to the street first).
+		//  shoot    two peds with Micro Uzis shoot at him for 10 s: one 4 m off the driver's door
+		//           (TASK_SHOOT_AT_CHAR), one 6 m off the front left corner (TASK_COMBAT); and a bullet
+		//           every 0.5 s for 4 s through the driver's window at his head (FIRE_SINGLE_BULLET, 10)
+		//  jack     a ped by the driver's door is told to get in as the driver (TASK_ENTER_CAR_AS_DRIVER), 20 s
+		//  fight    an unarmed ped by the driver's door fights him (TASK_COMBAT; such peds pulled him out), 20 s
+		//  jack-, fight-  the same with the player's SET_CHAR_CANT_BE_DRAGGED_OUT off (HostDrive sets it
+		//           while seated in Minecraft mode in creative; back after the step), to compare
+		//  owner    (on foot) the car he is put in has a driver: the vehicle key carjacks it, then 12 s seated
+		//  cops     3 wanted stars, 35 s seated (the police come for him), then none
+		//  crash    the car is turned to the nearest wall of GTA's map 8 to 45 m away and driven into it at 30 m/s
+		//  explode  EXPLODE_CAR on his car
+		//  exit     TASK_LEAVE_ANY_CAR, until puppet mode has him again
+		//  niko     Niko mode, 3.5 s of `shoot`, then Minecraft mode again
+		//  nikodie  Niko mode and the shooters until GTA kills Niko (at most 25 s): GTA's own health
+		//  heal     Minecraft restores its player's health and food (kInRestore)
+		// Each step ends with a line of what it did: the kInHurt sent, GTA's and Minecraft's health, who
+		// owns it, what the HUD shows. After a death the steps go on 10 s after the respawn; "DebugSeatedHurt:
+		// done" at the end.
+		struct SeatedHurt
+		{
+			std::vector<std::string> steps;
+			bool          parsed = false;
+			std::size_t   next = 0;
+			int           stage = 0;  // 0 waiting for puppet mode, 1 getting him in a car, 2 pause, 3 the step, 4 done
+			int           seatPhase = 0, phase = 0;
+			float         t = 0.0f, puppetT = 0.0f, seatT = 0.0f;
+			std::string   step;
+			int           car = 0, stepCar = 0;
+			int           shooters[2]{};
+			std::uint32_t shots = 0;  // frames a shooter fired in (IS_CHAR_SHOOTING)
+			std::uint32_t hurts0 = 0, releases0 = 0;
+			float         gta0 = 0.0f, shootT = 0.0f;
+			unsigned      nikoHealth0 = 0;
+			float         start[3]{}, wallDist = 0.0f, topSpeed = 0.0f, hitT = 0.0f, outT = -1.0f;
+			bool          hit = false, died = false, ejectedLogged = false;
+			float         backT = -1.0f;
+			int           deadFrames = 0;  // frames logged after EXPLODE_CAR
+			float         bulletT = 0.0f;
+			int           bullets = 0, jacker = 0;
+			float         leftAt = -1.0f;  // jack/owner/cops: when he left the car (-1: still seated)
+		} seatedHurt;
+
+		int SeatedVehicle(int a_ped)
+		{
+			int veh = 0;
+			if (a_ped && S::IS_CHAR_IN_ANY_CAR(a_ped)) {
+				S::GET_CAR_CHAR_IS_USING(a_ped, &veh);
+			}
+			return veh && S::DOES_VEHICLE_EXIST(veh) ? veh : 0;
+		}
+
+		void SeatedHurtReport(const Frame& a_frame, const char* a_what)
+		{
+			const auto& s = seatedHurt;
+			unsigned    health = 0, armour = 0, body = 0;
+			S::GET_CHAR_HEALTH(a_frame.ped, &health);
+			S::GET_CHAR_ARMOUR(a_frame.ped, &armour);
+			const int veh = SeatedVehicle(a_frame.ped);
+			if (veh) {
+				S::GET_CAR_HEALTH(veh, &body);
+			}
+			const McVitals v = a_frame.mc ? DecodeVitals(a_frame.mc->pad4C, a_frame.mc->tickPad) : McVitals{};
+			LC_LOG("DebugSeatedHurt: %s: %u kInHurt (%.0f GTA damage) since the step began; health %s (GTA %u, armour %u; GTA's HUD shows %.1f of %.0f), "
+				   "Minecraft %.1f of %.1f%s; %s; health handed back to GTA %u times in the step",
+				a_what, hurtsTotal - s.hurts0, hurtGtaTotal - s.gta0, owned.engaged ? "Minecraft's" : "GTA's", health, armour,
+				hudPed ? static_cast<float>(hudHealth) : static_cast<float>(health), static_cast<float>(hudMaxHealth), v.health, v.maxHealth,
+				a_frame.mc && (a_frame.mc->flags & proto::kMcCreative) ? " (creative)" : " (survival)",
+				veh ? (S::IS_CAR_DEAD(veh) ? "seated in a wreck" : "seated") : a_frame.puppeting ? "on foot, puppeted" : "on foot, GTA animates him",
+				releasesTotal - s.releases0);
+			(void)body;
+		}
+
+		// A spot on free ground: probes straight down there and 0.7 m round it meet no vehicle (a ped created
+		// over a car stands on its roof: one of these got stuck on a parked car's).
+		bool ClearOfVehicles(float a_x, float a_y, float a_ground)
+		{
+			static constexpr float kRing[5][2] = { { 0.0f, 0.0f }, { 0.7f, 0.0f }, { -0.7f, 0.0f }, { 0.0f, 0.7f }, { 0.0f, -0.7f } };
+			for (const auto& o : kRing) {
+				const float         from[3] = { a_x + o[0], a_y + o[1], a_ground + 3.0f }, to[3] = { a_x + o[0], a_y + o[1], a_ground - 1.0f };
+				tLineOfSightResults res;
+				--col::rayCounters.rays;  // (not a map probe)
+				if (col::CastGta(from, to, res, VEHICLES)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		// A ped with a Micro Uzi a_side m right of the car (negative: left, the driver's side) and a_ahead m
+		// ahead of its middle, facing it; on free ground (ClearOfVehicles), moved up to 3 m further out and
+		// 2 m forward or back if that spot isn't. 0 if there is none.
+		int SpawnShooter(int a_ped, int a_veh, float a_side, float a_ahead)
+		{
+			float x = 0, y = 0, z = 0, h = 0;
+			if (a_veh) {
+				S::GET_CAR_COORDINATES(a_veh, &x, &y, &z);
+				S::GET_CAR_HEADING(a_veh, &h);
+			} else {
+				S::GET_CHAR_COORDINATES(a_ped, &x, &y, &z);
+				S::GET_CHAR_HEADING(a_ped, &h);
+			}
+			const float r = h * kDegToRad, fx = -std::sin(r), fy = std::cos(r), rx = std::cos(r), ry = std::sin(r);
+			const float sign = a_side < 0.0f ? -1.0f : 1.0f;
+			float       sx = 0, sy = 0, ground = 0;
+			bool        found = false;
+			for (const float out : { 0.0f, 1.0f, 2.0f, 3.0f }) {
+				for (const float along : { 0.0f, 2.0f, -2.0f }) {
+					sx = x + rx * (a_side + sign * out) + fx * (a_ahead + along);
+					sy = y + ry * (a_side + sign * out) + fy * (a_ahead + along);
+					ground = z - 0.5f;
+					S::GET_GROUND_Z_FOR_3D_COORD(sx, sy, z + 2.0f, &ground);
+					if (ClearOfVehicles(sx, sy, ground)) {
+						found = true;
+						break;
+					}
+				}
+				if (found) {
+					break;
+				}
+			}
+			if (!found) {
+				LC_LOG("DebugSeatedHurt: no free ground for a ped by vehicle %d (every spot tried has a vehicle on it)", a_veh);
+				return 0;
+			}
+			int ped = 0;
+			S::CREATE_RANDOM_CHAR(sx, sy, ground + 1.0f, &ped);
+			if (!ped) {
+				return 0;
+			}
+			S::SET_CHAR_HEADING(ped, std::atan2(sx - x, y - sy) / kDegToRad);  // facing the car (GTA: forward is (-sin h, cos h))
+			S::SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(ped, true);
+			S::GIVE_WEAPON_TO_CHAR(ped, 12, 1000, false);  // a Micro Uzi
+			S::SET_CURRENT_CHAR_WEAPON(ped, 12, true);
+			S::SET_CHAR_ACCURACY(ped, 100);
+			const float sideNow = (sx - x) * rx + (sy - y) * ry, aheadNow = (sx - x) * fx + (sy - y) * fy;
+			LC_LOG("DebugSeatedHurt: ped %d with a Micro Uzi %.1f m %s of vehicle %d, %.1f m ahead of its middle, on free ground (GTA %.1f %.1f %.1f)", ped,
+				std::fabs(sideNow), sideNow < 0.0f ? "left" : "right", a_veh, aheadNow, sx, sy, ground);
+			return ped;
+		}
+
+		void SpawnShooters(const Frame& a_frame, int a_veh)
+		{
+			auto& s = seatedHurt;
+			s.shooters[0] = SpawnShooter(a_frame.ped, a_veh, -4.0f, 0.0f);
+			s.shooters[1] = SpawnShooter(a_frame.ped, a_veh, -4.0f, 4.5f);
+			if (s.shooters[1]) {
+				S::TASK_COMBAT(s.shooters[1], a_frame.ped);
+			}
+			s.shootT = 0.0f;
+			s.shots = 0;
+		}
+
+		void RemoveShooter()
+		{
+			auto& s = seatedHurt;
+			for (int& p : s.shooters) {
+				if (p && S::DOES_CHAR_EXIST(p)) {
+					S::DELETE_CHAR(&p);
+				}
+				p = 0;
+			}
+		}
+
+		// The first shooter: every 1.5 s, shoot at the player for 2 s (the second fights on its own).
+		void ShooterTick(const Frame& a_frame)
+		{
+			auto& s = seatedHurt;
+			for (const int p : s.shooters) {
+				if (p && S::DOES_CHAR_EXIST(p) && S::IS_CHAR_SHOOTING(p)) {
+					++s.shots;
+				}
+			}
+			const int p = s.shooters[0];
+			if (!p || !S::DOES_CHAR_EXIST(p) || S::IS_CHAR_DEAD(p) || (s.shootT -= a_frame.dt) > 0.0f) {
+				return;
+			}
+			s.shootT = 1.5f;
+			S::TASK_SHOOT_AT_CHAR(p, a_frame.ped, 2000, 2);
+		}
+
+		// The nearest wall of GTA's map 8 to 45 m from the car, every 15 degrees round it.
+		bool FindWall(int a_veh, float& a_heading, float& a_dist)
+		{
+			float x = 0, y = 0, z = 0;
+			S::GET_CAR_COORDINATES(a_veh, &x, &y, &z);
+			a_dist = 1e9f;
+			for (int i = 0; i < 24; ++i) {
+				const float h = static_cast<float>(i) * 15.0f, r = h * kDegToRad, fx = -std::sin(r), fy = std::cos(r);
+				const float from[3] = { x, y, z + 0.3f }, to[3] = { x + fx * 45.0f, y + fy * 45.0f, z + 0.3f };
+				tLineOfSightResults res;
+				--col::rayCounters.rays;  // (not a map probe)
+				if (!col::CastGta(from, to, res)) {
+					continue;
+				}
+				const float* p = &res.m_vEndPosition.x;
+				const float* n = &res.m_vUnk.x;
+				if (!std::isfinite(p[0] + p[1] + p[2] + n[2]) || std::fabs(n[2]) > 0.5f) {
+					continue;  // junk, or a slope / kerb rather than a wall
+				}
+				const float d = std::hypot(p[0] - x, p[1] - y);
+				if (d >= 8.0f && d < a_dist) {
+					a_dist = d;
+					a_heading = h;
+				}
+			}
+			return a_dist < 1e8f;
+		}
+
+		void SeatedHurtHook(const Frame& a_frame)
+		{
+			auto& s = seatedHurt;
+			if (Cfg().debugSeatedHurt.empty() || s.stage >= 4) {
+				return;
+			}
+			if (!s.parsed) {
+				s.parsed = true;
+				std::size_t at = 0;
+				const std::string& list = Cfg().debugSeatedHurt;
+				while (at <= list.size()) {
+					const std::size_t comma = std::min(list.find(',', at), list.size());
+					std::string       one = list.substr(at, comma - at);
+					one.erase(0, one.find_first_not_of(' '));
+					one.erase(one.find_last_not_of(' ') + 1);
+					if (!one.empty()) {
+						s.steps.push_back(one);
+					}
+					at = comma + 1;
+				}
+				LC_LOG("DebugSeatedHurt: %zu steps (%s), from 20 s into puppet mode", s.steps.size(), list.c_str());
+			}
+			// Dead (survival: Minecraft's death kills Niko too): GTA's wasted flow (the player stops playing at
+			// once: no ped), then the end once he's back.
+			const bool playerDead = S::IS_PLAYER_DEAD(a_frame.player);
+			if (s.stage == 3 && s.step == "explode" && s.deadFrames < 3 && (a_frame.dead || !a_frame.exists || playerDead)) {
+				++s.deadFrames;
+				LC_LOG("DebugSeatedHurt: explode: %.2f s on: player ped %s, dead %d, IS_PLAYER_DEAD %d, IS_PLAYER_PLAYING %d", s.t, a_frame.exists ? "there" : "gone",
+					a_frame.dead ? 1 : 0, playerDead ? 1 : 0, S::IS_PLAYER_PLAYING(a_frame.player) ? 1 : 0);
+			}
+			if (s.stage == 3 && !s.died && (a_frame.dead || playerDead || !a_frame.exists)) {
+				s.died = true;
+				LC_LOG("DebugSeatedHurt: the player died during `%s` (ped %s, IS_PLAYER_DEAD %d)", s.step.c_str(), a_frame.exists ? "there" : "gone", playerDead ? 1 : 0);
+				RemoveShooter();
+			}
+			if (!a_frame.exists || a_frame.loading || a_frame.dead) {
+				return;
+			}
+			if (s.died) {
+				if (s.backT < 0.0f) {
+					s.backT = 0.0f;
+					LC_LOG("DebugSeatedHurt: the player is back after dying");
+				}
+				if ((s.backT += a_frame.dt) >= 10.0f) {
+					SeatedHurtReport(a_frame, "10 s after the respawn");
+					// On with the next step (in Niko mode, Minecraft mode first).
+					if (Game::State().nikoMode.load(std::memory_order_relaxed)) {
+						HostDrive::OnKey(Cfg().ToggleKeyDik(), true, false);
+						HostDrive::OnKey(Cfg().ToggleKeyDik(), false, false);
+					}
+					RemoveShooter();
+					s.died = false;
+					s.backT = -1.0f;
+					s.deadFrames = 0;
+					++s.next;
+					s.stage = 1;
+					s.seatPhase = 0;
+					s.seatT = 0.0f;
+				}
+				return;
+			}
+			const int veh = SeatedVehicle(a_frame.ped);
+			const auto finish = [&](const char* a_what) {
+				SeatedHurtReport(a_frame, a_what);
+				RemoveShooter();
+				++s.next;
+				s.stage = 1;
+				s.seatPhase = 0;
+				s.seatT = 0.0f;
+			};
+			switch (s.stage) {
+			case 0:
+				if (a_frame.puppeting && a_frame.mcInWorld) {
+					s.puppetT += a_frame.dt;
+				}
+				if (s.puppetT >= 20.0f) {
+					s.stage = 1;
+				}
+				return;
+			case 1: {
+				if (s.next >= s.steps.size()) {
+					LC_LOG("DebugSeatedHurt: done");
+					s.stage = 4;
+					return;
+				}
+				s.step = s.steps[s.next];
+				if (s.step == "owner" && veh && s.seatPhase == 0) {
+					LC_LOG("DebugSeatedHurt: owner: already in a car; skipped (put it first)");
+					finish("owner: skipped");
+					return;
+				}
+				if (s.step == "heal" || (veh && a_frame.vehicle && a_frame.seated)) {
+					s.stage = 2;
+					s.t = 0.0f;
+					return;
+				}
+				s.seatT += a_frame.dt;
+				if (!a_frame.puppeting) {
+					return;  // getting in, getting back up: wait for Minecraft's turn
+				}
+				if (s.seatPhase == 0) {
+					float aboveGround = 99.0f;
+					S::GET_CHAR_HEIGHT_ABOVE_GROUND(a_frame.ped, &aboveGround);
+					int interior = 0;
+					S::GET_INTERIOR_FROM_CHAR(a_frame.ped, &interior);
+					if (interior != 0 || aboveGround > 2.0f) {
+						HostDrive::DebugRequestRoad("DebugSeatedHurt");
+						s.seatPhase = 10;  // (wait, then look again)
+						s.seatT = 0.0f;
+						return;
+					}
+					CStreaming::ScriptRequestModel(static_cast<std::int32_t>(S::GET_HASH_KEY("admiral")));
+					s.seatPhase = 1;
+					return;
+				}
+				if (s.seatPhase == 10) {
+					if (s.seatT >= 8.0f) {
+						s.seatPhase = 0;
+					}
+					return;
+				}
+				if (s.seatPhase == 1) {
+					const unsigned model = S::GET_HASH_KEY("admiral");
+					if (!S::HAS_MODEL_LOADED(model)) {
+						return;
+					}
+					float x = 0, y = 0, z = 0;
+					S::GET_OFFSET_FROM_CHAR_IN_WORLD_COORDS(a_frame.ped, 2.5f, 2.5f, 0.0f, &x, &y, &z);
+					S::CREATE_CAR(model, x, y, z, &s.car, true);
+					S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
+					int driver = 0;
+					if (s.step == "owner" && s.car) {
+						S::CREATE_RANDOM_CHAR_AS_DRIVER(s.car, &driver);  // the vehicle key carjacks him
+						if (driver) {
+							S::TASK_PAUSE(driver, 120000);  // (a parked car: he waits instead of driving off)
+						}
+					}
+					LC_LOG("DebugSeatedHurt: car %d parked at GTA %.1f %.1f %.1f for `%s`%s", s.car, x, y, z, s.step.c_str(), driver ? " with a driver" : "");
+					s.seatPhase = 2;
+					s.seatT = 0.0f;
+					return;
+				}
+				if (s.seatPhase == 2 && s.seatT >= 2.0f) {
+					LC_LOG("DebugSeatedHurt: pressing the vehicle key");
+					HostDrive::OnKey(Cfg().VehicleKeyDik(), true, false);
+					HostDrive::OnKey(Cfg().VehicleKeyDik(), false, false);
+					s.seatPhase = 3;
+					s.seatT = 0.0f;
+					return;
+				}
+				if (s.seatPhase == 3 && s.seatT >= 15.0f) {
+					LC_LOG("DebugSeatedHurt: not in a car 15 s after the key; another car");
+					s.seatPhase = 0;
+				}
+				return;
+			}
+			case 2:
+				if ((s.t += a_frame.dt) < 3.0f) {
+					return;
+				}
+				s.stage = 3;
+				s.t = 0.0f;
+				s.phase = 0;
+				s.hurts0 = hurtsTotal;
+				s.gta0 = hurtGtaTotal;
+				s.releases0 = releasesTotal;
+				s.stepCar = veh;
+				SeatedHurtReport(a_frame, (std::string("step `") + s.step + "` begins").c_str());
+				return;
+			default:
+				break;
+			}
+
+			// stage 3: the step
+			s.t += a_frame.dt;
+			if (s.step == "heal") {
+				Link::Get().PushInput(proto::kInRestore, 0);
+				LC_LOG("DebugSeatedHurt: heal: Minecraft restores its player's health and food (kInRestore)");
+				finish("heal");
+			} else if (s.step == "shoot") {
+				if (s.phase == 0) {
+					s.phase = 1;
+					SpawnShooters(a_frame, veh);
+					s.bulletT = 0.0f;
+					s.bullets = 0;
+				}
+				ShooterTick(a_frame);
+				if (veh && s.bullets < 8 && (s.bulletT -= a_frame.dt) <= 0.0f) {
+					// GTA's own bullet from 2.5 m outside the driver's window at his head.
+					s.bulletT = 0.5f;
+					Scripting::Vector3 head{};
+					S::GET_PED_BONE_POSITION(a_frame.ped, 0x4B5, 0.0f, 0.0f, 0.0f, &head);
+					float h = 0.0f;
+					S::GET_CAR_HEADING(veh, &h);
+					const float r = h * kDegToRad, rx = std::cos(r), ry = std::sin(r);
+					S::FIRE_SINGLE_BULLET(head.x - rx * 2.5f, head.y - ry * 2.5f, head.z + 0.1f, head.x, head.y, head.z, 10);
+					++s.bullets;
+				}
+				if (s.t >= 10.0f) {
+					LC_LOG("DebugSeatedHurt: shoot: the peds fired in %u frames, %d bullets through the driver's window", s.shots, s.bullets);
+					finish("shoot");
+				}
+			} else if (s.step == "jack" || s.step == "jack-" || s.step == "fight" || s.step == "fight-" || s.step == "owner" || s.step == "cops") {
+				// Does anyone drag him out? (HostDrive: SET_CHAR_CANT_BE_DRAGGED_OUT while seated in Minecraft mode)
+				const bool  noProof = s.step.back() == '-';
+				const bool  jack = s.step.rfind("jack", 0) == 0, fight = s.step.rfind("fight", 0) == 0;
+				const float wait = jack || fight ? 20.0f : s.step == "owner" ? 12.0f : 35.0f;  // (an unproofed jack took 12 s, a fight 3.6)
+				if (s.phase == 0) {
+					s.phase = 1;
+					s.leftAt = -1.0f;
+					if (noProof) {
+						S::SET_CHAR_CANT_BE_DRAGGED_OUT(a_frame.ped, false);
+						LC_LOG("DebugSeatedHurt: %s: SET_CHAR_CANT_BE_DRAGGED_OUT off for this step", s.step.c_str());
+					}
+					if ((jack || fight) && veh) {
+						s.jacker = SpawnShooter(a_frame.ped, veh, -2.5f, 0.0f);
+						if (s.jacker) {
+							S::REMOVE_ALL_CHAR_WEAPONS(s.jacker);
+							if (jack) {
+								S::TASK_ENTER_CAR_AS_DRIVER(s.jacker, veh, 15000);
+							} else {
+								S::TASK_COMBAT(s.jacker, a_frame.ped);
+							}
+							LC_LOG("DebugSeatedHurt: %s: ped %d (unarmed) %s", s.step.c_str(), s.jacker, jack ? "told to get into the car as its driver" : "fights the player");
+						}
+					} else if (s.step == "cops") {
+						S::ALTER_WANTED_LEVEL_NO_DROP(a_frame.player, 3);
+						S::APPLY_WANTED_LEVEL_CHANGE_NOW(a_frame.player);
+						LC_LOG("DebugSeatedHurt: cops: 3 wanted stars");
+					}
+				}
+				if (s.leftAt < 0.0f && !a_frame.seated) {
+					s.leftAt = s.t;
+					LC_LOG("DebugSeatedHurt: %s: the player is out of the car %.2f s into the step", s.step.c_str(), s.t);
+				}
+				if (s.t >= wait) {
+					if (s.step == "cops") {
+						S::CLEAR_WANTED_LEVEL(a_frame.player);
+					}
+					if (s.jacker && S::DOES_CHAR_EXIST(s.jacker) && !S::IS_CHAR_IN_ANY_CAR(s.jacker)) {
+						S::DELETE_CHAR(&s.jacker);
+					}
+					s.jacker = 0;
+					if (noProof && a_frame.seated) {
+						// (back to HostDrive's state: seated in Minecraft mode, proofed in creative)
+						S::SET_CHAR_CANT_BE_DRAGGED_OUT(a_frame.ped, a_frame.mc && (a_frame.mc->flags & proto::kMcCreative));
+					}
+					LC_LOG("DebugSeatedHurt: %s: %s after %.0f s", s.step.c_str(), s.leftAt < 0.0f ? "still in his seat" : "dragged (or got) out", wait);
+					finish(s.step.c_str());
+				}
+			} else if (s.step == "niko") {
+				const std::uint8_t toggle = Cfg().ToggleKeyDik();
+				if (s.phase == 0) {
+					HostDrive::OnKey(toggle, true, false);
+					HostDrive::OnKey(toggle, false, false);
+					LC_LOG("DebugSeatedHurt: niko: pressing the toggle key (to Niko mode)");
+					s.phase = 1;
+				} else if (s.phase == 1 && s.t >= 2.0f) {
+					S::GET_CHAR_HEALTH(a_frame.ped, &s.nikoHealth0);
+					SeatedHurtReport(a_frame, "niko: in Niko mode, before the shots");
+					SpawnShooters(a_frame, veh);
+					s.hurts0 = hurtsTotal;
+					s.gta0 = hurtGtaTotal;
+					s.phase = 2;
+				} else if (s.phase == 2) {
+					ShooterTick(a_frame);
+					if (s.t >= 5.5f) {  // (3.5 s: two Uzis at 4 m took Niko's 200 health and 75 armour in 8 s)
+						unsigned now = 0, armour = 0;
+						S::GET_CHAR_HEALTH(a_frame.ped, &now);
+						S::GET_CHAR_ARMOUR(a_frame.ped, &armour);
+						LC_LOG("DebugSeatedHurt: niko: Niko's own health %u -> %u (armour now %u) from GTA's shots in Niko mode (fired in %u frames), %u kInHurt "
+							   "meanwhile",
+							s.nikoHealth0, now, armour, s.shots, hurtsTotal - s.hurts0);
+						RemoveShooter();
+						HostDrive::OnKey(toggle, true, false);
+						HostDrive::OnKey(toggle, false, false);
+						LC_LOG("DebugSeatedHurt: niko: pressing the toggle key (back to Minecraft mode)");
+						s.phase = 3;
+					}
+				} else if (s.phase == 3 && s.t >= 8.5f) {
+					finish("niko: back in Minecraft mode");
+				}
+			} else if (s.step == "nikodie") {
+				if (s.phase == 0) {
+					HostDrive::OnKey(Cfg().ToggleKeyDik(), true, false);
+					HostDrive::OnKey(Cfg().ToggleKeyDik(), false, false);
+					LC_LOG("DebugSeatedHurt: nikodie: pressing the toggle key (to Niko mode)");
+					s.phase = 1;
+				} else if (s.phase == 1 && s.t >= 2.0f) {
+					SeatedHurtReport(a_frame, "nikodie: in Niko mode, before the shots");
+					SpawnShooters(a_frame, veh);
+					s.phase = 2;
+				} else if (s.phase == 2) {
+					ShooterTick(a_frame);
+					if (s.t >= 27.0f) {
+						finish("nikodie: Niko still alive after 25 s");
+					}
+				}
+			} else if (s.step == "crash") {
+				if (s.phase == 0) {
+					s.phase = 1;
+					s.hit = false;
+					s.topSpeed = 0.0f;
+					s.ejectedLogged = false;
+					float heading = 0.0f;
+					if (!veh || !FindWall(veh, heading, s.wallDist)) {
+						if (veh) {
+							S::GET_CAR_HEADING(veh, &heading);
+						}
+						s.wallDist = 60.0f;
+						LC_LOG("DebugSeatedHurt: crash: no wall 8 to 45 m from the car; straight ahead");
+					}
+					if (veh) {
+						S::SET_CAR_HEADING(veh, heading);
+						S::GET_CAR_COORDINATES(veh, &s.start[0], &s.start[1], &s.start[2]);
+					}
+					LC_LOG("DebugSeatedHurt: crash: vehicle %d turned to heading %.0f, a wall %.1f m ahead; 30 m/s at it", veh, heading, s.wallDist);
+				}
+				const int car = s.stepCar;
+				if (car && S::DOES_VEHICLE_EXIST(car)) {
+					float x = 0, y = 0, z = 0, speed = 0.0f;
+					S::GET_CAR_COORDINATES(car, &x, &y, &z);
+					S::GET_CAR_SPEED(car, &speed);
+					const float travelled = std::hypot(x - s.start[0], y - s.start[1]);
+					if (!s.hit && travelled < s.wallDist - 2.5f && s.t < 4.0f) {
+						S::SET_CAR_FORWARD_SPEED(car, 30.0f);
+					}
+					s.topSpeed = std::max(s.topSpeed, speed);
+					if (!s.hit && s.topSpeed > 12.0f && speed < s.topSpeed * 0.5f) {
+						s.hit = true;
+						s.hitT = s.t;
+						LC_LOG("DebugSeatedHurt: crash: hit after %.1f m at %.1f m/s (%.1f m/s now); the player %s", travelled, s.topSpeed, speed,
+							veh == car ? "is still in the seat" : "is out of the car");
+					}
+				}
+				if (s.stepCar && veh != s.stepCar && !s.ejectedLogged) {
+					s.ejectedLogged = true;
+					LC_LOG("DebugSeatedHurt: crash: the player left the car %.2f s into the step (thrown out?)", s.t);
+				}
+				if ((s.hit && s.t >= s.hitT + 5.0f) || s.t >= 12.0f) {
+					finish(s.hit ? "crash" : "crash (no impact seen)");
+				}
+			} else if (s.step == "explode") {
+				if (s.phase == 0) {
+					s.phase = 1;
+					if (!veh) {
+						finish("explode: not in a car");
+						return;
+					}
+					unsigned before = 0, after = 0;
+					S::GET_CHAR_HEALTH(a_frame.ped, &before);
+					S::EXPLODE_CAR(veh, true, false);
+					S::GET_CHAR_HEALTH(a_frame.ped, &after);
+					LC_LOG("DebugSeatedHurt: explode: EXPLODE_CAR(%d): the player's GTA health %u -> %u right after, dead %d, in the car %d, the car wrecked %d", veh,
+						before, after, S::IS_CHAR_DEAD(a_frame.ped) ? 1 : 0, S::IS_CHAR_IN_ANY_CAR(a_frame.ped) ? 1 : 0, S::IS_CAR_DEAD(veh) ? 1 : 0);
+				}
+				if (s.t >= 8.0f) {
+					finish("explode");
+				}
+			} else if (s.step == "exit") {
+				if (s.phase == 0) {
+					s.phase = 1;
+					s.outT = -1.0f;
+					S::TASK_LEAVE_ANY_CAR(a_frame.ped);
+					LC_LOG("DebugSeatedHurt: exit: TASK_LEAVE_ANY_CAR");
+				}
+				if (!a_frame.seated && s.outT < 0.0f) {
+					s.outT = s.t;
+					LC_LOG("DebugSeatedHurt: exit: out of the car %.2f s after the task", s.t);
+				}
+				if (s.outT >= 0.0f && a_frame.puppeting && !a_frame.vehicle) {
+					LC_LOG("DebugSeatedHurt: exit: puppet mode again %.2f s after the task", s.t);
+					finish("exit");
+				} else if (s.t >= 15.0f) {
+					finish("exit (timed out)");
+				}
+			} else {
+				LC_LOG("DebugSeatedHurt: unknown step `%s`", s.step.c_str());
+				finish("unknown step");
+			}
+		}
+
 		void TestHooks(const Frame& a_frame)
 		{
 			if (Cfg().combatSelfTest && owned.engaged && (selfTestTimer -= a_frame.dt) <= 0.0f) {
@@ -3007,6 +3668,7 @@ namespace lc::Combat
 			WantedHook(a_frame);
 			BumpPedHook(a_frame);
 			FireworkTargetsHook(a_frame);
+			SeatedHurtHook(a_frame);
 		}
 
 		// ---- Diagnostics=1: who called into the game when it faulted ----------------------------------------
@@ -3134,6 +3796,8 @@ namespace lc::Combat
 		shoves.clear();
 		warpTimer = 0.0f;
 		testCar = TestCar{};
+		ride = RideWatch{};
+		seatedHurt.shooters[0] = seatedHurt.shooters[1] = seatedHurt.car = seatedHurt.stepCar = 0;  // (the peds and cars are going away)
 		fwTargets = FireworkTargets{};
 		seenVehicles.clear();
 		shield = Shield{};  // (the ped is going away)
@@ -3142,6 +3806,7 @@ namespace lc::Combat
 		bumpCooldown.clear();
 		speechCooldown.clear();
 		corpseFlings.clear();
+		MobFight::Reset();
 		ClearActorTable();
 	}
 
@@ -3166,7 +3831,10 @@ namespace lc::Combat
 			switch (ev.type) {
 			case proto::kEvHitActor:
 				if (playable) {
+					hitByMob = (ev.flags & proto::kHitByMob) != 0;
+					PushDirToGta(ev.b, ev.c, mobHitPush[0], mobHitPush[1]);
 					ApplyHit(ev, a_frame);
+					hitByMob = false;
 				}
 				break;
 			case proto::kEvExplosion:
@@ -3186,6 +3854,9 @@ namespace lc::Combat
 				break;
 			case proto::kEvArrowStuck:
 				++counters.arrows;  // drawing stuck arrows is the renderer's business
+				break;
+			case proto::kEvMob:
+				MobFight::OnMob(ev);  // a hostile Minecraft mob near the player (and the ped it is after)
 				break;
 			case proto::kEvBump:
 				if (playable && a_frame.puppeting) {
@@ -3212,35 +3883,51 @@ namespace lc::Combat
 			ClearActorTable();
 		}
 
-		// The puppeted player's health belongs to Minecraft.
-		// A frame or two without puppet mode (a missed McState read) keeps it, so the buffer and a blast's
-		// protection don't lapse; a changed ped, loading, death or a longer break hands it back.
-		const bool want = a_frame.puppeting && playable && !a_frame.dead && !killing;
+		// The player's health belongs to Minecraft in Minecraft mode: puppeted, knocked over, and while GTA
+		// animates him for a vehicle (getting in, seated, bailing out, getting back up). Niko mode (or
+		// Minecraft out of its world, a cutscene) gives it back to GTA.
+		// A frame or two without (a missed McState read, the teleport handshake after a vehicle) keeps it, so
+		// the buffer and a blast's protection don't lapse; a changed ped, loading, death or a longer break
+		// hands it back.
+		const bool want = (a_frame.puppeting || (a_frame.vehicle && a_frame.mcInWorld)) && playable && !a_frame.dead && !killing;
 		if (owned.engaged) {
 			const bool sameLivePed = owned.ped == a_frame.ped && playable && !a_frame.dead && !killing;
 			if (want || (sameLivePed && (releaseGrace += a_frame.dt) < kReleaseGraceSeconds)) {
 				releaseGrace = want ? 0.0f : releaseGrace;
 			} else {
-				Release(owned.ped == a_frame.ped && playable, owned.ped != a_frame.ped ? "the player ped changed" : "puppet mode ended");
+				const char* why = owned.ped != a_frame.ped                               ? "the player ped changed"
+				                  : !playable                                            ? "the game is loading"
+				                  : a_frame.dead || killing                              ? "the player died"
+				                  : Game::State().nikoMode.load(std::memory_order_relaxed) ? "Niko mode"
+				                  : !a_frame.mcInWorld                                   ? "Minecraft isn't in a world"
+				                                                                         : "Minecraft no longer has the player (a cutscene, the teleport handshake)";
+				Release(owned.ped == a_frame.ped && playable, why);
 			}
 		}
 		if (want && !owned.engaged) {
 			Engage(a_frame.player, a_frame.ped);
 		}
+		// Explosion-proof: for a moment around Minecraft's own blasts (blastProof), and seated in a vehicle
+		// while Minecraft owns his health (GTA's blow-up kills its occupants outright: WatchSeatedVehicle).
 		if (blastProof > 0.0f && (blastProof -= a_frame.dt) <= 0.0f) {
 			blastProof = 0.0f;
-			if (proofSet && proofPed && playable) {
-				SetBlastProof(proofPed, false);
-			}
+		}
+		const bool wantProof = blastProof > 0.0f || (owned.engaged && a_frame.seated && !a_frame.dead);
+		if (playable && wantProof != proofSet && (wantProof || proofPed)) {
+			SetBlastProof(wantProof ? a_frame.ped : proofPed, wantProof);
 		}
 		if (owned.engaged) {
+			WatchSeatedVehicle(a_frame);
 			BridgePlayerDamage(a_frame);
+		} else {
+			ride = RideWatch{};
 		}
 		UpdateShield(a_frame);
 		UpdateHudHealth(a_frame);
 		PendingKills(a_frame);
 		FireworkStrikes(a_frame);
 		CorpseFlings(a_frame.dt);
+		MobFight::Tick(a_frame);
 		TickBumps(a_frame.dt);
 		UpdateKill(a_frame);
 		CheckShoves(a_frame.dt);

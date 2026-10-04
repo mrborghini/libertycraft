@@ -68,6 +68,8 @@ EV_ENTRIES = 512
 EV_HIT_ACTOR, EV_PLAYER_DIED, EV_EXPLOSION, EV_HIT_POINT = 1, 2, 3, 6
 EXPLOSION_FIREWORK, EXPLOSION_BY_PLAYER = 1, 2  # LibertyCraft: kEvExplosion flags (a firework rocket's burst)
 EV_BUMP = 7  # LibertyCraft: the player ran into a ped's stand-in
+EV_MOB = 8  # LibertyCraft: a hostile mob near the player (flags = entity id, formId = the ped it is after)
+MOB_AFTER_PLAYER = 1 << 16  # kEvMob weapon bits: it is after the player
 BUMP_SPRINTING, BUMP_FLYING, BUMP_NEW_CONTACT = 1, 2, 4
 ACTOR_FMT = "<II7fHH24s"  # formId, flags, x, y, z, yaw, width, height, healthFrac, level, pad, name
 ACTOR_DEAD = 2
@@ -86,6 +88,7 @@ IN_ENTRIES = 4096
 MC_IN_WORLD, MC_SCREEN_OPEN, MC_ON_GROUND = 1, 2, 4
 MC_BLOCKING = 1 << 8  # LibertyCraft: the shield is up (kMcBlocking)
 MC_BLOCKY_CITY = 1 << 9  # LibertyCraft: the player is in the blocky city (kMcBlockyCity)
+MC_CREATIVE = 1 << 10  # LibertyCraft: the player is in creative or spectator mode (kMcCreative)
 # SkyFlags
 SKY_FLAGS = {1: "InGame", 2: "MenuOpen", 4: "Loading", 8: "HostDrives", 16: "InVehicle"}
 
@@ -95,7 +98,8 @@ assert struct.calcsize(SKY_FMT) == 0x40
 assert struct.calcsize(MC_FMT) == 0xC8
 assert struct.calcsize(ACTOR_FMT) == 64
 
-INPUT_TYPES = {1: "Key", 2: "MouseButton", 3: "Scroll", 4: "Cursor", 5: "Text", 6: "ReleaseAll", 7: "Hurt", 8: "OpenMenu"}
+INPUT_TYPES = {1: "Key", 2: "MouseButton", 3: "Scroll", 4: "Cursor", 5: "Text", 6: "ReleaseAll", 7: "Hurt", 8: "OpenMenu", 9: "BulletImpact",
+               10: "Restore", 11: "MobHit"}
 COL_TYPES = {0: "Pad", 1: "Clear", 2: "Region", 3: "Tris"}
 
 # SDL3 scancodes -> names, for printing kInKey.
@@ -284,6 +288,8 @@ def describe_input(typ, code, a, b, c):
         return f"Text U+{a:04X} {chr(a)!r}"
     if typ == 7:
         return f"Hurt kind {code} damage {a / 100:.2f} attacker {b:08X} flags {c:#x}"
+    if typ == 11:
+        return f"MobHit mob {a} by {'the player' if b == -1 else f'{b & 0xFFFFFFFF:08X}'} weapon {code} for {c / 100:.2f}"
     return name
 
 
@@ -640,7 +646,7 @@ def charge_step(args, actors, t, st):
 def combat_step(bridge, args, sky, t, t0, st):
     """The combat flags, once per loop. st holds next_hit / next_blast / next_actors / died_sent."""
     px, py, pz, yaw = sky[4], sky[5], sky[6], sky[7]
-    want_actors = args.actors or args.hit_nearest_actor > 0 or args.pick_test or args.charge > 0
+    want_actors = args.actors or args.hit_nearest_actor > 0 or args.pick_test or args.charge > 0 or args.mob_near_actor
     actors = bridge.read_actors() if want_actors else None
     st["actors"] = actors
     if args.pick_test:
@@ -692,6 +698,20 @@ def combat_step(bridge, args, sky, t, t0, st):
             bridge.push_event(EV_HIT_ACTOR, r[0], args.hit_nearest_actor, dx / n, dz / n, 0.4, flags, weapon)
             print(f"combat: hit {r[9]} {r[0]:08X} at {math.dist((r[2], r[3], r[4]), (px, py, pz)):.1f} blocks (health {r[8]:.2f}) "
                   f"for {args.hit_nearest_actor}{' (projectile)' if arrow else ''}, push MC {dx / n:.2f} {dz / n:.2f}{where}")
+    if args.mob_near_actor and actors and t >= st.get("next_mob", 0.0):
+        # A made-up hostile mob (a zombie's size) 2.5 blocks beyond the nearest living ped, after it: the host's
+        # peds deal with it (MobFight) and its bullets come back as kInMobHit.
+        st["next_mob"] = t + 0.25
+        alive = [r for r in actors if not r[1] & (ACTOR_DEAD | ACTOR_VEHICLE)]
+        if alive:
+            r = min(alive, key=lambda r: math.dist((r[2], r[3], r[4]), (px, py, pz)))
+            dx, dz = r[2] - px, r[4] - pz
+            n = math.hypot(dx, dz) or 1.0
+            mx, mz = r[2] + dx / n * 2.5, r[4] + dz / n * 2.5
+            bridge.push_event(EV_MOB, r[0], mx, r[3], mz, 1.95, 900001, 60)
+            if not st.get("mob_logged"):
+                st["mob_logged"] = True
+                print(f"combat: mob 900001 (kEvMob) 2.5 blocks beyond {r[9]} {r[0]:08X}, after it")
     if args.explode_ahead is not None and t >= st["next_blast"] and st["next_blast"] >= 0:
         st["next_blast"] = t + args.explode_ahead if args.explode_ahead > 0 else -1.0
         r = math.radians(yaw)
@@ -765,6 +785,9 @@ def main():
     ap.add_argument("--block", default="", metavar="ON,OFF",
                     help="hold the shield up (kMcBlocking) ON s, then down OFF s, in turn")
     ap.add_argument("--spin", type=float, default=0.0, metavar="DEG", help="turn on the spot, DEG degrees a second")
+    ap.add_argument("--mob-near-actor", action="store_true",
+                    help="report a made-up hostile mob (kEvMob) beside the nearest ped, after it; GTA's bullets on it print as MobHit")
+    ap.add_argument("--creative", action="store_true", help="report the player in creative mode (kMcCreative: GTA's peds can't drag it out of a vehicle)")
     ap.add_argument("--city", default="", metavar="AT,FOR",
                     help="the blocky city: AT s after the start report kMcBlockyCity for FOR s (the host hides its map geometry)")
     ap.add_argument("--vitals", default="", metavar="H,MAX,ARMOUR",
@@ -906,6 +929,8 @@ def main():
                         if not combat_state.get("city_logged"):
                             combat_state["city_logged"] = True
                             print(f"city: kMcBlockyCity for {cv[1]:.0f} s")
+                if args.creative:
+                    in_world |= MC_CREATIVE
                 # --block ON,OFF: the shield up ON s, down OFF s, in turn (from the first teleport).
                 if args.block:
                     on_s, off_s = (float(v) for v in args.block.split(","))

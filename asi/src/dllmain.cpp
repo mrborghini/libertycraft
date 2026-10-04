@@ -21,6 +21,7 @@
 #include "Render.cpp"
 #include "Overlay.cpp"
 #include "Combat.cpp"
+#include "MobFight.cpp"
 #include "NpcBlocks.cpp"
 #include "Doors.cpp"
 #include "NikoBody.cpp"

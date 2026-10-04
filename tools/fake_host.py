@@ -103,6 +103,7 @@ class Link:
         self.lights = []  # (x, y, z, level, when) from kRenLights
         self.hits = []    # (form, damage, push x, push z, flags) of kEvHitActor
         self.points = []  # (form, x, y, z, yaw, pitch) of kEvHitPoint
+        self.mobs = set()  # entity ids of the mobs kEvMob told us about
 
     def heartbeat(self):
         struct.pack_into("<Q", self.m, 0x10, tick())
@@ -113,7 +114,12 @@ class Link:
         head, tail = struct.unpack_from("<Q", self.m, OFF_EVENTS)[0], struct.unpack_from("<Q", self.m, OFF_EVENTS + 0x40)[0]
         while tail < head:
             typ, form, a, b, c, d, flags = struct.unpack_from("<IIffffI", self.m, OFF_EVENTS + 0x80 + (tail % 512) * 32)
-            print(f"  event from Minecraft: type={typ} form={form:08X} damage={a:.2f} push=({b:.2f},{c:.2f})x{d:.2f} flags={flags:#x}")
+            if typ == 8:  # kEvMob: a hostile mob near the player (every 5 ticks each): only the first of each mob is shown
+                if flags not in self.mobs:
+                    self.mobs.add(flags)
+                    print(f"  event from Minecraft: mob {flags} at MC {a:.1f} {b:.1f} {c:.1f}, {d:.1f} tall, after actor {form:08X}")
+            else:
+                print(f"  event from Minecraft: type={typ} form={form:08X} damage={a:.2f} push=({b:.2f},{c:.2f})x{d:.2f} flags={flags:#x}")
             self.events.append(typ)
             if typ == 1:
                 self.hits.append((form, a, b, c, flags))
@@ -166,6 +172,7 @@ class Link:
         struct.pack_into("<I", self.m, OFF_ACTORS, self.actor_seq * 2 + 1)
         rec = struct.pack("<IIfffffffHH24s", form, 1, x, y, z, 90.0, 0.6, 1.8, 1.0, 10, 0, b"Test Bandit")
         struct.pack_into("<I", self.m, OFF_ACTORS + 4, 1)
+        struct.pack_into("<Q", self.m, OFF_ACTORS + 8, time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 100)  # ActorTable.stamp
         self.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64] = rec
         self.actor_seq += 1
         struct.pack_into("<I", self.m, OFF_ACTORS, self.actor_seq * 2)
@@ -426,6 +433,7 @@ class NpcScenario:
         recs.append(struct.pack("<IIfffffffHH24s", self.PED, 0, self.spawn[0], FLOOR_Y, self.spawn[2] + 4.5, 0.0, 0.6, 1.8, 1.0, 0, 0, b"Civilian"))
         struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2 + 1)
         struct.pack_into("<I", link.m, OFF_ACTORS + 4, len(recs))
+        struct.pack_into("<Q", link.m, OFF_ACTORS + 8, time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 100)  # ActorTable.stamp
         link.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64 * len(recs)] = b"".join(recs)
         link.actor_seq += 1
         struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2)
@@ -550,6 +558,7 @@ IN_HURT = 7
 HURT_MELEE, HURT_PROJECTILE, HURT_OTHER = 0, 1, 3
 HURT_HAS_DIRECTION, HURT_DIRECTION_SHIFT = 1 << 2, 16
 MC_BLOCKING = 1 << 8  # McState flags: the shield is up (kMcBlocking)
+MC_CREATIVE = 1 << 10  # McState flags: the player is in creative or spectator mode (kMcCreative)
 
 
 class ShieldScenario(NpcScenario):
@@ -571,6 +580,7 @@ class ShieldScenario(NpcScenario):
             recs.append(struct.pack("<IIfffffffHH24s", self.PED, 1, self.ped_x, FLOOR_Y, self.spawn[2], 90.0, 0.6, 1.8, 1.0, 0, 0, b"Gangster"))
         struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2 + 1)
         struct.pack_into("<I", link.m, OFF_ACTORS + 4, len(recs))
+        struct.pack_into("<Q", link.m, OFF_ACTORS + 8, time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 100)  # ActorTable.stamp
         if recs:
             link.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64 * len(recs)] = b"".join(recs)
         link.actor_seq += 1

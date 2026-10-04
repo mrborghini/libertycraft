@@ -226,6 +226,10 @@ namespace lc::HostDrive
 		float afterKnock = 0.0f;  // > 0: watching Niko this long after a knockdown's release
 		const char* roadRequest = nullptr;  // DebugRequestRoad
 		int   knockdowns = 0;  // for DriveLogic, this frame
+		bool  vehicleForMinecraft = false;  // GTA drives the player for a vehicle (VehicleInMinecraftMode)
+		bool  dragProof = false;  // SET_CHAR_CANT_BE_DRAGGED_OUT is on for the player (seated in Minecraft mode, creative)
+		bool  mcCreative = false; // the Minecraft player is in creative or spectator (kMcCreative), last known
+		bool  jackSeen = false;   // a ped is trying to drag him out (logged once per attempt)
 		char  uprightWhy[96] = "";  // the standing check's parts (logged when a recovery runs out of time)
 		float recoverClock = 0.0f;
 		// DebugBailOut / DebugRunOver
@@ -1294,6 +1298,30 @@ namespace lc::HostDrive
 			return CPools::ms_pPedPool ? CPools::ms_pPedPool->m_nUsed : 0;
 		}
 
+		// The ped within 8 m of a_ped that is jacking a vehicle (IS_PED_JACKING), 0 if none.
+		int FindJacker(int a_ped)
+		{
+			CPool<CPed>* pool = CPools::ms_pPedPool;
+			if (!pool) {
+				return 0;
+			}
+			float px = 0, py = 0, pz = 0;
+			S::GET_CHAR_COORDINATES(a_ped, &px, &py, &pz);
+			for (int slot = pool->FindNextUsed(0); slot >= 0; slot = pool->FindNextUsed(slot + 1)) {
+				CPed* p = pool->Get(slot);
+				if (!p || !p->m_pMatrix) {
+					continue;
+				}
+				const auto& m = p->m_pMatrix->pos;
+				const float dx = m.x - px, dy = m.y - py;
+				const int   handle = static_cast<int>(pool->GetIndex(p));
+				if (dx * dx + dy * dy < 64.0f && handle && handle != a_ped && S::DOES_CHAR_EXIST(handle) && S::IS_PED_JACKING(handle)) {
+					return handle;
+				}
+			}
+			return 0;
+		}
+
 		// The closest living pedestrian on foot within a_radius, other than a_ped (the ped pool).
 		int ClosestPed(int a_ped, float a_radius)
 		{
@@ -1517,6 +1545,8 @@ namespace lc::HostDrive
 	void OnIngameStartup()
 	{
 		logic.Reset();
+		vehicleForMinecraft = false;
+		jackSeen = false;  // (dragProof stays: cleared on the next ped if it was on)
 		pressEnter = false;
 		pressExit = false;
 		hiddenPed = 0;  // the ped is going away with the old session
@@ -1920,12 +1950,42 @@ namespace lc::HostDrive
 			                                : "teleport handshake over");
 		}
 		const bool hide = out.inVehicle && Cfg().hideNikoInVehicle && logic.mode() == drive::Mode::kMinecraft && a_f.mcInWorld;
+		// GTA's peds drag a seated player out of a stopped vehicle (a ped fighting him, one taking the car):
+		// not while the Minecraft player is in creative or spectator (kMcCreative, invulnerable), where
+		// SET_CHAR_CANT_BE_DRAGGED_OUT holds while he sits in one in Minecraft mode. Survival and adventure
+		// keep GTA's own dragging; Niko mode (plain GTA IV) and getting out clear it.
+		// (No ped, e.g. dead: it is cleared once he is back, the same ped. Without this frame's McState the
+		// last game mode holds.)
+		if (a_f.haveMc) {
+			mcCreative = a_f.mcCreative;
+		}
+		const bool noDrag = a_f.exists && !a_f.dead && a_f.inCar && logic.mode() == drive::Mode::kMinecraft && mcCreative;
+		if (noDrag != dragProof && a_f.exists) {
+			S::SET_CHAR_CANT_BE_DRAGGED_OUT(a_f.ped, noDrag);
+			dragProof = noDrag;
+			LC_LOG("%s", noDrag ? "seated in Minecraft mode, creative: GTA's peds can't drag the player out (SET_CHAR_CANT_BE_DRAGGED_OUT)"
+			                    : "the player can be dragged out of vehicles again");
+		}
+		// Who tries anyway (log): the ped jacking him, and what kind of ped it is.
+		const bool jacked = a_f.exists && a_f.inCar && S::IS_PED_BEING_JACKED(a_f.ped);
+		if (jacked && !jackSeen) {
+			const int jacker = FindJacker(a_f.ped);
+			unsigned  type = 0;
+			if (jacker) {
+				S::GET_PED_TYPE(jacker, &type);
+			}
+			LC_LOG("a ped tries to drag the player out of the vehicle (%s): ped %d, ped type %u%s",
+				noDrag ? "Minecraft mode, creative: refused" : logic.mode() == drive::Mode::kNiko ? "Niko mode: GTA's way" : "Minecraft mode, survival: GTA's way", jacker,
+				type, type == 2 ? " (police)" : type == 0 || type == 1 ? " (civilian)" : "");
+		}
+		jackSeen = jacked;
 		if (bodyPed) {
 			SetHidden(bodyPed, true, "the Minecraft body follows his animation");
 		} else if (a_f.exists) {
 			SetHidden(a_f.ped, hide, "Minecraft's player rides in the vehicle");
 		}
 
+		vehicleForMinecraft = out.hostDrives && out.why == drive::Why::kVehicle;  // (VehicleInMinecraftMode)
 		auto& st = Game::State();
 		st.hostDrives = out.hostDrives;
 		st.inVehicle = out.inVehicle;
@@ -1955,6 +2015,11 @@ namespace lc::HostDrive
 	bool KnockedOver()
 	{
 		return logic.recovering() && logic.recoveringFrom() == drive::Why::kRagdoll && logic.mode() == drive::Mode::kMinecraft;
+	}
+
+	bool VehicleInMinecraftMode()
+	{
+		return vehicleForMinecraft && logic.mode() == drive::Mode::kMinecraft;
 	}
 
 	void KnockDown(float a_gx, float a_gy, float a_force, int a_ragdollMs, const char* a_what)

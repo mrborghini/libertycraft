@@ -47,6 +47,12 @@ public final class Proto {
 	public static final int IN_BULLET_IMPACT = 9;
 	/** LibertyCraft: GTA IV brought the player back after dying, at a hospital (kInRestore): full health and food. */
 	public static final int IN_RESTORE = 10;
+	/**
+	 * LibertyCraft: a GTA IV bullet hit a Minecraft mob (kInMobHit): code = GTA IV weapon type, a = the mob's
+	 * entity id, b = the shooter's actor formId (0 unknown, {@link #MOB_HIT_BY_PLAYER} the player), c = Minecraft damage * 100.
+	 */
+	public static final int IN_MOB_HIT = 11;
+	public static final int MOB_HIT_BY_PLAYER = -1;
 	public static final int HURT_MELEE = 0;
 	public static final int HURT_PROJECTILE = 1;
 	public static final int HURT_MAGIC = 2;
@@ -61,6 +67,8 @@ public final class Proto {
 	public static final int MAX_ACTORS = 256;
 	public static final long AT_SEQ = 0x00;
 	public static final long AT_COUNT = 0x04;
+	/** LibertyCraft: when the host wrote the table (QueryPerformanceCounter, 100 ns units; 0: unknown). */
+	public static final long AT_STAMP = 0x08;
 	public static final long AT_RECORDS = 0x40;
 	public static final long ACTOR_RECORD_BYTES = 64;
 	public static final int ACTOR_HOSTILE = 1;
@@ -76,6 +84,13 @@ public final class Proto {
 	public static final int ACTOR_VEHICLE_SEGMENTS = 16;
 	/** The piece bits of a vehicle record's formId; {@code formId & ~ACTOR_VEHICLE_PIECE_MASK} names the vehicle. */
 	public static final int ACTOR_VEHICLE_PIECE_MASK = 0xF;
+	/**
+	 * LibertyCraft: with {@link #ACTOR_VEHICLE}, a piece of the vehicle the player sits in (kActorPlayerVehicle).
+	 * No stand-in: it only runs mobs over (as the player) and pushes them aside.
+	 */
+	public static final int ACTOR_PLAYER_VEHICLE = 1 << 5;
+	/** LibertyCraft: with {@link #ACTOR_VEHICLE}, someone sits in it (kActorOccupied): hostile mobs go for it. */
+	public static final int ACTOR_OCCUPIED = 1 << 6;
 
 	// Event ring (relative to OFF_EVENT_RING)
 	public static final int EVENT_RING_ENTRIES = 512;
@@ -94,6 +109,8 @@ public final class Proto {
 	public static final int EXPLOSION_FIREWORK = 1;
 	/** LibertyCraft: EV_EXPLOSION flags (kExplosionByPlayer): the player launched it. */
 	public static final int EXPLOSION_BY_PLAYER = 1 << 1;
+	/** LibertyCraft: EV_EXPLOSION flags (kExplosionByMob): a mob caused it (a creeper, a ghast's fireball): no crime of the player's. */
+	public static final int EXPLOSION_BY_MOB = 1 << 2;
 	public static final int EV_ARROW_STUCK = 4;
 	public static final int EV_SKILL_USE = 5;
 	/** LibertyCraft: where the next EV_HIT_ACTOR on the same vehicle piece landed (see kEvHitPoint). */
@@ -103,6 +120,14 @@ public final class Proto {
 	public static final int BUMP_SPRINTING = 1;
 	public static final int BUMP_FLYING = 1 << 1;
 	public static final int BUMP_NEW_CONTACT = 1 << 2;
+	/**
+	 * LibertyCraft: a hostile mob near the player (kEvMob), every 5 ticks: flags = entity id, formId = the ped it
+	 * is after (0 none), a/b/c = feet, d = height, weapon = width in hundredths of a block | MOB_* flags.
+	 */
+	public static final int EV_MOB = 8;
+	public static final int MOB_AFTER_PLAYER = 1 << 16;
+	public static final double MOB_RANGE = 80.0;
+	public static final int MAX_MOBS = 32;
 	// SkyCraft's Skyrim skills (ActorValue). Kept for protocol parity; LibertyCraft never sends
 	// EV_SKILL_USE because GTA IV has no skill XP to feed.
 	public static final int SKILL_BLOCK = 9;
@@ -115,6 +140,8 @@ public final class Proto {
 	public static final int HIT_FIRE = 1 << 3;
 	/** LibertyCraft: an explosion hurt the stand-in (the host's own blast already hits the real thing). */
 	public static final int HIT_EXPLOSION = 1 << 4;
+	/** LibertyCraft: mobs dealt all of this hit, the player none of it (kHitByMob): no crime, the ped doesn't turn on the player. */
+	public static final int HIT_BY_MOB = 1 << 5;
 	public static final int WEAPON_UNARMED = 0;
 	public static final int WEAPON_BLADE = 1;
 	public static final int WEAPON_AXE = 2;
@@ -244,6 +271,8 @@ public final class Proto {
 	public static final int MC_BLOCKING = 1 << 8;
 	/** LibertyCraft: the player is in the blocky city; GTA IV hides its own map geometry (kMcBlockyCity). */
 	public static final int MC_BLOCKY_CITY = 1 << 9;
+	/** LibertyCraft: the player is in creative or spectator mode (invulnerable); GTA IV's peds can't drag it out of a vehicle (kMcCreative). */
+	public static final int MC_CREATIVE = 1 << 10;
 
 	// Overlay
 	public static final long OC_STATE = 0x00;

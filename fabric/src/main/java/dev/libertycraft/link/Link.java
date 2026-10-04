@@ -428,6 +428,14 @@ public abstract sealed class Link permits WinLink, PosixLink {
 
 	/** Seqlock read of the actor table. Returns false (leaving {@code out} empty) on a torn read. */
 	public static boolean readActors(java.util.List<Actor> out) {
+		return readActors(out, null);
+	}
+
+	/**
+	 * {@link #readActors(java.util.List)}, and when the host wrote the table into {@code stamp[0]}
+	 * (QueryPerformanceCounter in 100 ns units, 0 if the host doesn't say).
+	 */
+	public static boolean readActors(java.util.List<Actor> out, long @org.jspecify.annotations.Nullable [] stamp) {
 		out.clear();
 		MemorySegment s = shm;
 		if (s == null) {
@@ -441,6 +449,7 @@ public abstract sealed class Link permits WinLink, PosixLink {
 				continue;
 			}
 			int count = Math.min(s.get(JAVA_INT, b + AT_COUNT), MAX_ACTORS);
+			long written = s.get(JAVA_LONG, b + AT_STAMP);
 			for (int i = 0; i < count; i++) {
 				long r = b + AT_RECORDS + i * ACTOR_RECORD_BYTES;
 				out.add(new Actor(
@@ -452,6 +461,9 @@ public abstract sealed class Link permits WinLink, PosixLink {
 			}
 			VarHandle.loadLoadFence();
 			if ((int) INT.getAcquire(s, b + AT_SEQ) == seq1) {
+				if (stamp != null && stamp.length > 0) {
+					stamp[0] = written;
+				}
 				return true;
 			}
 			out.clear();
@@ -479,16 +491,24 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		pushEvent(type, formId, a, b, c, d, flags, 0);
 	}
 
-	public static synchronized void pushEvent(int type, int formId, float a, float b, float c, float d, int flags, int weapon) {
+	public static void pushEvent(int type, int formId, float a, float b, float c, float d, int flags, int weapon) {
+		pushEventLeaving(0, type, formId, a, b, c, d, flags, weapon);
+	}
+
+	/**
+	 * {@link #pushEvent(int, int, float, float, float, float, int, int)} for something sent again and
+	 * again (kEvMob): dropped unless {@code reserve} entries stay free for the rest. Returns whether it went.
+	 */
+	public static synchronized boolean pushEventLeaving(int reserve, int type, int formId, float a, float b, float c, float d, int flags, int weapon) {
 		MemorySegment s = shm;
 		if (s == null) {
-			return;
+			return false;
 		}
 		long base = OFF_EVENT_RING;
 		long head = s.get(JAVA_LONG, base + ER_HEAD);
 		long tail = (long) LONG.getAcquire(s, base + ER_TAIL);
-		if (head - tail >= EVENT_RING_ENTRIES) {
-			return;
+		if (head - tail >= EVENT_RING_ENTRIES - reserve) {
+			return false;
 		}
 		long e = base + ER_DATA + (head & (EVENT_RING_ENTRIES - 1)) * EVENT_BYTES;
 		s.set(JAVA_INT, e, type);
@@ -500,6 +520,7 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		s.set(JAVA_INT, e + 24, flags);
 		s.set(JAVA_INT, e + 28, weapon);
 		LONG.setRelease(s, base + ER_HEAD, head + 1);
+		return true;
 	}
 
 	// ---- world entities (write) ------------------------------------------------------------

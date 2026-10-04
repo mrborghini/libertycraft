@@ -403,6 +403,9 @@ public final class HostClient {
 			if (player.isBlocking()) {
 				flags |= Proto.MC_BLOCKING;
 			}
+			if (player.isCreative() || player.isSpectator()) {
+				flags |= Proto.MC_CREATIVE;
+			}
 			mc.x = feet.x;
 			mc.y = feet.y;
 			mc.z = feet.z;

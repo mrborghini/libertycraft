@@ -101,18 +101,26 @@ public final class ProxyPush {
 	 * a moving vehicle shoves them. {@code bvx}/{@code bvz}: how far the stand-in moved this tick.
 	 */
 	public static void shoveMobs(ServerLevel level, HostActorEntity proxy, double bvx, double bvz) {
-		AABB box = proxy.getBoundingBox();
-		List<Entity> hit = level.getEntities(proxy, box, e -> e instanceof Mob && e.isAlive() && !e.noPhysics && !e.isPassenger());
+		shoveMobs(level, proxy, proxy.getBoundingBox(), proxy.isHostVehicle(), bvx, bvz);
+	}
+
+	/**
+	 * {@link #shoveMobs(ServerLevel, HostActorEntity, double, double)} for a box: a stand-in's, or a piece
+	 * of the player's own vehicle, which has none ({@code proxy} null; VehicleRunOver). Mobs a vehicle
+	 * just ran over fly on unshoved.
+	 */
+	public static void shoveMobs(ServerLevel level, @Nullable Entity proxy, AABB box, boolean vehicle, double bvx, double bvz) {
+		List<Entity> hit = level.getEntities(proxy, box, e -> e instanceof Mob && e.isAlive() && !e.noPhysics && !e.isPassenger() && !VehicleRunOver.recentlyThrown(e));
 		for (Entity e : hit) {
 			double[] move = separation(e.getBoundingBox(), box, bvx, bvz, STEP_UP);
 			if (move == null) {
 				continue;
 			}
-			if (!proxy.isHostVehicle()) {
+			if (!vehicle) {
 				clamp(move, PED_MAX_PUSH);
 			}
 			e.move(MoverType.SHULKER, new Vec3(move[0], move[1], move[2]));
-			double[] v = proxy.isHostVehicle() ? shove(move, bvx, bvz) : new double[3];
+			double[] v = vehicle ? shove(move, bvx, bvz) : new double[3];
 			if (v[0] != 0.0 || v[2] != 0.0) {
 				e.setDeltaMovement(e.getDeltaMovement().add(v[0], v[1], v[2]));
 				e.needsSync = true;

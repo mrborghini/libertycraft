@@ -65,6 +65,7 @@ public final class InputBridge {
 			case Proto.IN_HURT -> hurt(minecraft, code, a / 100.0F, b, c);
 			case Proto.IN_BULLET_IMPACT -> HostImpactClient.impact(minecraft, code, a / 256.0, b / 256.0, c / 256.0);
 			case Proto.IN_RESTORE -> restore(minecraft);
+			case Proto.IN_MOB_HIT -> mobHit(minecraft, a, b, c / 100.0F, code);
 			case Proto.IN_OPEN_MENU -> {
 				if (minecraft.gui.screen() == null && minecraft.player != null) {
 					releaseAll();
@@ -74,6 +75,21 @@ public final class InputBridge {
 			default -> {
 			}
 		}
+	}
+
+	/** One of GTA IV's bullets hit a Minecraft mob: hurt it on the integrated server (a guest's mobs are the host's: none). */
+	private static void mobHit(Minecraft minecraft, int mobId, int shooter, float damage, int weapon) {
+		var server = minecraft.getSingleplayerServer();
+		if (minecraft.player == null || server == null) {
+			return;
+		}
+		var uuid = minecraft.player.getUUID();
+		server.execute(() -> {
+			ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+			if (player != null) {
+				dev.libertycraft.combat.HostMobs.bulletHit(player, mobId, shooter, damage, weapon);
+			}
+		});
 	}
 
 	/** GTA IV brought the player back after dying (a hospital): full health and food on the server. */

@@ -10,6 +10,7 @@
 #include "Coords.h"
 #include "Link.h"
 #include "Log.h"
+#include "MobFight.h"
 #include "combat/BlockPush.h"
 
 #include <algorithm>
@@ -432,12 +433,18 @@ namespace lc::NpcBlocks
 			bullets.probes.fetch_add(1, std::memory_order_relaxed);
 			float at[3], n[3], t = 1.0f, end[3] = { 0.0f, 0.0f, 0.0f };
 			int   face = -1;
-			const bool blocked = a_from && a_to && Config::Get().npcBlocks && ClipShot(a_from, a_to, at, n, t, face);
-			if (blocked) {
+			const bool reachesBlock = a_from && a_to && Config::Get().npcBlocks && ClipShot(a_from, a_to, at, n, t, face);
+			if (reachesBlock) {
 				std::copy(a_to, a_to + 3, end);
 				std::copy(at, at + 3, a_to);  // GTA traces (and draws) the shot only up to the blocks
 			}
-			const int hits = bulletOriginal(a_from, a_to, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+			// A Minecraft mob in front of the blocks takes the shot (MobFight): it ends there too.
+			const int  mob = a_from && a_to ? MobFight::ClipShot(a_from, a_to) : 0;
+			const bool blocked = reachesBlock && !mob;
+			const int  hits = bulletOriginal(a_from, a_to, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+			if (mob) {
+				MobFight::ShotDone(mob, a_from, a_to, hits);
+			}
 			if (blocked) {
 				if (hits > 0) {
 					bullets.nearerHit.fetch_add(1, std::memory_order_relaxed);  // something in front of the blocks took it

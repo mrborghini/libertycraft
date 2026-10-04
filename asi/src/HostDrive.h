@@ -25,6 +25,8 @@ namespace lc::HostDrive
 		bool  inCar = false, cutscene = false;
 		bool  puppeting = false;  // before this frame's puppet decision
 		bool  mcInWorld = false;
+		bool  haveMc = false;      // this frame's McState was read (mcCreative is current)
+		bool  mcCreative = false;  // the Minecraft player is in creative or spectator (kMcCreative)
 		bool  resyncing = false;  // the teleport handshake runs (Minecraft hasn't arrived where the game put the player)
 		float dt = 0.0f;
 		float heading = 0.0f;  // the ped's heading (GTA degrees)
@@ -63,6 +65,10 @@ namespace lc::HostDrive
 	// Knocked over in Minecraft mode, until Niko is back up: Minecraft still owns the player's health
 	// (Game hands Combat this as part of puppet mode).
 	bool KnockedOver();
+	// Minecraft mode, GTA animates Niko for a vehicle (the vehicle key's walk to a door, getting in,
+	// seated, bailing out, getting out and back up): Minecraft owns the player's health there too
+	// (Combat). False in Niko mode.
+	bool VehicleInMinecraftMode();
 	// Game::Tick while puppeting, with the feet Minecraft wants: the DebugWalkThroughCar test hook
 	// may move them. Returns how to place the ped: 0 as configured, 1 the native, 2 the direct move.
 	int DebugPuppetTarget(GtaVec& a_feet);

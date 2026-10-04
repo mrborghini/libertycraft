@@ -73,6 +73,8 @@ public abstract class ServerExplosionMixin {
 		}
 		ServerExplosion self = (ServerExplosion) (Object) this;
 		var center = self.center();
-		Link.pushEvent(Proto.EV_EXPLOSION, 0, (float) center.x, (float) center.y, (float) center.z, self.radius(), 0);
+		// A creeper's blast (a ghast's fireball) is no crime of the player's (Proto.EXPLOSION_BY_MOB).
+		int flags = self.getIndirectSourceEntity() instanceof net.minecraft.world.entity.Mob ? Proto.EXPLOSION_BY_MOB : 0;
+		Link.pushEvent(Proto.EV_EXPLOSION, 0, (float) center.x, (float) center.y, (float) center.z, self.radius(), flags);
 	}
 }

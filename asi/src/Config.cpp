@@ -82,6 +82,8 @@ namespace lc
 			"NpcBlocks=1\n"
 			"; Minecraft attacks are crimes: victims fight back or flee, witnesses and police give you a wanted level\n"
 			"GtaCrimes=1\n"
+			"; GTA's peds fight back against Minecraft's hostile mobs: armed peds and police shoot, the rest run; GTA's bullets hurt mobs\n"
+			"PedsFightMobs=1\n"
 			"; vehicles: this key (taken from Minecraft) enters/steals the nearest vehicle the GTA way; GTA's own F gets out\n"
 			"VehicleKey=F\n"
 			"; switches between Minecraft mode and Niko mode (plain GTA IV)\n"
@@ -269,12 +271,16 @@ namespace lc
 		if (auto v = get("debugcarcover")) debugCarCover = ToBool(*v, debugCarCover);
 		if (auto v = get("debugbulletwall")) debugBulletWall = std::atoi(v->c_str());
 		if (auto v = get("debugbumpped")) debugBumpPed = std::atoi(v->c_str());
+		if (auto v = get("pedsfightmobs")) pedsFightMobs = ToBool(*v, pedsFightMobs);
+		if (auto v = get("debugmobshoot")) debugMobShoot = std::atoi(v->c_str());
+		if (auto v = get("debugmobfight")) debugMobFight = std::atoi(v->c_str());
 		if (auto v = get("debugfireworktargets")) debugFireworkTargets = std::atoi(v->c_str());
 		if (auto v = get("debugfireworkheliahead")) debugFireworkHeliAhead = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugstumblekind")) debugStumbleKind = std::atoi(v->c_str());
 		if (auto v = get("gtacrimes")) gtaCrimes = ToBool(*v, gtaCrimes);
 		if (auto v = get("debugwanted")) debugWanted = std::atoi(v->c_str());
 		if (auto v = get("debugdieincarab")) debugDieInCarAB = ToBool(*v, debugDieInCarAB);
+		if (auto v = get("debugseatedhurt")) debugSeatedHurt = Lower(*v);
 		if (auto v = get("puppetplayercontrol")) puppetPlayerControl = ToBool(*v, puppetPlayerControl);
 		if (auto v = get("gtahud")) gtaHud = ToBool(*v, gtaHud);
 		if (auto v = get("puppetcollision")) puppetCollision = ToBool(*v, puppetCollision);
@@ -349,6 +355,9 @@ namespace lc
 		if (debugTestCar != 0) {
 			LC_LOG("config: DebugTestCar=%d (%s)", debugTestCar, debugTestCarModel.c_str());
 		}
+		if (!debugSeatedHurt.empty()) {
+			LC_LOG("config: DebugSeatedHurt=%s", debugSeatedHurt.c_str());
+		}
 		LC_LOG("config: GtaHud=%d GtaCrimes=%d PuppetPlayerControl=%d PuppetCollision=%d%s", gtaHud, gtaCrimes, puppetPlayerControl, puppetCollision,
 			debugWanted > 0 ? " DebugWanted on" : "");
 		LC_LOG("config: VehicleKey=%s (dik 0x%02X) ToggleKey=%s (dik 0x%02X) HideNikoInVehicle=%d ToggleStartsInMinecraft=%d VehicleSeatDrop=%.2f VehicleEnterFallback=%s%s%s",
@@ -357,6 +366,7 @@ namespace lc
 		LC_LOG("config: PuppetMove=%s%s%s%s%s", puppetMove.c_str(), debugWalkThroughCar ? " DebugWalkThroughCar=1" : "",
 			debugVehicleDriver ? " DebugVehicleDriver=1" : "", debugFocusCycle ? " DebugFocusCycle=1" : "", debugInjectEnterKey ? " DebugInjectEnterKey=1" : "");
 		LC_LOG("config: PhoneKeys=%d%s", phoneKeys, debugPhone ? " DebugPhone=1" : "");
+		LC_LOG("config: PedsFightMobs=%d DebugMobShoot=%d DebugMobFight=%d", pedsFightMobs, debugMobShoot, debugMobFight);
 		LC_LOG("config: HazardsBurnPeds=%d HazardsBurnVehicles=%d LiquidsSlowVehicles=%d LiquidsSlowPeds=%d MinecraftWaterIsGtaWater=%d%s%s%s", hazardsBurnPeds,
 			hazardsBurnVehicles, liquidsSlowVehicles, liquidsSlowPeds, minecraftWaterIsGtaWater,
 			debugHazards ? " DebugHazards=1" : "", debugHazardInject.empty() ? "" : " DebugHazardInject=", debugHazardInject.c_str());

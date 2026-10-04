@@ -98,7 +98,7 @@ as usual (`E` inventory, `T` chat, `F5` third person). GTA IV only keeps a few k
 
 | Key | What it does |
 |---|---|
-| `F` | enter or steal the nearest car the GTA way. You drive with GTA's controls and the Minecraft player rides a boat in the seat; `F` again gets out and Minecraft takes over |
+| `F` | enter or steal the nearest car the GTA way. You drive with GTA's controls and the Minecraft player rides a boat in the seat; `F` again gets out and Minecraft takes over. Minecraft keeps your health in the car too (creative stays immortal, in survival crashes, gunfire and a car blowing up cost hearts); in creative peds can't drag you out |
 | `\` (Backslash) | switch between Minecraft mode and **Niko mode** (plain GTA IV, e.g. if something misbehaves); the Minecraft player follows Niko and takes over where he stands |
 | `O` | Minecraft's pause / options menu |
 | `Esc`, `F1` to `F12`, `` ` `` | GTA IV's own (pause menu, ...) |
@@ -130,6 +130,41 @@ in Liberty City, and GTA IV's map comes back.
 render distance everywhere else). GTA IV only holds the blocks within that distance: what is further
 behind you is dropped and comes back as you return.
 
+## Starter kit
+
+A new world starts with a kit. In the hotbar: a netherite pickaxe with Silk Touch, Unbreaking III and
+Efficiency V, a plain diamond pickaxe, cobblestone and planks to bridge with, torches, steak, a crafting
+table and an ender chest. Above them, nine shulker boxes, each its own colour and name: **Spawn Eggs**
+(every mob's egg, monster spawners), **Redstone**, **Travel**, **Building**, **Combat**, **Food &
+Farming**, **Potions & Utility** (every brewable potion, drinkable, splash and lingering), **Nether &
+End** and **Spares**. A box holds 27 different things; where a theme has more, they come in bundles (a
+few each of many items, such as one bundle per four spawn eggs) or in named chests of full stacks (place
+the chest to unpack it, as with the building blocks and the potions).
+
+`/libertycraft kit` gives the kit again in a world you already play in: it only fills empty slots, never
+adds to what you carry, and says what didn't fit. `starterKit=false` in `config/libertycraft.properties`
+starts new players with an empty inventory instead.
+
+## Mobs in Liberty City
+
+Minecraft's mobs and GTA IV's city meet:
+
+* **Cars run mobs over.** Any GTA IV vehicle, traffic or the one you drive, that drives into a mob at
+  2.5 m/s or more hurts it by its speed (a zombie dies at 10 m/s) and throws it along the car's way; slower,
+  it just pushes it aside. What your own car runs over is your kill (drops and experience).
+* **Hostile mobs hunt GTA IV's peds** the way they hunt you: zombies, skeletons, spiders, creepers,
+  pillagers, witches and the rest go after peds on foot and cars with someone in them (yours too), with
+  their own weapons: blows, arrows, potions, a creeper's blast, a ghast's fireball. They walk GTA IV's
+  streets, stairs and ramps, don't see through its walls, and walk straight at what they can't find a
+  path to. Your survival player is still their target too; none of it is your crime.
+* **Peds fight back.** Armed peds and police nearby shoot at a mob that goes after someone, and GTA IV's
+  bullets hurt mobs (four pistol shots kill a zombie); other peds run, drivers drive off. `PedsFightMobs=0`
+  in `LibertyCraft.ini` turns this off.
+* **`/libertycraft mobs on|off`** (saved with the world, off by default) spawns mobs the Minecraft way:
+  at night by GTA IV's clock hostile mobs 24 to 64 blocks from you on the street (up to 24 around you), by
+  day now and then a few farm animals on GTA IV's grass. Undead burn in GTA IV's sun: Minecraft's time of
+  day follows GTA IV's clock. `off` removes the mobs it spawned (not those from eggs, spawners or commands).
+
 ## Milestones
 
 - [x] **M0**: repo, scripted downgrade (`tools/install.sh`), plugin loads in-game under Proton
@@ -160,6 +195,11 @@ Known gaps: no shadows on blocks indoors; peds wade instead of swim in Minecraft
 loses lamp posts and other thin street furniture, and can sit up to half a block off GTA's ground, and a hole dug there refills when newer data for that
 chunk arrives.
 GTA's own ladders can't be climbed in Minecraft mode (Minecraft ladders can). (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
+Mobs: they path over GTA IV's collision as 1/8-block voxels, so very narrow gaps, GTA's ladders and some
+furniture still stop them (a mob that finds no path walks straight at its target and may stand at a wall);
+a mob's plain blow doesn't knock a ped over; only the ped a mob is after and police within 25 m react, peds
+in cars don't shoot; GTA IV's vehicles more than 60 m from you (and trains, planes, rotors) don't run mobs
+over; the spawner only uses ground GTA IV has described around you, and beds can't skip GTA IV's night.
 
 ## Licenses
 
