@@ -71,12 +71,13 @@ set(LC_SOURCES
 	src/CrashLog.cpp
 	src/render/World.cpp
 	src/render/ShadowPass.cpp
+	src/render/OpaqueDepth.cpp
 )
 set(LC_HEADERS
 	src/Log.h src/Config.h src/Link.h src/LinkCore.h src/Coords.h src/Perf.h src/CrashLog.h
 	src/Game.h src/Input.h src/Collision.h src/Render.h src/Overlay.h src/Sdk.h
 	src/Combat.h src/combat/CombatMath.h src/NpcBlocks.h src/combat/BlockPush.h
-	src/render/Frame.h src/render/RenderMath.h src/render/Shaders.h src/render/D3D9Util.h src/render/World.h src/render/Shadows.h src/render/ShadowPass.h
+	src/render/Frame.h src/render/RenderMath.h src/render/Shaders.h src/render/D3D9Util.h src/render/World.h src/render/Shadows.h src/render/ShadowPass.h src/render/OpaqueDepth.h
 	src/HostDrive.h src/DriveLogic.h src/Doors.h src/NikoBody.h src/render/Body.h src/Hazards.h src/hazard/HazardGrid.h src/ViewportRoom.h src/BlockyCity.h src/PauseMenu.h src/MobFight.h src/SkyControl.h
 	src/compat/d3dx9.h
 	../protocol/libertycraft_protocol.h

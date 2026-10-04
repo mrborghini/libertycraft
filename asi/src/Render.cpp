@@ -7,6 +7,7 @@
 
 #include "render/Frame.h"
 #include "render/Lighting.h"
+#include "render/OpaqueDepth.h"
 #include "render/RenderMath.h"
 #include "render/ShadowPass.h"
 #include "render/Shadows.h"
@@ -1467,6 +1468,7 @@ namespace lc::Render
 			}
 			surf = nullptr;
 			const bool haveDs = SUCCEEDED(device->GetDepthStencilSurface(&surf)) && surf;
+			IDirect3DSurface9* const sceneDs = haveDs ? surf : nullptr;  // compared only (GTA holds it)
 			if (haveDs) {
 				surf->GetDesc(&ds);
 				surf->Release();
@@ -1493,6 +1495,7 @@ namespace lc::Render
 				shadowwatch::Reset();
 			}
 			if (a_f.gameFrame == drawnFrame || !fullSize || !(drawWorld || overlayWanted)) {
+				render::opaquedepth::AtDrawCommand(device, sceneDs, false, false);
 				Overlay::Upload(device, false);
 				LogStats(a_f);
 				return;
@@ -1505,6 +1508,8 @@ namespace lc::Render
 			target.height = rt.Height;
 			target.depthTest = (a_f.flags & render::kFrameDepthTest) && haveDs && ds.Width == rt.Width && ds.Height == rt.Height &&
 			                   ds.MultiSampleType == rt.MultiSampleType;
+			// GTA's depth from before its transparent pass (render/OpaqueDepth.h): copied in GTA's frame, put back below.
+			render::opaquedepth::AtDrawCommand(device, sceneDs, true, drawWorld && target.depthTest);
 
 			const double       t0 = NowMs();
 			IDirect3DStateBlock9* saved = nullptr;
@@ -1514,6 +1519,7 @@ namespace lc::Render
 			}
 			stateMs += NowMs() - t0;
 			sunwatch::ours = true;  // from here to the state block's Apply the constants written are ours
+			render::opaquedepth::SetOurs(true);
 			if (drawWorld) {
 				const render::LightingParams light = GtaLighting(device, a_f, rt.Width, rt.Height, target.adaptedLum);
 				// The mount: where Minecraft's latest scene has the rider's feet.
@@ -1532,6 +1538,10 @@ namespace lc::Render
 				}
 				render::ShadowFrame    shadowFrame;
 				IDirect3DBaseTexture9* gtaAtlas = GtaShadows(device, a_f, light, rt.Width, rt.Height, shadowFrame);
+				// After GTA's bound textures were read above: GTA's glass out of its depth buffer.
+				if (target.depthTest) {
+					render::opaquedepth::Restore(device, rt.Width, rt.Height);
+				}
 				render::World::Get().Draw(device, a_f, target, light, mount ? mountFrom : nullptr, gtaAtlas ? &shadowFrame : nullptr);
 				if (gtaAtlas) {
 					gtaAtlas->Release();
@@ -1544,6 +1554,7 @@ namespace lc::Render
 			saved->Apply();
 			saved->Release();
 			sunwatch::ours = false;
+			render::opaquedepth::SetOurs(false);
 			stateMs += NowMs() - t1;
 			++framesDrawn;
 			LogStats(a_f);

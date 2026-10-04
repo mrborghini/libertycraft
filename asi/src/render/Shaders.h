@@ -478,4 +478,39 @@ float4 PSMain(float2 vpos : VPOS) : COLOR0
 	return float4(o, 1.0);
 }
 )";
+
+	// ---- GTA's depth from before its transparent pass (render/OpaqueDepth.cpp) -------------------
+	// A full-screen quad: float4 clip position, float2 TEXCOORD0 = 1 / the target size (no shader
+	// constants: the copy runs inside GTA's own frame, where the constant watch would see them).
+	// CopyPS: GTA's depth buffer (s0, its INTZ texture) into our R32F target, raw (whatever the encoding).
+	// RestorePS: that copy (s0) back into the bound depth buffer (the caller's GREATER test lets it in
+	// only where GTA's transparent pass left a nearer depth).
+	inline constexpr char kDepthCopy[] = R"(
+sampler2D src : register(s0);
+
+struct VSOut
+{
+	float4 pos : POSITION;
+	float2 texel : TEXCOORD0;
+};
+
+VSOut VSMain(float4 pos : POSITION, float2 texel : TEXCOORD0)
+{
+	VSOut o;
+	o.pos = pos;
+	o.texel = texel;
+	return o;
+}
+
+float4 CopyPS(float2 texel : TEXCOORD0, float2 vpos : VPOS) : COLOR0
+{
+	return tex2Dlod(src, float4((vpos + 0.5) * texel, 0.0, 0.0)).rrrr;
+}
+
+float4 RestorePS(float2 texel : TEXCOORD0, float2 vpos : VPOS, out float depth : DEPTH) : COLOR0
+{
+	depth = tex2Dlod(src, float4((vpos + 0.5) * texel, 0.0, 0.0)).r;
+	return float4(0.0, 0.0, 0.0, 0.0);
+}
+)";
 }

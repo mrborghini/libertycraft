@@ -65,6 +65,7 @@ with `--demo-section` writes an atlas + a few cubes into the render ring.
 | `Render.*` | `drawingEvent`: snapshots the frame's camera (render phase grcViewport / final cam), clock and flags into a draw command of our own that GTA's render thread executes; drains the render ring there |
 | `render/World.*` | the D3D9 block renderer: atlas + mips, section vertex buffers, entities/scene/avatar, outline and cracks, Minecraft lighting, depth-tested against GTA's (FusionFix log) depth |
 | `render/RenderMath.h`, `render/Shaders.h`, `render/Frame.h`, `render/D3D9Util.h` | pure helpers (tested on Linux), the HLSL (compiled at runtime by d3dcompiler_47), the frame snapshot, D3D9 helpers |
+| `render/OpaqueDepth.*` | GTA's glass doesn't hide the blocks and the body behind it (see Rendering): GTA's scene depth copied in GTA's frame before its transparent pass (hooks on `SetRenderTarget` and `SetTexture`) and written back where that pass made it nearer before the blocks are drawn; `DebugFrameTrace` logs a frame's device calls |
 | `render/Shadows.h`, `render/ShadowPass.*` | sun shadows (see Rendering): GTA's cascade layout and lookup (`Shadows.h`, SDK-free, tested in `tests/render_test.cpp`), our own cascade atlas, the caster passes and the pass that darkens GTA's world in the blocks' shadow |
 | `Overlay.*` | Minecraft's GUI/HUD composited over the frame (premultiplied alpha, crosshair invert pass, cursor) |
 | `HostDrive.*`, `DriveLogic.h`, `drive/VehicleHit.h` | vehicles and Niko mode: who drives the player (Minecraft or GTA IV); after a vehicle or a knockdown GTA keeps Niko until he really stands; any vehicle running into the puppeted player (or one of GTA's explosions) knocks them over, a helicopter's spinning rotor too (`RagdollOnVehicleHit`). `drive/VehicleHit.h` is SDK-free and tested on Linux (`tests/drive_test.cpp`) |
@@ -110,6 +111,25 @@ drains); all state it touches is saved/restored with a per-draw `D3DSBT_ALL` sta
 - Depth: with FusionFix loaded the depth buffer is logarithmic (FusionFix's z-fighting fix:
   `z/w = log2(w/near) / log2(far/near)`), which the vertex shader reproduces per vertex; otherwise
   standard D3D depth. `RenderDepth=` overrides.
+- Glass (`render/OpaqueDepth.*`, `RenderBehindGlass=1`): our draw command comes after GTA's forward
+  pass, whose vehicle and shop windows write depth (only where their reflection is bright, so mostly in
+  sunlight), so the body in a car and blocks behind a window failed the depth test. A GTA IV frame
+  (`DebugFrameTrace`): the G-buffer pass (4 render targets, its own INTZ depth), that depth copied into
+  the scene depth buffer (the INTZ bound at our draw command), decals, the deferred lights, the water,
+  then GTA reads the scene depth as a texture for the first time (its R32F copy for refraction and depth
+  of field), then the forward pass (vehicle glass among it: blended, with depth writes), post-processing,
+  our draw command, and GTA clears the scene depth for its HUD. Hooks on `SetRenderTarget` and
+  `SetTexture` (device vtable slots 37 and 65) wait for the G-buffer pass (render target 2 or 3 bound)
+  and then for that first read, and right there copy the scene depth, raw (FusionFix's logarithmic
+  depth as it is), into an R32F texture of ours, with GTA's render targets, depth buffer and a
+  `D3DSBT_ALL` state block put back around it. In our draw command, before the blocks, a full-screen
+  pass writes the copy back into the scene depth with a GREATER test, so the depth goes back to what
+  is behind only where the forward pass left something nearer. The water (drawn before that read)
+  still hides blocks under it; the glass then shows under the blocks and the body instead of over
+  them. A frame without the copy (no G-buffer pass seen, no read after it) tests against GTA's depth as
+  it is. The copy is `D3DPOOL_DEFAULT` (released in an `IDirect3DDevice9::Reset` hook). A `behind
+  glass in N of M drawn frames` line every 10 s gives the CPU and GPU times (measured about 0.05 ms CPU
+  and 0.05 ms GPU for both passes at 1920x1080).
 - Resources: everything static is `D3DPOOL_MANAGED` (atlas with CPU-built mips, section vertex
   buffers, entity textures, the overlay texture) and per-frame geometry goes through
   `DrawPrimitiveUP`, so the game's device `Reset` needs nothing from us (but for the shadow atlas,
@@ -263,6 +283,7 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `Render` | `1` | draw Minecraft's blocks and HUD in GTA's frame (0: only drain the render ring) |
 | `RenderCamera` | `auto` | the blocks' camera: `auto` (the render phase's grcViewport, else the final cam), `phase`, `current` (grcViewport::sm_pCurrent), `finalcam` |
 | `RenderDepth` | `auto` | GTA's depth buffer: `auto` (logarithmic when FusionFix is loaded, else standard), `log`, `standard`, `off` (blocks not hidden by GTA's world) |
+| `RenderBehindGlass` | `1` | GTA's glass (vehicle and shop windows) doesn't hide the blocks and the body behind it: they are tested against GTA's depth from before its transparent pass (see Rendering) |
 | `RenderExposure` | `1.0` | brightness multiplier for the blocks (after GTA's tone mapping) |
 | `RenderLighting` | `gta` | `gta`: GTA IV's sun, ambient, fog and tone mapping (see Rendering); `minecraft`: Minecraft's own light levels |
 | `RenderSaturation` | `0.8` | colour saturation of the blocks when GTA's tone mapping constants are unavailable (else GTA's own) |
@@ -271,6 +292,8 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `RenderShadowBias`, `RenderShadowDistance`, `RenderShadowCast` | `0.05`, `128`, `1` | not in the default ini: metres the blocks' casting surfaces move away from the sun (against acne), how far from the camera blocks cast (m), and `0`: the blocks only take GTA's shadows |
 | `DebugShadows`, `DebugShadowsAB` | `0` | test hooks: log GTA's shadow constants (on changes and every 10 s) and write both atlases to `<gamedir>/libertycraft-shadow-gta.pgm` and `-ours.pgm` (15 s after the shadows come on, then every 30 s); `DebugShadowsAB=N` switches the shadows off and on every N s, logging `DebugShadowsAB: shadows on/off` |
 | `DebugShadowView` | `0` | test hook: the blocks show their shadow term instead of their colour (red GTA's, green GTA's and the blocks', blue 0.5) |
+| `DebugBehindGlassAB` | `0` | test hook: `N` s with `RenderBehindGlass` off, `N` s on, in turn (logged as `DebugBehindGlassAB: GTA's glass hides/shows ...`) |
+| `DebugFrameTrace` | | test hook: e.g. `25,40`: GTA's device calls of one frame at each of those seconds after the blocks are first drawn (render targets, depth buffers, clears, render target and depth textures bound, the draws between counted by depth write and blending) to `<gamedir>/libertycraft-frametrace-N.txt` |
 | `DebugShadowSpot` | | test hook: `x,y,z,heading` (GTA), 12 s after the blocks are first drawn put the player there once (e.g. `1191.6,202.6,32.5,149`, the sunny sidewalk outside Schottler Medical Center) |
 | `RenderExposureKey`, `RenderExposureFloor` | `0.85`, `11` | calibration of the auto exposure stand-in (not in the default ini) |
 | `DebugTimeOfDay`, `DebugWeather`, `DebugStepSeconds` | | test hooks: pin GTA's clock to each hour of a list in turn (e.g. `12,19.5,21.5,0`) and force each weather of a list (`-1` leaves it; 0 extrasunny, 3 cloudy, 4 rain, 6 foggy), one step every `DebugStepSeconds` (20) once the blocks are drawn; logs `debug step i/n` |

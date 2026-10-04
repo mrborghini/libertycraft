@@ -48,6 +48,8 @@ namespace lc
 			"RenderCamera=auto\n"
 			"; GTA's depth buffer: auto (log with FusionFix) | log | standard | off (blocks not hidden by GTA's world)\n"
 			"RenderDepth=auto\n"
+			"; GTA's glass (vehicle and shop windows) doesn't hide the blocks and your body behind it\n"
+			"RenderBehindGlass=1\n"
 			"; brightness multiplier for Minecraft's blocks\n"
 			"RenderExposure=1.0\n"
 			"; Minecraft's HUD: auto (puppeting or a Minecraft screen open) | always | off\n"
@@ -227,6 +229,8 @@ namespace lc
 			const auto d = Lower(*v);
 			renderDepth = d == "log" ? RenderDepth::kLog : d == "standard" ? RenderDepth::kStandard : d == "off" ? RenderDepth::kOff : RenderDepth::kAuto;
 		}
+		if (auto v = get("renderbehindglass")) renderBehindGlass = ToBool(*v, renderBehindGlass);
+		if (auto v = get("debugbehindglassab")) debugBehindGlassAB = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("renderexposure")) renderExposure = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("overlay")) {
 			const auto o = Lower(*v);
@@ -252,6 +256,7 @@ namespace lc
 		if (auto v = get("debugshadowsab")) debugShadowsAB = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugshadowview")) debugShadowView = ToBool(*v, debugShadowView);
 		if (auto v = get("debugshadowspot")) debugShadowSpot = *v;
+		if (auto v = get("debugframetrace")) debugFrameTrace = *v;
 		if (auto v = get("combat")) combat = ToBool(*v, combat);
 		if (auto v = get("peddamagescale")) pedDamageScale = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("playerdamagescale")) playerDamageScale = static_cast<float>(std::atof(v->c_str()));

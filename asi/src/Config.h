@@ -62,6 +62,11 @@ namespace lc
 		// The game's depth buffer: auto (logarithmic with FusionFix loaded, else standard), log,
 		// standard, off (no occlusion by GTA's world).
 		enum class RenderDepth { kAuto, kLog, kStandard, kOff } renderDepth = RenderDepth::kAuto;
+		// GTA's glass (vehicle and shop windows) doesn't hide the blocks and the body behind it: they are
+		// depth-tested against GTA's depth from before its transparent pass (render/OpaqueDepth.h).
+		bool renderBehindGlass = true;
+		// Test hook (not in the default ini): N s with that off, N s on, in turn.
+		float debugBehindGlassAB = 0.0f;
 		// Brightness multiplier for Minecraft's blocks.
 		float renderExposure = 1.0f;
 		// Minecraft's HUD/GUI: auto (while puppeting or a Minecraft screen is open), always (whenever
@@ -114,6 +119,9 @@ namespace lc
 		// Test hook (not in the default ini): "x,y,z,heading" (GTA): 12 s after the blocks are first
 		// drawn, put the player there once (a sunny spot for shadow tests).
 		std::string debugShadowSpot;
+		// Test hook (not in the default ini): "20,35" logs GTA's device calls of one frame at each of those
+		// seconds after the blocks are first drawn, to <gamedir>/libertycraft-frametrace-N.txt (render/OpaqueDepth.cpp).
+		std::string debugFrameTrace;
 
 		// ---- combat (Combat.h) ----
 		// Minecraft and GTA IV fight each other: the actor table, Minecraft's hits/explosions/death,
