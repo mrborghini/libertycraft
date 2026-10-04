@@ -156,8 +156,9 @@ behind you is dropped and comes back as you return.
   held items hidden in vehicles, no void when the camera is outside an interior's door
 
 Known gaps: no shadows on blocks indoors; peds wade instead of swim in Minecraft water; cutscene support needs
-1.0.8.0; peds take double damage from Minecraft's TNT and creepers (not from fireworks). Blocky Liberty City is drawn
-128 m out, loses lamp posts and other thin street furniture, and can sit up to half a block off GTA's ground.
+1.0.8.0; peds take double damage from Minecraft's TNT and creepers (not from fireworks). Blocky Liberty City
+loses lamp posts and other thin street furniture, and can sit up to half a block off GTA's ground, and a hole dug there refills when newer data for that
+chunk arrives.
 GTA's own ladders can't be climbed in Minecraft mode (Minecraft ladders can). (Windscreens can't be broken in vanilla GTA IV either, so only side windows shatter.)
 
 ## Licenses
