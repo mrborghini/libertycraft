@@ -244,6 +244,9 @@ namespace libertycraft::proto
 		// 5 east: Minecraft's Direction order), a, b, c = where, Minecraft coordinates * 256. Minecraft
 		// shows the block's hit particles there.
 		kInBulletImpact = 9,
+		// LibertyCraft addition (a new type only): GTA IV brought the player back after dying (wasted, at
+		// a hospital). No fields. Minecraft sets the player's health and food to full.
+		kInRestore = 10,
 	};
 
 	enum HurtKind : std::uint16_t

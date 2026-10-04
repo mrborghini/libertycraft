@@ -74,6 +74,8 @@ namespace lc
 			"FireworkExplosionType=2\n"
 			"; a Minecraft hit knocks the ped over (ragdoll)\n"
 			"RagdollOnHit=1\n"
+			"; how hard a Minecraft hit throws a ped or a body: 1 = a sword hit sends a ped 7 to 9 m, 0.25 about a gunshot's push\n"
+			"HitForce=1.0\n"
 			"; Minecraft damage x this = GTA body/engine health off a vehicle (1000 each)\n"
 			"VehicleDamageScale=15\n"
 			"; Minecraft blocks are solid for GTA IV's peds and vehicles\n"
@@ -255,6 +257,7 @@ namespace lc
 		if (auto v = get("explosionradiusscale")) explosionRadiusScale = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("fireworkexplosiontype")) fireworkExplosionType = std::atoi(v->c_str());
 		if (auto v = get("ragdollonhit")) ragdollOnHit = ToBool(*v, ragdollOnHit);
+		if (auto v = get("hitforce")) hitForce = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.0f, 5.0f);
 		if (auto v = get("combatselftest")) combatSelfTest = ToBool(*v, combatSelfTest);
 		if (auto v = get("debugwarpoutdoors")) debugWarpOutdoors = ToBool(*v, debugWarpOutdoors);
 		if (auto v = get("vehicledamagescale")) vehicleDamageScale = static_cast<float>(std::atof(v->c_str()));
@@ -332,8 +335,8 @@ namespace lc
 		if (debugVehicleSpeed > 0.0f) {
 			LC_LOG("config: DebugVehicleSpeed=%.1f%s", debugVehicleSpeed, debugSeatAB ? " DebugSeatAB=1" : "");
 		}
-		LC_LOG("config: Combat=%d PedDamageScale=%.1f PlayerDamageScale=%.1f ExplosionType=%d ExplosionRadiusScale=%.2f FireworkExplosionType=%d RagdollOnHit=%d%s%s",
-			combat, pedDamageScale, playerDamageScale, explosionType, explosionRadiusScale, fireworkExplosionType, ragdollOnHit,
+		LC_LOG("config: Combat=%d PedDamageScale=%.1f PlayerDamageScale=%.1f ExplosionType=%d ExplosionRadiusScale=%.2f FireworkExplosionType=%d RagdollOnHit=%d HitForce=%.2f%s%s",
+			combat, pedDamageScale, playerDamageScale, explosionType, explosionRadiusScale, fireworkExplosionType, ragdollOnHit, hitForce,
 			combatSelfTest ? " CombatSelfTest=1" : "", debugWarpOutdoors ? " DebugWarpOutdoors=1" : "");
 		if (debugStumbleKind >= 0) {
 			LC_LOG("config: DebugStumbleKind=%d", debugStumbleKind);

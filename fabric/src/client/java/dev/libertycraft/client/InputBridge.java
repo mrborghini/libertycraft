@@ -64,6 +64,7 @@ public final class InputBridge {
 			case Proto.IN_RELEASE_ALL -> releaseAll();
 			case Proto.IN_HURT -> hurt(minecraft, code, a / 100.0F, b, c);
 			case Proto.IN_BULLET_IMPACT -> HostImpactClient.impact(minecraft, code, a / 256.0, b / 256.0, c / 256.0);
+			case Proto.IN_RESTORE -> restore(minecraft);
 			case Proto.IN_OPEN_MENU -> {
 				if (minecraft.gui.screen() == null && minecraft.player != null) {
 					releaseAll();
@@ -73,6 +74,27 @@ public final class InputBridge {
 			default -> {
 			}
 		}
+	}
+
+	/** GTA IV brought the player back after dying (a hospital): full health and food on the server. */
+	private static void restore(Minecraft minecraft) {
+		var server = minecraft.getSingleplayerServer();
+		if (minecraft.player == null) {
+			return;
+		}
+		if (server == null) {
+			if (net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(dev.libertycraft.net.LcNet.Restore.TYPE)) {
+				net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(new dev.libertycraft.net.LcNet.Restore());
+			}
+			return;
+		}
+		var uuid = minecraft.player.getUUID();
+		server.execute(() -> {
+			ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+			if (player != null) {
+				HostCombat.restorePlayer(player);
+			}
+		});
 	}
 
 	/** GTA IV hit the player: apply it as Minecraft damage on the integrated server (or the host's). */

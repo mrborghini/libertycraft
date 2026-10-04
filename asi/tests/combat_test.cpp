@@ -614,12 +614,11 @@ static void TestBumps()
 	CHECK(Near(NudgeStep(0.1f), 0.13f) && Near(NudgeStep(2.0f), 0.25f) && NudgeStep(-1.0f) == 0.0f);
 	// Corpses: a walk drags, faster throws further; hits push by knockback and damage.
 	CHECK(CorpseBumpForce(1.5f) <= 1.1f && CorpseBumpForce(20.0f) > CorpseBumpForce(4.3f) && CorpseBumpForce(500.0f) <= 6.0f);
-	CHECK(CorpseHitForce(0.4f, 7.0f, false) > CorpseHitForce(0.0f, 1.0f, false) && CorpseHitForce(0.4f, 7.0f, true) < CorpseHitForce(0.4f, 7.0f, false));
-	CHECK(CorpseHitForce(5.0f, 100.0f, false) <= 4.5f);
-	// QA: a 30-damage blow on a body was force 18.4 (25 m in a second); now a couple of metres' worth.
-	CHECK(CorpseHitForce(0.4f, 30.0f, false) < 3.0f && CorpseHitForce(0.4f, 6.0f, true) < 1.5f);
-	// A hit's shove on a ped as it goes over: a plain hit (0.4) about 1.6, the hardest 4.
-	CHECK(Near(HitShoveForce(0.4f), 1.6f) && Near(HitShoveForce(0.0f), 1.0f) && Near(HitShoveForce(2.0f), 4.0f) && Near(HitShoveForce(9.0f), 4.0f));
+	CHECK(CorpseHitForce(0.4f, 7.0f, 1.0f) > CorpseHitForce(0.0f, 1.0f, 1.0f) && Near(CorpseHitForce(0.4f, 30.0f, 1.0f), 18.4f));
+	CHECK(Near(CorpseHitForce(5.0f, 100.0f, 1.0f), 28.0f) && Near(CorpseHitForce(0.4f, 30.0f, 0.5f), 9.2f) && CorpseHitForce(0.4f, 30.0f, -1.0f) == 0.0f);
+	// A hit's shove on a ped as it goes over: a plain hit (0.4) 7.2 at HitForce 1, the hardest 20, scaled.
+	CHECK(Near(HitShoveForce(0.4f, 1.0f), 7.2f) && Near(HitShoveForce(0.0f, 1.0f), 4.0f) && Near(HitShoveForce(9.0f, 1.0f), 20.0f));
+	CHECK(Near(HitShoveForce(0.4f, 0.25f), 1.8f) && HitShoveForce(0.4f, 0.0f) == 0.0f);
 }
 
 static void TestCrimes()

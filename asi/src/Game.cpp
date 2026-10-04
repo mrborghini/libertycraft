@@ -67,6 +67,7 @@ namespace lc::Game
 		bool          lookInit = false;
 		bool          wasMenuOpen = true;
 		bool          wasScreenOpen = false;
+		bool          wasDead = false;  // the player died and GTA hasn't brought him back yet
 
 		// root -> feet offset of the player ped (GET_CHAR_COORDINATES is the ped's root, ~1 m up)
 		float  rootToFeet = 1.0f;
@@ -826,6 +827,16 @@ namespace lc::Game
 		}
 		shared.gtaMenuOpen = menuOpen;
 		onFootForCamera = inGame && !inCar && !cutscene && !dead;
+		// GTA IV brought the player back after "wasted" (at a hospital): Minecraft heals him and fills his
+		// food bar too. (Minecraft respawns at once with both full when it died first, but GTA can kill him
+		// without Minecraft dying, in a car or in Niko mode, and hurt the respawned player meanwhile.)
+		if (exists && dead) {
+			wasDead = true;
+		} else if (exists && wasDead) {
+			wasDead = false;
+			const bool sent = Link::Get().PushInput(proto::kInRestore, 0);
+			LC_LOG("the player is alive again after dying (hospital): Minecraft restores health and food%s", sent ? "" : " (not sent: no link)");
+		}
 
 		GtaVec feet{};
 		float  heading = 0.0f;

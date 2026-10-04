@@ -1151,8 +1151,8 @@ namespace lc::Combat
 				return;
 			}
 			const bool  projectile = (a_ev.flags & proto::kHitProjectile) != 0;
-			const float force = CorpseHitForce(a_ev.d, a_ev.a, projectile);
-			const bool  ragdoll = PushCorpse(a_ped, gx, gy, force, force * 0.6f, 1.5f);
+			const float force = CorpseHitForce(a_ev.d, a_ev.a, Cfg().hitForce);
+			const bool  ragdoll = PushCorpse(a_ped, gx, gy, force, force * 0.3f, 2.0f);
 			++counters.corpseHits;
 			LC_LOG("hit corpse %08X for %.2f Minecraft (knockback %.2f%s): %s along GTA %.2f %.2f", a_ev.formId, a_ev.a, a_ev.d, projectile ? ", projectile" : "",
 				ragdoll ? "its ragdoll pushed (force)" : "thrown as it lies (settled)", gx, gy);
@@ -1378,7 +1378,7 @@ namespace lc::Combat
 					S::CLEAR_CHAR_TASKS_IMMEDIATELY(ped);
 					switched = S::SWITCH_PED_TO_RAGDOLL(ped, 4000, 4000, false, false, false, false);
 				}
-				const float force = HitShoveForce(a_ev.d);
+				const float force = HitShoveForce(a_ev.d, Cfg().hitForce);
 				Knock(ped, gx, gy, force, heading, kKnockVariant);
 				++counters.ragdolls;
 				pendingKills.push_back({ ped, a_ev, before, 0.0f, 0, x, y, z, gx, gy });
@@ -1400,7 +1400,7 @@ namespace lc::Combat
 					S::GET_CHAR_HEADING(ped, &heading);
 					S::SWITCH_PED_TO_RAGDOLL(ped, ragdollMs, ragdollMs, false, false, false, false);
 					// Minecraft's knockback: 0.4 for a plain hit, more for sprint hits / Knockback.
-					const float force = HitShoveForce(a_ev.d);
+					const float force = HitShoveForce(a_ev.d, Cfg().hitForce);
 					int         variant = kKnockVariant;
 					if (Cfg().debugKnockbackVariant >= 0) {
 						if (knockVariantNext < 0) {
@@ -1457,7 +1457,7 @@ namespace lc::Combat
 						PedTypeName(type), k.ev.formId, k.ev.a, damage, how, k.age, ragdolled ? "ragdolled" : "NOT ragdolled", before, after, killed ? ", killed" : "",
 						(k.ev.flags & proto::kHitProjectile) ? ", projectile" : "", (x - k.x) * k.gx + (y - k.y) * k.gy);
 					if (shoves.size() < 16) {
-						const float force = HitShoveForce(k.ev.d);
+						const float force = HitShoveForce(k.ev.d, Cfg().hitForce);
 						shoves.push_back({ k.ped, k.x, k.y, k.z, kKnockbackCheckSeconds, force, k.gx, k.gy, 0.0f, kKnockVariant });
 					}
 					if (damage > 0) {

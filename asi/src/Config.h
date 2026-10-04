@@ -131,6 +131,10 @@ namespace lc
 		int   fireworkExplosionType = 2;
 		// A Minecraft hit knocks the ped over (SWITCH_PED_TO_RAGDOLL + APPLY_FORCE_TO_PED).
 		bool ragdollOnHit = true;
+		// How hard a Minecraft hit throws a ped or a corpse (CombatMath.h HitShoveForce, CorpseHitForce):
+		// 1 a plain sword hit sends a ped 7 to 9 m and a 30-damage blow a body about 25 m; 0.25 is about
+		// what a gunshot does to a body. 0 to 5.
+		float hitForce = 1.0f;
 		// Test hooks (not in the default ini): DAMAGE_CHAR the puppeted player every 5 s; 15 s into a
 		// session, move the player (out of a car / an interior) to the nearest street, among peds.
 		bool combatSelfTest = false;

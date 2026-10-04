@@ -45,6 +45,8 @@ public final class Proto {
 	public static final int IN_OPEN_MENU = 8;
 	/** LibertyCraft: a GTA IV bullet stopped at a block (kInBulletImpact): code = face, a, b, c = position * 256. */
 	public static final int IN_BULLET_IMPACT = 9;
+	/** LibertyCraft: GTA IV brought the player back after dying, at a hospital (kInRestore): full health and food. */
+	public static final int IN_RESTORE = 10;
 	public static final int HURT_MELEE = 0;
 	public static final int HURT_PROJECTILE = 1;
 	public static final int HURT_MAGIC = 2;

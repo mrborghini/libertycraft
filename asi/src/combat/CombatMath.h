@@ -590,12 +590,12 @@ namespace lc::combat
 
 	// The shove a Minecraft hit gives a ped as it goes over (APPLY_FORCE_TO_PED's force as Knock applies
 	// it, a third of it upward), by Minecraft's knockback (0.4 a plain hit, about 0.9 with a sprint or
-	// Knockback I, up to 2 with Knockback II on a sprint). Measured in game (a ragdolling ped or body on
-	// a pavement, how far it went in 1 s): force 7.2 sent them 7 to 9 m and 18.4 25 m, a gunshot moves a
-	// body a metre or so; this gives a plain hit about 1.5 m and the hardest about 4.
-	inline float HitShoveForce(float a_knockback)
+	// Knockback I, up to 2 with Knockback II on a sprint), times HitForce (a_scale). Measured in game (a
+	// ragdolling ped or body on a pavement, how far it went in 1 s): force 7.2 (a plain hit at 1) sent
+	// them 7 to 9 m and 18.4 25 m; a gunshot moves a body a metre or so (about HitForce 0.25).
+	inline float HitShoveForce(float a_knockback, float a_scale)
 	{
-		return std::clamp(1.0f + 1.5f * std::clamp(a_knockback, 0.0f, 2.0f), 1.0f, 4.0f);
+		return std::max(a_scale, 0.0f) * (4.0f + 8.0f * std::clamp(a_knockback, 0.0f, 2.0f));
 	}
 
 	// GTA IV's SWITCH_PED_TO_RAGDOLL takes a ragdoll kind in its fourth argument (the script headers' first
@@ -666,13 +666,11 @@ namespace lc::combat
 		return std::clamp(0.5f + std::max(a_speed, 0.0f) * 0.35f, 1.0f, 6.0f);
 	}
 
-	// The push a corpse gets from a Minecraft hit: its knockback (HitShoveForce) and a little for its damage
-	// (MC units); a projectile pushes less. A plain 30-damage blow about 2 m, an arrow about 1 (QA: the
-	// old force 18.4 sent a body 25 m in a second).
-	inline float CorpseHitForce(float a_knockback, float a_mcDamage, bool a_projectile)
+	// The push a corpse gets from a Minecraft hit: its knockback and damage (MC units) together, times
+	// HitForce (a_scale). At 1 a plain 30-damage blow is force 18.4 (a body flies about 25 m).
+	inline float CorpseHitForce(float a_knockback, float a_mcDamage, float a_scale)
 	{
-		const float f = HitShoveForce(a_knockback) + 0.02f * std::clamp(a_mcDamage, 0.0f, 30.0f);
-		return std::clamp(a_projectile ? f * 0.7f : f, 0.8f, 4.5f);
+		return std::max(a_scale, 0.0f) * (4.0f + 6.0f * std::clamp(a_knockback, 0.0f, 2.0f) + 0.4f * std::clamp(a_mcDamage, 0.0f, 30.0f));
 	}
 
 	// ---- vehicles -------------------------------------------------------------------------------

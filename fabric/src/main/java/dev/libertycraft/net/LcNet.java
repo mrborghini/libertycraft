@@ -40,6 +40,20 @@ public final class LcNet {
 		}
 	}
 
+	/** Guest -> server: the guest's GTA IV brought them back after dying (as proto::InputEvent kInRestore). */
+	public record Restore() implements CustomPacketPayload {
+		public static final Type<Restore> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LibertyCraft.MOD_ID, "restore"));
+		public static final StreamCodec<RegistryFriendlyByteBuf, Restore> CODEC = StreamCodec.unit(new Restore());
+
+		@Override
+		public Type<? extends CustomPacketPayload> type() {
+			return TYPE;
+		}
+	}
+
+	// When each guest last asked for a Restore (server ticks): one a minute at most, so it can't be a heal button.
+	private static final java.util.Map<java.util.UUID, Integer> LAST_RESTORE = new java.util.HashMap<>();
+
 	/** Server -> guest: the guest died in Minecraft, so their GTA IV player dies too. */
 	public record Died(int attackerFormId) implements CustomPacketPayload {
 		public static final Type<Died> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LibertyCraft.MOD_ID, "died"));
@@ -114,6 +128,20 @@ public final class LcNet {
 			context.server().execute(() -> dev.libertycraft.world.HostDrive.follow(player, payload.x(), payload.y(), payload.z(), payload.yaw(), payload.flags()));
 		});
 		PayloadTypeRegistry.serverboundPlay().register(Hurt.TYPE, Hurt.CODEC);
+		PayloadTypeRegistry.serverboundPlay().register(Restore.TYPE, Restore.CODEC);
+		ServerPlayNetworking.registerGlobalReceiver(Restore.TYPE, (payload, context) -> {
+			ServerPlayer player = context.player();
+			context.server().execute(() -> {
+				int now = context.server().getTickCount();
+				Integer last = LAST_RESTORE.get(player.getUUID());
+				if (last != null && now - last < 20 * 60) {
+					LibertyCraft.LOG.info("[LibertyCraft] guest {} asked for a restore again within a minute; ignored", player.getPlainTextName());
+					return;
+				}
+				LAST_RESTORE.put(player.getUUID(), now);
+				HostCombat.restorePlayer(player);
+			});
+		});
 		PayloadTypeRegistry.serverboundPlay().register(DigOpen.TYPE, DigOpen.CODEC);
 		PayloadTypeRegistry.serverboundPlay().register(DigReveal.TYPE, DigReveal.CODEC);
 		ServerPlayNetworking.registerGlobalReceiver(DigOpen.TYPE, (payload, context) -> {

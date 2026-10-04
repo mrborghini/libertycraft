@@ -277,6 +277,23 @@ public final class HostCombat {
 		}
 	}
 
+	/**
+	 * GTA IV brought the player back after dying (wasted, at a hospital): full health and a full food bar.
+	 * Runs on the server thread.
+	 */
+	public static void restorePlayer(ServerPlayer player) {
+		if (!player.isAlive()) {
+			return;
+		}
+		float healthBefore = player.getHealth();
+		var food = player.getFoodData();
+		int foodBefore = food.getFoodLevel();
+		player.setHealth(player.getMaxHealth());
+		food.setFoodLevel(20);
+		food.setSaturation(5.0F);
+		LibertyCraft.LOG.info("[LibertyCraft] GTA IV respawned the player: health {} -> {}, food {} -> 20", healthBefore, player.getHealth(), foodBefore);
+	}
+
 	/** LibertyCraft's damage type for GTA IV's hits that have no stand-in to blame (data/libertycraft/damage_type/gta.json). */
 	public static final ResourceKey<net.minecraft.world.damagesource.DamageType> GTA_DAMAGE =
 		ResourceKey.create(Registries.DAMAGE_TYPE, Identifier.fromNamespaceAndPath(LibertyCraft.MOD_ID, "gta"));
