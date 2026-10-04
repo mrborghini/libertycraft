@@ -400,7 +400,7 @@ float4 PSMain(VSOut i) : COLOR0
 	// ---- GTA's world in the blocks' shadow: a full-screen pass over GTA's frame ------------------
 	// Multiplies the frame (blend: dest x src) by render/Shadows.h DarkenFactor where the blocks shade
 	// what GTA lit: GTA's depth buffer (s0) gives each pixel's position, its neighbours the normal.
-	// PS constants: c1-c13 GTA's lighting, c14-c27 the shadow, c28-c30 the camera-relative ray at view
+	// PS constants: c1-c13 GTA's lighting (c9.y its tone mapping's saturation, c9.z its gamma), c14-c27 the shadow, c28-c30 the camera-relative ray at view
 	// depth 1 (ndc.x * c28 + ndc.y * c29 + c30), c31 depth: x near, y log2(far/near), z 1 =
 	// FusionFix's logarithmic depth, w far; c32 x 1/width, y 1/height, z strength, w 1 = s1 holds GTA's
 	// G-buffer 2, whose z scales GTA's ambient (its sun pass: ambient * gbuffer2.z).
@@ -412,6 +412,7 @@ float4 dkDepth : register(c31);
 float4 dkScreen : register(c32);
 sampler2D gtaDepth : register(s0);
 sampler2D gtaGBuffer2 : register(s1);
+static const float3 kLum = float3(0.2125, 0.7154, 0.0721);  // GTA's luminance weights
 
 float4 VSMain(float4 pos : POSITION) : POSITION
 {
@@ -452,16 +453,26 @@ float4 PSMain(float2 vpos : VPOS) : COLOR0
 		float down = saturate(0.5 - 0.5 * n.z);
 		float ao = dkScreen.w > 0.5 ? tex2Dlod(gtaGBuffer2, float4(pc * dkScreen.xy, 0.0, 0.0)).z : 1.0;
 		float3 amb = max(ambient0.rgb + ambient1.rgb * down, 0.0) * ao;
-		float3 sun = sunColor.rgb * ndl;
+		float3 sun = max(sunColor.rgb, 0.0) * ndl;
 		float3 lit = amb + sun * s.x;
-		float3 shaded = amb + sun * s.y;
-		float3 ratio = float3(lit.x > 1e-4 ? shaded.x / lit.x : 1.0, lit.y > 1e-4 ? shaded.y / lit.y : 1.0, lit.z > 1e-4 ? shaded.z / lit.z : 1.0);
-		ratio = saturate(ratio);
+		float3 shaded = amb + sun * min(s.y, s.x);
 		float ramp = saturate((dc - fogParams.x) / max(fogParams.y - fogParams.x, 0.001));
 		float nearRamp = saturate(dc / max(fogParams.x, 0.001));
 		float fog = saturate(fogParams.w * nearRamp + (1.0 - fogParams.w) * ramp + fogParams.z) * fogColor.w;
-		ratio = lerp(ratio, float3(1.0, 1.0, 1.0), fog);
-		ratio = pow(max(ratio, 1e-4), max(tone.z, 0.1));
+		shaded = lerp(shaded, lit, fog);
+		// As GTA's tone mapping sees both: its saturation step and its luminance gamma (DarkenFactor).
+		float lumL = dot(lit, kLum);
+		float lumS = dot(shaded, kLum);
+		float rl = clamp(lumS / max(lumL, 1e-6), 1e-4, 1.0);
+		float g = clamp(tone.z, 0.1, 4.0);
+		float neutral = pow(rl, g);
+		float sat = saturate(tone.y);
+		float3 tl = lumL * (1.0 - sat) + lit * sat;
+		float3 ts = lumS * (1.0 - sat) + shaded * sat;
+		float3 ratio = ts / max(tl, 1e-6) * pow(rl, g - 1.0);
+		ratio = lerp(float3(neutral, neutral, neutral), ratio, step(1e-4 * lumL, tl));  // a channel without light: the grey answer
+		ratio = clamp(ratio, 0.5 * neutral, min(2.0 * neutral, 1.0));
+		ratio = lumL > 1e-4 ? ratio : float3(1.0, 1.0, 1.0);
 		o = lerp(float3(1.0, 1.0, 1.0), ratio, saturate(dkScreen.z));
 	}
 	return float4(o, 1.0);

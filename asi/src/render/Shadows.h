@@ -102,6 +102,11 @@ namespace lc::render
 		{
 			return a_a[0] * a_b[0] + a_a[1] * a_b[1] + a_a[2] * a_b[2] + a_a[3] * a_b[3];
 		}
+		// GTA's luminance weights (its tone mapping's, render/Lighting.h Luminance).
+		inline float Lum(const float a_rgb[3])
+		{
+			return 0.2125f * a_rgb[0] + 0.7154f * a_rgb[1] + 0.0721f * a_rgb[2];
+		}
 		// f = (1, k >= 1, k >= 2, k >= 3)
 		inline void Flags(int a_k, float a_f[4])
 		{
@@ -382,22 +387,53 @@ namespace lc::render
 	}
 
 	// ---- GTA's world in the blocks' shadow ------------------------------------------------------------
-	// How much a GTA pixel darkens when the blocks shade it: GTA lit it with ambient + sun * N.L * g (g
-	// its own shadow), the blocks leave ambient + sun * N.L * c (c <= g). The ratio, per colour channel,
-	// in HDR; fog (which the shadow doesn't reach) pulls it back towards 1; GTA's tone mapping makes the
-	// picture ~ HDR ^ gamma (deSatContrastGamma.z), so the frame is multiplied by ratio ^ gamma.
-	// a_strength 1 = as GTA would have shaded it.
-	inline void DarkenFactor(const float a_amb[3], const float a_sun[3], float a_ndl, float a_g, float a_c, float a_fog, float a_gamma, float a_strength,
-		float a_out[3])
+	// How much a GTA pixel darkens, per colour channel, when the blocks shade it. Our pass runs after
+	// GTA's tone mapping, so the ratio is taken where GTA's own shadows end up, in the picture:
+	//  1. HDR light: GTA lit the pixel with ambient * ao + sun * N.L * g (g its own shadow), the blocks
+	//     leave ambient * ao + sun * N.L * c (c <= g). Fog (which the shadow doesn't reach) pulls the
+	//     shaded light back towards the lit one.
+	//  2. GTA's tone mapping of both (rage_postfx): exposure and ColorCorrect scale every pixel alike, so
+	//     they cancel; the saturation step lerp(lum, x, deSatContrastGamma.x) and the luminance gamma
+	//     lum ^ (deSatContrastGamma.z - 1) don't. The surface is taken as grey (its colour cancels but for
+	//     the luminance weights).
+	// The ambient is bluish by day and the sun yellow, at night the moon is cyan: the HDR ratio alone,
+	// per channel, is strongly tinted (blue at noon, pink at night), while GTA desaturates its picture
+	// (to 0.34 at night) before it is seen, so its own shadows are only a little tinted. This gives the
+	// tint GTA's own shadows have on the same ground. Every channel only darkens and never strays further
+	// than x2 from what a grey light would give; no light, a NaN or a zero luminance leaves the pixel
+	// alone. a_sat, a_gamma: deSatContrastGamma.x and .z. a_strength 1 = as GTA would have shaded it.
+	inline void DarkenFactor(const float a_amb[3], const float a_sun[3], float a_ndl, float a_g, float a_c, float a_fog, float a_sat, float a_gamma,
+		float a_strength, float a_out[3])
 	{
+		const float k = std::isfinite(a_strength) ? std::clamp(a_strength, 0.0f, 1.0f) : 0.0f;
+		const float fog = std::isfinite(a_fog) ? std::clamp(a_fog, 0.0f, 1.0f) : 0.0f;
+		const float s = std::isfinite(a_sat) ? std::clamp(a_sat, 0.0f, 1.0f) : 1.0f;
+		const float gamma = std::isfinite(a_gamma) ? std::clamp(a_gamma, 0.1f, 4.0f) : 1.0f;
+		const float ndl = std::isfinite(a_ndl) ? std::clamp(a_ndl, 0.0f, 1.0f) : 0.0f;
+		const float g = std::isfinite(a_g) ? std::clamp(a_g, 0.0f, 1.0f) : 1.0f;
+		const float c = std::isfinite(a_c) ? std::clamp(a_c, 0.0f, g) : g;
+		float       lit[3], shaded[3];
 		for (int i = 0; i < 3; ++i) {
-			const float lit = a_amb[i] + a_sun[i] * a_ndl * a_g;
-			const float shaded = a_amb[i] + a_sun[i] * a_ndl * a_c;
-			float       r = lit > 1e-4f ? shaded / lit : 1.0f;
-			r = std::clamp(r, 0.0f, 1.0f);
-			r = r + (1.0f - r) * std::clamp(a_fog, 0.0f, 1.0f);
-			r = std::pow(r, std::max(a_gamma, 0.1f));
-			a_out[i] = 1.0f + (r - 1.0f) * std::clamp(a_strength, 0.0f, 1.0f);
+			const float amb = std::isfinite(a_amb[i]) ? std::max(a_amb[i], 0.0f) : 0.0f;
+			const float sun = std::isfinite(a_sun[i]) ? std::max(a_sun[i], 0.0f) : 0.0f;
+			lit[i] = amb + sun * ndl * g;
+			shaded[i] = amb + sun * ndl * c;
+			shaded[i] += (lit[i] - shaded[i]) * fog;
+		}
+		const float lumLit = shdetail::Lum(lit), lumShaded = shdetail::Lum(shaded);
+		if (!(lumLit > 1e-4f) || !std::isfinite(lumLit) || !std::isfinite(lumShaded)) {
+			a_out[0] = a_out[1] = a_out[2] = 1.0f;
+			return;
+		}
+		const float rl = std::clamp(lumShaded / lumLit, 1e-4f, 1.0f);
+		const float neutral = std::pow(rl, gamma);   // what a grey light would give
+		const float lumGamma = std::pow(rl, gamma - 1.0f);
+		for (int i = 0; i < 3; ++i) {
+			const float tl = lumLit * (1.0f - s) + lit[i] * s;
+			const float ts = lumShaded * (1.0f - s) + shaded[i] * s;
+			float       r = tl > 1e-4f * lumLit ? ts / tl * lumGamma : neutral;
+			r = std::clamp(r, 0.5f * neutral, std::min(2.0f * neutral, 1.0f));
+			a_out[i] = 1.0f + (r - 1.0f) * k;
 		}
 	}
 

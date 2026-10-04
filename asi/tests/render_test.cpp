@@ -704,26 +704,95 @@ static void TestRayBasis()
 
 static void TestDarken()
 {
+	auto lum = [](const float* a_c) { return 0.2125 * a_c[0] + 0.7154 * a_c[1] + 0.0721 * a_c[2]; };
+	const float grey[3] = { 0.5f, 0.5f, 0.5f }, white[3] = { 3.0f, 3.0f, 3.0f };
 	const float amb[3] = { 0.4f, 0.5f, 0.7f }, sun[3] = { 3.0f, 2.8f, 2.4f };
 	float       out[3];
-	DarkenFactor(amb, sun, 0.8f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, out);  // no block shadow: unchanged
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 1.0f, 0.0f, 0.7f, 1.0f, 1.0f, out);  // no block shadow: unchanged
 	NEAR(out[0], 1.0, 1e-6);
-	DarkenFactor(amb, sun, 0.8f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // GTA already shades it: no double darkening
+	NEAR(out[2], 1.0, 1e-6);
+	DarkenFactor(amb, sun, 0.8f, 0.0f, 0.0f, 0.0f, 0.7f, 1.0f, 1.0f, out);  // GTA already shades it: no double darkening
 	NEAR(out[1], 1.0, 1e-6);
-	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // the blocks shade a sunlit pixel
-	NEAR(out[0], 0.4 / (0.4 + 3.0 * 0.8), 1e-5);
-	CHECK(out[2] > out[0]);  // the shadow keeps the sky's blue
-	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 0.8f, 1.0f, out);  // GTA's tone mapping gamma
-	NEAR(out[0], std::pow(0.4 / (0.4 + 3.0 * 0.8), 0.8), 1e-5);
-	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, out);  // all fog: no shadow
+	DarkenFactor(amb, sun, 0.8f, 0.4f, 0.4f, 0.0f, 0.7f, 1.0f, 1.0f, out);  // GTA's half shadow, the blocks add none
+	NEAR(out[1], 1.0, 1e-6);
+	// Grey light: the HDR ratio, raised to GTA's gamma, the same in every channel.
+	DarkenFactor(grey, white, 0.8f, 1.0f, 0.0f, 0.0f, 0.7f, 1.0f, 1.0f, out);
+	NEAR(out[0], 0.5 / (0.5 + 3.0 * 0.8), 1e-5);
+	NEAR(out[1], out[0], 1e-6);
+	NEAR(out[2], out[0], 1e-6);
+	DarkenFactor(grey, white, 0.8f, 1.0f, 0.0f, 0.0f, 0.7f, 0.8f, 1.0f, out);
+	NEAR(out[1], std::pow(0.5 / (0.5 + 3.0 * 0.8), 0.8), 1e-5);
+	// Tinted light, saturation 0 (GTA's picture fully desaturated): only the luminance darkens.
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 0.0f, 0.9f, 1.0f, out);
+	{
+		const float lit[3] = { 0.4f + 2.4f, 0.5f + 2.24f, 0.7f + 1.92f };
+		const double rl = lum(amb) / lum(lit);
+		NEAR(out[0], std::pow(rl, 0.9), 1e-5);
+		NEAR(out[1], out[0], 1e-6);
+		NEAR(out[2], out[0], 1e-6);
+	}
+	// Saturation 1: the per-channel HDR ratio times the luminance's gamma; the shadow keeps the sky's blue.
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 1.0f, 0.9f, 1.0f, out);
+	{
+		const float lit[3] = { 0.4f + 2.4f, 0.5f + 2.24f, 0.7f + 1.92f };
+		const double rl = lum(amb) / lum(lit);
+		NEAR(out[0], 0.4 / 2.8 * std::pow(rl, -0.1), 1e-5);
+		CHECK(out[2] > out[1] && out[1] > out[0]);
+	}
+	// 13:30 clear sky (the constants GTA used, its sidewalk's ao about 0.64): GTA's own shadow on that
+	// sidewalk measured 0.18 0.24 0.35 of the sunlit ground; the HDR ratio alone (old) gave 0.18 0.24 0.38.
+	{
+		const float a[3] = { 3.317f * 0.64f, 4.169f * 0.64f, 5.873f * 0.64f };
+		const float s[3] = { 0.914f * 15.31f, 0.753f * 15.31f, 0.522f * 15.31f };
+		DarkenFactor(a, s, 0.915f, 1.0f, 0.0f, 0.0f, 0.68f, 0.89f, 1.0f, out);
+		NEAR(out[0], 0.19, 0.02);
+		NEAR(out[1], 0.24, 0.02);
+		NEAR(out[2], 0.34, 0.02);
+	}
+	// 22:00 clear (cyan moon, GTA's saturation 0.34): only a trace of pink left (the HDR ratio: red +36 %).
+	{
+		const float a[3] = { 1.321f * 0.64f, 2.065f * 0.64f, 2.533f * 0.64f };
+		const float s[3] = { 0.165f * 2.74f, 0.663f * 2.74f, 0.694f * 2.74f };
+		DarkenFactor(a, s, 0.79f, 1.0f, 0.0f, 0.0f, 0.34f, 0.806f, 1.0f, out);
+		CHECK(out[0] / out[1] < 1.15f && out[2] / out[1] < 1.1f);
+		CHECK(out[1] > 0.45f && out[1] < 0.7f);
+	}
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 1.0f, 0.7f, 1.0f, 1.0f, out);  // all fog: no shadow
 	NEAR(out[0], 1.0, 1e-6);
-	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, out);  // strength 0
+	DarkenFactor(amb, sun, 0.8f, 1.0f, 0.0f, 0.0f, 0.7f, 1.0f, 0.0f, out);  // strength 0
 	NEAR(out[0], 1.0, 1e-6);
-	DarkenFactor(amb, sun, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // facing away from the sun
+	DarkenFactor(amb, sun, 0.0f, 1.0f, 0.0f, 0.0f, 0.7f, 1.0f, 1.0f, out);  // facing away from the sun
 	NEAR(out[0], 1.0, 1e-6);
 	const float none[3] = { 0, 0, 0 };
-	DarkenFactor(none, none, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, out);  // no light at all: left alone
+	DarkenFactor(none, none, 1.0f, 1.0f, 0.0f, 0.0f, 0.7f, 1.0f, 1.0f, out);  // no light at all: left alone
 	NEAR(out[0], 1.0, 1e-6);
+	const float nan = std::nanf("");
+	const float bad[3] = { nan, 0.5f, 0.5f };
+	DarkenFactor(bad, sun, nan, 1.0f, 0.0f, nan, nan, nan, 1.0f, out);  // garbage in: finite, never brighter
+	for (float v : out) {
+		CHECK(std::isfinite(v) && v >= 0.0f && v <= 1.0f);
+	}
+	// Any light, any GTA settings: every channel only darkens, and stays within x2 of the luminance's ratio.
+	{
+		std::uint32_t seed = 12345;
+		auto          rnd = [&](float a_lo, float a_hi) {
+            seed = seed * 1664525u + 1013904223u;
+            return a_lo + (a_hi - a_lo) * float(seed >> 8) / float(1u << 24);
+		};
+		int bad_ = 0;
+		for (int t = 0; t < 20000; ++t) {
+			const float a[3] = { rnd(-1.0f, 8.0f), rnd(-1.0f, 8.0f), rnd(-1.0f, 8.0f) };
+			const float s[3] = { rnd(0.0f, 20.0f), rnd(0.0f, 20.0f), rnd(0.0f, 20.0f) };
+			const float g = rnd(0.0f, 1.0f);
+			const float gamma = rnd(0.3f, 1.5f);
+			DarkenFactor(a, s, rnd(0.0f, 1.0f), g, rnd(0.0f, g), rnd(0.0f, 1.0f), rnd(0.0f, 1.5f), gamma, 1.0f, out);
+			const float lo = std::min({ out[0], out[1], out[2] }), hi = std::max({ out[0], out[1], out[2] });
+			if (!(lo >= 0.0f && hi <= 1.0f && std::isfinite(lo) && std::isfinite(hi) && (hi <= 1e-6f || hi <= 4.0f * lo + 1e-6f))) {
+				++bad_;
+			}
+		}
+		CHECK(bad_ == 0);
+	}
 	ShadowParams p;
 	p.ndl[0] = 4.0f / 3.0f, p.ndl[1] = -1.0f / 3.0f;
 	const float n[3] = { 0, 0, 1 }, l[3] = { 0, 0.6f, 0.8f };
