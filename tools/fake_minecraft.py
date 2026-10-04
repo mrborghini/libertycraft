@@ -70,6 +70,9 @@ EXPLOSION_FIREWORK, EXPLOSION_BY_PLAYER = 1, 2  # LibertyCraft: kEvExplosion fla
 EV_BUMP = 7  # LibertyCraft: the player ran into a ped's stand-in
 EV_MOB = 8  # LibertyCraft: a hostile mob near the player (flags = entity id, formId = the ped it is after)
 MOB_AFTER_PLAYER = 1 << 16  # kEvMob weapon bits: it is after the player
+EV_SET_TIME, EV_SET_WEATHER = 9, 10  # LibertyCraft: /time and /weather (a = GTA hour; formId = GTA weather, a = seconds)
+GTA_WEATHERS = ["EXTRASUNNY", "SUNNY", "SUNNY_WINDY", "CLOUDY", "RAIN", "DRIZZLE", "FOGGY", "LIGHTNING"]
+SKY_WEATHER_SHIFT = 8  # SkyState flags bits 8 to 11: GTA's weather + 1 (0: not sent)
 BUMP_SPRINTING, BUMP_FLYING, BUMP_NEW_CONTACT = 1, 2, 4
 ACTOR_FMT = "<II7fHH24s"  # formId, flags, x, y, z, yaw, width, height, healthFrac, level, pad, name
 ACTOR_DEAD = 2
@@ -725,6 +728,15 @@ def combat_step(bridge, args, sky, t, t0, st):
         radius = min(3.0 + args.firework_ahead, 8.0)  # FireworkBlast.radius
         bridge.push_event(EV_EXPLOSION, 0, cx, py + 1.0, cz, radius, EXPLOSION_FIREWORK | EXPLOSION_BY_PLAYER, args.firework_ahead)
         print(f"combat: the player's firework rocket ({args.firework_ahead} star(s), radius {radius:.0f}) burst 8 blocks ahead at MC {cx:.1f} {py + 1.0:.1f} {cz:.1f}")
+    if args.set_time is not None and not st.get("time_sent") and t >= t0:
+        st["time_sent"] = True
+        bridge.push_event(EV_SET_TIME, 0, args.set_time, 0.0, 0.0, 0.0)
+        print(f"sky: /time set: GTA's clock to {args.set_time:.2f} (kEvSetTime)")
+    if args.set_weather and not st.get("weather_sent") and t >= t0:
+        st["weather_sent"] = True
+        name, _, secs = args.set_weather.partition(",")
+        bridge.push_event(EV_SET_WEATHER, GTA_WEATHERS.index(name.upper()), float(secs or 0), 0.0, 0.0, 0.0)
+        print(f"sky: /weather: GTA's weather to {name.upper()} for {float(secs or 0):.0f} s (kEvSetWeather)")
     if args.die_after > 0 and not st["died_sent"] and t >= t0 + args.die_after:
         st["died_sent"] = True
         bridge.push_event(EV_PLAYER_DIED, 0)
@@ -773,6 +785,9 @@ def main():
     ap.add_argument("--firework-ahead", type=int, default=0, metavar="STARS",
                     help="once: a firework rocket with STARS stars bursts 8 blocks in front of the player (kEvExplosion, firework flags)")
     ap.add_argument("--die-after", type=float, default=0.0, metavar="S", help="send kEvPlayerDied S s after combat starts")
+    ap.add_argument("--set-time", type=float, default=None, metavar="HOUR", help="send kEvSetTime (GTA's clock to HOUR) when combat starts")
+    ap.add_argument("--set-weather", default="", metavar="TYPE[,S]",
+                    help="send kEvSetWeather (e.g. LIGHTNING,60; 0 s: until told otherwise) when combat starts")
     ap.add_argument("--combat-delay", type=float, default=10.0, metavar="S", help="combat flags start S s after the first teleport ack")
     ap.add_argument("--combat-interval", type=float, default=2.0, metavar="S", help="seconds between --hit-nearest-actor hits")
     ap.add_argument("--hit-kind", choices=("ped", "vehicle", "any"), default="ped",
@@ -965,8 +980,10 @@ def main():
                 last_print = t
                 if sky:
                     fl = "|".join(n for bit, n in SKY_FLAGS.items() if sky[1] & bit) or "-"
+                    wi = (sky[1] >> SKY_WEATHER_SHIFT & 0xF) - 1
+                    weather = GTA_WEATHERS[wi] if 0 <= wi < len(GTA_WEATHERS) else "?"
                     line = (f"sky: flags {fl} world {sky[2]} epoch {sky[3]} pos {sky[4]:.2f} {sky[5]:.2f} {sky[6]:.2f} yaw {sky[7]:.1f} "
-                            f"pitch {sky[8]:.1f} tp #{sky[9]} viewport {sky[10]}x{sky[11]} hour {sky[12]:.2f}; host heartbeat "
+                            f"pitch {sky[8]:.1f} tp #{sky[9]} viewport {sky[10]}x{sky[11]} hour {sky[12]:.2f} weather {weather}; host heartbeat "
                             f"{now_ms() - host_beat} ms old")
                     if line != last_sky:
                         print(line)

@@ -12,6 +12,7 @@
 #include "Link.h"
 #include "Log.h"
 #include "MobFight.h"
+#include "SkyControl.h"
 #include "NpcBlocks.h"
 #include "collision/Rays.h"
 #include "combat/CombatMath.h"
@@ -3823,6 +3824,12 @@ namespace lc::Combat
 		std::uint32_t   popped = 0;
 		proto::McEvent  ev{};
 		for (; popped < 64 && link.PopEvent(ev); ++popped) {
+			if (ev.type == proto::kEvSetTime || ev.type == proto::kEvSetWeather) {
+				if (playable) {
+					SkyControl::OnEvent(ev);  // Minecraft's /time and /weather (not combat: Combat=0 or not)
+				}
+				continue;
+			}
 			if (!Cfg().combat) {
 				LC_LOG_EVERY(1000, "event from Minecraft: type %u form %08X a %.2f b %.2f c %.2f d %.2f flags 0x%X (Combat=0: ignored)", ev.type, ev.formId,
 					ev.a, ev.b, ev.c, ev.d, ev.flags);

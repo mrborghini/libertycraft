@@ -29,13 +29,19 @@ import net.minecraft.world.item.MinecartItem;
 import net.minecraft.world.item.SpawnEggItem;
 import net.minecraft.world.item.alchemy.Potion;
 import net.minecraft.world.item.alchemy.PotionContents;
+import net.minecraft.world.item.component.DyedItemColor;
+import net.minecraft.world.item.component.FireworkExplosion;
 import net.minecraft.world.item.component.Fireworks;
+import net.minecraft.world.item.equipment.trim.ArmorTrim;
+import net.minecraft.world.item.equipment.trim.TrimMaterial;
+import net.minecraft.world.item.equipment.trim.TrimPattern;
+import it.unimi.dsi.fastutil.ints.IntList;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.level.block.state.properties.WoodType;
 
 /**
- * The starter kit: nine themed shulker boxes (each up to 27 different items, see {@link KitPacker})
+ * The starter kit: thirteen themed shulker boxes (each up to 27 different items, see {@link KitPacker})
  * and a few things loose in the hotbar, so nobody has to open a box to get going.
  *
  * <p>The lists come from the registries where the game has them (spawn eggs, the potions the
@@ -96,6 +102,10 @@ public final class StarterKit {
 		boxes.add(box("Travel", DyeColor.LIGHT_BLUE, travel()));
 		boxes.add(box("Building", DyeColor.ORANGE, building()));
 		boxes.add(box("Combat", DyeColor.BLACK, combat()));
+		boxes.add(box("Armor Sets", DyeColor.GRAY, armorSets()));
+		boxes.add(box("Enchanted Armor", DyeColor.CYAN, enchantedArmor()));
+		boxes.add(box("Trimmed Armor", DyeColor.PINK, trimmedArmor()));
+		boxes.add(box("Fireworks", DyeColor.LIME, fireworks()));
 		boxes.add(box("Food & Farming", DyeColor.GREEN, food()));
 		boxes.add(box("Potions & Utility", DyeColor.MAGENTA, potions()));
 		boxes.add(box("Nether & End", DyeColor.PURPLE, netherAndEnd()));
@@ -282,31 +292,41 @@ public final class StarterKit {
 
 	private List<Part> combat() {
 		List<Part> parts = new ArrayList<>();
-		for (String id : List.of("netherite_sword", "netherite_axe", "netherite_spear", "mace", "bow", "crossbow", "trident", "shield",
-			"netherite_helmet", "netherite_chestplate", "netherite_leggings", "netherite_boots", "totem_of_undying")) {
-			parts.add(new Loose(one(id)));
+		// Enchanted weapons loose (the armour has boxes of its own), every tier unenchanted in a chest.
+		for (var kind : List.of(Enchantments.SHARPNESS, Enchantments.SMITE, Enchantments.BANE_OF_ARTHROPODS)) {
+			parts.add(new Loose(enchanted(one("netherite_sword"), kind.identifier().getPath(), kind, 5, Enchantments.LOOTING, 3, Enchantments.FIRE_ASPECT, 2,
+				Enchantments.SWEEPING_EDGE, 3, Enchantments.KNOCKBACK, 2, Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1)));
 		}
+		parts.add(new Loose(enchanted(one("netherite_axe"), null, Enchantments.SHARPNESS, 5, Enchantments.EFFICIENCY, 5, Enchantments.UNBREAKING, 3,
+			Enchantments.MENDING, 1)));
+		parts.add(new Loose(enchanted(one("netherite_spear"), null, Enchantments.LUNGE, 3, Enchantments.SHARPNESS, 5, Enchantments.UNBREAKING, 3,
+			Enchantments.MENDING, 1)));
+		parts.add(new Loose(enchanted(one("mace"), "density", Enchantments.DENSITY, 5, Enchantments.WIND_BURST, 3, Enchantments.FIRE_ASPECT, 2,
+			Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1)));
+		parts.add(new Loose(enchanted(one("mace"), "breach", Enchantments.BREACH, 4, Enchantments.WIND_BURST, 3, Enchantments.UNBREAKING, 3,
+			Enchantments.MENDING, 1)));
+		parts.add(new Loose(enchanted(one("trident"), "loyalty", Enchantments.LOYALTY, 3, Enchantments.CHANNELING, 1, Enchantments.IMPALING, 5,
+			Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1)));
+		parts.add(new Loose(enchanted(one("trident"), "riptide", Enchantments.RIPTIDE, 3, Enchantments.IMPALING, 5, Enchantments.UNBREAKING, 3,
+			Enchantments.MENDING, 1)));
+		parts.add(new Loose(enchanted(one("bow"), "infinity", Enchantments.POWER, 5, Enchantments.PUNCH, 2, Enchantments.FLAME, 1, Enchantments.INFINITY, 1,
+			Enchantments.UNBREAKING, 3)));
+		parts.add(new Loose(enchanted(one("bow"), "mending", Enchantments.POWER, 5, Enchantments.PUNCH, 2, Enchantments.FLAME, 1, Enchantments.MENDING, 1,
+			Enchantments.UNBREAKING, 3)));
+		parts.add(new Loose(enchanted(one("shield"), null, Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1)));
+		parts.add(new Loose(one("totem_of_undying")));
 		parts.add(new Loose(full("arrow")));
 		parts.add(new Loose(full("spectral_arrow")));
+		parts.add(new Loose(full("wind_charge")));
 		parts.add(new Loose(of("enchanted_golden_apple", 16)));
 		parts.add(new Loose(full("golden_apple")));
-		// The best tier is loose above; the rest of every tier in chests.
-		Predicate<String> notNetherite = id -> !id.startsWith("netherite_");
-		parts.add(new Chested("Swords, axes and spears", ones(concat(
-			scan(id -> id.endsWith("_sword") && notNetherite.test(id)),
-			scan(id -> id.endsWith("_axe") && notNetherite.test(id)),
-			scan(id -> id.endsWith("_spear") && notNetherite.test(id))))));
+		parts.add(new Chested("Unenchanted weapons", ones(concat(
+			scan(id -> id.endsWith("_sword")), scan(id -> id.endsWith("_axe")), scan(id -> id.endsWith("_spear")),
+			items(List.of("mace", "trident", "bow", "crossbow", "shield"))))));
 		parts.add(new Chested("Pickaxes, shovels and hoes", ones(concat(
 			scan(id -> id.endsWith("_pickaxe")),
 			scan(id -> id.endsWith("_shovel")),
 			scan(id -> id.endsWith("_hoe"))))));
-		List<Item> armour = new ArrayList<>();
-		for (Item item : scan(id -> (id.endsWith("_helmet") || id.endsWith("_chestplate") || id.endsWith("_leggings") || id.endsWith("_boots"))
-			&& notNetherite.test(id))) {
-			armour.add(item);
-		}
-		armour.add(Items.WOLF_ARMOR);
-		parts.add(new Chested("Armour", ones(armour)));
 		List<ItemStack> arrows = new ArrayList<>();
 		for (Holder<Potion> potion : brewed(Items.LINGERING_POTION)) {
 			if (!potion.value().getEffects().isEmpty()) {
@@ -315,6 +335,200 @@ public final class StarterKit {
 		}
 		parts.add(new Bundled("Tipped arrows", arrows));
 		return parts;
+	}
+
+	private static final List<String> SET = List.of("helmet", "chestplate", "leggings", "boots");
+
+	/** A tier's four pieces ({@code golden} gives golden_helmet, ...). */
+	private List<ItemStack> set(String tier) {
+		List<ItemStack> pieces = new ArrayList<>();
+		for (String piece : SET) {
+			ItemStack stack = one(tier + "_" + piece);
+			if (!stack.isEmpty()) {
+				pieces.add(stack);
+			}
+		}
+		return pieces;
+	}
+
+	/** Rows of nine: two sets of four and one more piece per row. */
+	private List<Part> armorSets() {
+		List<Part> parts = new ArrayList<>();
+		addLoose(parts, set("netherite"), set("diamond"), List.of(one("elytra")));
+		addLoose(parts, set("iron"), set("golden"), List.of(one("turtle_helmet")));
+		addLoose(parts, set("chainmail"), set("leather"), List.of(one("wolf_armor")));
+		return parts;
+	}
+
+	/**
+	 * Netherite sets in each kind of Protection, a diamond set, and some extras. Every piece has
+	 * Unbreaking III and Mending; helmets Respiration III and Aqua Affinity, leggings Swift Sneak III,
+	 * boots Feather Falling IV with Depth Strider III (Soul Speed III for the nether's fire and blast
+	 * sets); the Protection and Blast Protection chestplates have Thorns III.
+	 */
+	private List<Part> enchantedArmor() {
+		List<Part> parts = new ArrayList<>();
+		List<ItemStack> protection = enchantedSet("netherite", Enchantments.PROTECTION, false, true);
+		List<ItemStack> fire = enchantedSet("netherite", Enchantments.FIRE_PROTECTION, true, false);
+		List<ItemStack> blast = enchantedSet("netherite", Enchantments.BLAST_PROTECTION, true, true);
+		List<ItemStack> projectile = enchantedSet("netherite", Enchantments.PROJECTILE_PROTECTION, false, false);
+		ItemStack elytra = enchanted(one("elytra"), null, Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1);
+		ItemStack turtle = enchanted(one("turtle_helmet"), null, Enchantments.PROTECTION, 4, Enchantments.RESPIRATION, 3, Enchantments.AQUA_AFFINITY, 1,
+			Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1);
+		addLoose(parts, protection, fire, List.of(elytra));
+		addLoose(parts, blast, projectile, List.of(turtle));
+		List<ItemStack> extras = new ArrayList<>();
+		extras.add(enchanted(one("netherite_boots"), "frost_walker", Enchantments.PROTECTION, 4, Enchantments.FEATHER_FALLING, 4, Enchantments.FROST_WALKER, 2,
+			Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1));
+		for (var book : List.of(Enchantments.MENDING, Enchantments.UNBREAKING, Enchantments.PROTECTION, Enchantments.SWIFT_SNEAK)) {
+			extras.add(book(book));
+		}
+		addLoose(parts, enchantedSet("diamond", Enchantments.PROTECTION, false, false), extras);
+		return parts;
+	}
+
+	private List<ItemStack> enchantedSet(String tier, ResourceKey<Enchantment> protection, boolean soulSpeed, boolean thorns) {
+		String kind = protection.identifier().getPath();
+		List<ItemStack> pieces = new ArrayList<>();
+		for (ItemStack piece : set(tier)) {
+			enchanted(piece, kind, protection, 4, Enchantments.UNBREAKING, 3, Enchantments.MENDING, 1);
+			String id = id(piece.getItem());
+			if (id.endsWith("_helmet")) {
+				enchanted(piece, null, Enchantments.RESPIRATION, 3, Enchantments.AQUA_AFFINITY, 1);
+			} else if (id.endsWith("_chestplate") && thorns) {
+				enchanted(piece, null, Enchantments.THORNS, 3);
+			} else if (id.endsWith("_leggings")) {
+				enchanted(piece, null, Enchantments.SWIFT_SNEAK, 3);
+			} else if (id.endsWith("_boots")) {
+				enchanted(piece, null, Enchantments.FEATHER_FALLING, 4, soulSpeed ? Enchantments.SOUL_SPEED : Enchantments.DEPTH_STRIDER, 3);
+			}
+			pieces.add(piece);
+		}
+		return pieces;
+	}
+
+	/**
+	 * Sets with every armour trim pattern (one each), the trim materials taken in turn, dyed leather
+	 * sets, and the smithing templates.
+	 */
+	private List<Part> trimmedArmor() {
+		List<Holder<TrimPattern>> patterns = sortedHolders(Registries.TRIM_PATTERN);
+		List<Holder<TrimMaterial>> materials = sortedHolders(Registries.TRIM_MATERIAL);
+		if (patterns.isEmpty() || materials.isEmpty()) {
+			missing.add("armour trims (no trim patterns or materials in this world)");
+		}
+		int[] next = {0, 0}; // pattern, material
+		java.util.function.BiFunction<List<ItemStack>, Integer, List<ItemStack>> trim = (pieces, dye) -> {
+			if (patterns.isEmpty() || materials.isEmpty() || pieces.isEmpty()) {
+				return pieces;
+			}
+			Holder<TrimPattern> pattern = patterns.get(next[0]++ % patterns.size());
+			String tier = id(pieces.getFirst().getItem()).replaceFirst("_.*", "").replace("golden", "gold");
+			Holder<TrimMaterial> material = materials.get(next[1]++ % materials.size());
+			if (key(material).equals(tier)) { // gold on gold looks like nothing: take the next one
+				material = materials.get(next[1]++ % materials.size());
+			}
+			for (ItemStack piece : pieces) {
+				piece.set(DataComponents.TRIM, new ArmorTrim(material, pattern));
+				if (dye != null) {
+					piece.set(DataComponents.DYED_COLOR, new DyedItemColor(dye));
+				}
+			}
+			return pieces;
+		};
+		List<Part> parts = new ArrayList<>();
+		List<ItemStack> templates = fulls(concat(scan(id -> id.endsWith("_armor_trim_smithing_template")), items(List.of("netherite_upgrade_smithing_template"))));
+		List<ItemStack> more = new ArrayList<>();
+		for (String tier : List.of("netherite", "netherite", "diamond", "diamond", "iron", "golden")) {
+			more.addAll(trim.apply(set(tier), null));
+		}
+		addLoose(parts, trim.apply(set("netherite"), null), trim.apply(set("diamond"), null), List.of());
+		parts.add(new Bundled("Smithing templates", templates));
+		addLoose(parts, trim.apply(set("iron"), null), trim.apply(set("golden"), null), List.of());
+		parts.add(new Chested("More trimmed sets", more));
+		addLoose(parts, trim.apply(set("copper"), null), trim.apply(set("chainmail"), null), List.of());
+		List<ItemStack> leather = new ArrayList<>();
+		for (DyeColor colour : List.of(DyeColor.RED, DyeColor.BLUE, DyeColor.BLACK, DyeColor.WHITE, DyeColor.GREEN, DyeColor.PURPLE)) {
+			leather.addAll(trim.apply(set("leather"), colour.getTextureDiffuseColor()));
+		}
+		parts.add(new Chested("Dyed leather sets", leather));
+		return parts;
+	}
+
+	/** Shapes for the firework stars, as the crafting recipe makes them (small ball needs no extra). */
+	private static final List<FireworkExplosion.Shape> SHAPES = List.of(FireworkExplosion.Shape.SMALL_BALL, FireworkExplosion.Shape.LARGE_BALL,
+		FireworkExplosion.Shape.STAR, FireworkExplosion.Shape.CREEPER, FireworkExplosion.Shape.BURST);
+	private static final List<DyeColor> BRIGHT = List.of(DyeColor.RED, DyeColor.ORANGE, DyeColor.YELLOW, DyeColor.LIME, DyeColor.GREEN, DyeColor.CYAN,
+		DyeColor.LIGHT_BLUE, DyeColor.BLUE, DyeColor.PURPLE, DyeColor.MAGENTA, DyeColor.PINK, DyeColor.WHITE);
+
+	/**
+	 * Rockets for the crossbow (GTA IV turns them into rocket blasts, wider with more stars): a row per
+	 * flight duration, 1 to 7 stars left to right, each named with its blast radius.
+	 */
+	private List<Part> fireworks() {
+		List<Part> parts = new ArrayList<>();
+		List<List<Part>> extras = List.of(
+			List.of(new Loose(enchanted(one("crossbow"), "multishot", Enchantments.MULTISHOT, 1, Enchantments.QUICK_CHARGE, 3, Enchantments.UNBREAKING, 3,
+					Enchantments.MENDING, 1)),
+				new Loose(enchanted(one("crossbow"), "piercing", Enchantments.PIERCING, 4, Enchantments.QUICK_CHARGE, 3, Enchantments.UNBREAKING, 3,
+					Enchantments.MENDING, 1))),
+			List.of(new Loose(full("gunpowder")), new Loose(full("paper"))),
+			List.of(new Bundled("Firework stars: every shape", fireworkStars()),
+				new Bundled("Star extras: trail, twinkle, shapes", fulls(List.of("diamond", "glowstone_dust", "fire_charge", "gold_nugget", "feather", "creeper_head")))));
+		for (int flight = 1; flight <= 3; flight++) {
+			for (int stars = 1; stars <= 7; stars++) {
+				parts.add(new Loose(rocket(stars, flight)));
+			}
+			parts.addAll(extras.get(flight - 1));
+		}
+		return parts;
+	}
+
+	private ItemStack rocket(int stars, int flight) {
+		ItemStack rocket = full("firework_rocket");
+		if (rocket.isEmpty()) {
+			return rocket;
+		}
+		List<FireworkExplosion> explosions = new ArrayList<>();
+		for (int j = 0; j < stars; j++) {
+			int k = stars * 3 + flight * 5 + j * 2;
+			explosions.add(new FireworkExplosion(SHAPES.get((stars + flight + j) % SHAPES.size()),
+				IntList.of(BRIGHT.get(k % BRIGHT.size()).getFireworkColor(), BRIGHT.get((k + 5) % BRIGHT.size()).getFireworkColor()),
+				IntList.of(BRIGHT.get((k + 8) % BRIGHT.size()).getFireworkColor()), (j + flight) % 2 == 0, (j + stars) % 3 == 0));
+		}
+		rocket.set(DataComponents.FIREWORKS, new Fireworks(flight, explosions));
+		rocket.set(DataComponents.CUSTOM_NAME, KitPacker.plain(Component.literal(rocketName(stars, flight))));
+		return rocket;
+	}
+
+	/** "5 stars: 8 m blast (flight 2)": the blast GTA IV makes of it (FireworkBlast). */
+	static String rocketName(int stars, int flight) {
+		return stars + (stars == 1 ? " star" : " stars") + ": " + Math.round(dev.libertycraft.combat.FireworkBlast.radius(stars)) + " m blast (flight " + flight + ")";
+	}
+
+	/** One firework star of each shape, each in its own colours. */
+	private List<ItemStack> fireworkStars() {
+		List<ItemStack> stars = new ArrayList<>();
+		for (int i = 0; i < SHAPES.size(); i++) {
+			ItemStack star = full("firework_star");
+			if (star.isEmpty()) {
+				break;
+			}
+			star.set(DataComponents.FIREWORK_EXPLOSION, new FireworkExplosion(SHAPES.get(i), IntList.of(BRIGHT.get(i * 2).getFireworkColor()),
+				IntList.of(BRIGHT.get((i * 2 + 7) % BRIGHT.size()).getFireworkColor()), i % 2 == 0, i % 2 == 1));
+			stars.add(star);
+		}
+		return stars;
+	}
+
+	/** Loose parts from {@code groups} in order (rows of the box when they add up to nine). */
+	@SafeVarargs
+	private static void addLoose(List<Part> parts, List<ItemStack>... groups) {
+		for (List<ItemStack> group : groups) {
+			for (ItemStack stack : group) {
+				parts.add(new Loose(stack));
+			}
+		}
 	}
 
 	private List<Part> food() {
@@ -471,6 +685,62 @@ public final class StarterKit {
 		} else {
 			missing.add("enchantment " + key.identifier().getPath());
 		}
+	}
+
+	/**
+	 * {@code stack} with the enchantments given as key, level pairs; with a {@code kind} (an id such
+	 * as fire_protection) it is named "Netherite Helmet (Fire Protection)" to tell it from its twins.
+	 */
+	@SuppressWarnings("unchecked")
+	private ItemStack enchanted(ItemStack stack, @org.jspecify.annotations.Nullable String kind, Object... keysAndLevels) {
+		if (stack.isEmpty()) {
+			return stack;
+		}
+		for (int i = 0; i + 1 < keysAndLevels.length; i += 2) {
+			enchant(stack, (ResourceKey<Enchantment>) keysAndLevels[i], (Integer) keysAndLevels[i + 1]);
+		}
+		if (kind != null) {
+			String words = Character.toUpperCase(kind.charAt(0)) + kind.substring(1).replace('_', ' ');
+			stack.set(DataComponents.CUSTOM_NAME, KitPacker.plain(Component.empty().append(stack.getItemName()).append(" (" + titleCase(words) + ")")));
+		}
+		return stack;
+	}
+
+	private static String titleCase(String words) {
+		StringBuilder out = new StringBuilder();
+		for (String word : words.split(" ")) {
+			if (!out.isEmpty()) {
+				out.append(' ');
+			}
+			out.append(word.equals("of") ? word : Character.toUpperCase(word.charAt(0)) + word.substring(1));
+		}
+		return out.toString();
+	}
+
+	/** An enchanted book with {@code key} at its highest level. */
+	private ItemStack book(ResourceKey<Enchantment> key) {
+		ItemStack book = one("enchanted_book");
+		Optional<? extends Holder<Enchantment>> holder = context.registries().lookupOrThrow(Registries.ENCHANTMENT).get(key);
+		if (book.isEmpty() || holder.isEmpty()) {
+			missing.add("enchanted book " + key.identifier().getPath());
+			return ItemStack.EMPTY;
+		}
+		var stored = new net.minecraft.world.item.enchantment.ItemEnchantments.Mutable(net.minecraft.world.item.enchantment.ItemEnchantments.EMPTY);
+		stored.set(holder.get(), holder.get().value().getMaxLevel());
+		book.set(DataComponents.STORED_ENCHANTMENTS, stored.toImmutable());
+		return book;
+	}
+
+	/** A data-driven registry's entries, by id. */
+	private <T> List<Holder<T>> sortedHolders(ResourceKey<? extends net.minecraft.core.Registry<? extends T>> registry) {
+		List<Holder<T>> holders = new ArrayList<>();
+		context.registries().lookupOrThrow(registry).listElements().forEach(holders::add);
+		holders.sort(java.util.Comparator.comparing(StarterKit::key));
+		return holders;
+	}
+
+	private static String key(Holder<?> holder) {
+		return holder.unwrapKey().map(k -> k.identifier().getPath()).orElse("");
 	}
 
 	/** The potions the brewing recipes make in {@code form} (potion, splash or lingering), in registry order. */

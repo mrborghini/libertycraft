@@ -44,7 +44,7 @@ import net.minecraft.world.phys.AABB;
  * GTA IV's clock hostile mobs (vanilla's overworld weights) 24 to 64 blocks from the player, outdoors
  * at about the player's height, up to 24 around them; by day now and then a few farm animals on GTA IV's
  * grass, up to 8. Minecraft then treats them as its own: they despawn far away as vanilla's do, undead
- * burn by day (Minecraft's day time follows GTA IV's clock while the link is up: {@link #syncTime}),
+ * burn by day (Minecraft's day time follows GTA IV's clock while the link is up: {@link HostSky}),
  * they hunt GTA IV's peds and get run over.
  *
  * <p>Everything it spawns carries the entity tag {@link #TAG}. Turning it off discards those quietly
@@ -172,7 +172,6 @@ public final class MobSpawner {
 		if (!BlockyCity.isMirror(level)) {
 			return;
 		}
-		syncTime(level, SKY.gameHour);
 		if (!enabled || !HostCollision.active() || player.isSpectator()) {
 			return;
 		}
@@ -181,22 +180,6 @@ public final class MobSpawner {
 			spawnPack(level, player, SpawnRules.HOSTILES, SpawnRules.HOSTILE_CAP, true);
 		} else if (server.getTickCount() % ANIMALS_EVERY == 0) {
 			spawnPack(level, player, SpawnRules.ANIMALS, SpawnRules.PASSIVE_CAP, false);
-		}
-	}
-
-	/**
-	 * Minecraft's day time follows GTA IV's clock (Minecraft's day count stays): undead burn when GTA IV's
-	 * sun is up, beds and the rest go by its night.
-	 */
-	static void syncTime(ServerLevel level, float hour) {
-		var clock = level.dimensionType().defaultClock();
-		if (clock.isEmpty()) {
-			return;
-		}
-		long now = level.getDefaultClockTime();
-		long d = SpawnRules.clockCorrection(now, hour);
-		if (d != 0) {
-			level.clockManager().setTotalTicks(clock.get(), now + d);
 		}
 	}
 

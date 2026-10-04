@@ -97,8 +97,8 @@ class StarterKitTest {
 	}
 
 	@Test
-	void nineBoxesThatFitAndLoseNothing() {
-		assertEquals(9, kit.boxes().size());
+	void boxesThatFitAndLoseNothing() {
+		assertEquals(13, kit.boxes().size());
 		for (StarterKit.Box box : kit.boxes()) {
 			KitPacker.Result packed = box.packed();
 			assertTrue(packed.slots().size() <= KitPacker.SLOTS, box.title() + " uses " + packed.slots().size() + " slots");
@@ -110,8 +110,10 @@ class StarterKitTest {
 			assertTrue(box.stack().has(DataComponents.CUSTOM_NAME), box.title());
 		}
 		// Box names tell them apart, and so do their colours.
-		assertEquals(9, kit.boxes().stream().map(StarterKit.Box::title).distinct().count());
-		assertEquals(9, kit.boxes().stream().map(StarterKit.Box::colour).distinct().count());
+		assertEquals(kit.boxes().size(), kit.boxes().stream().map(StarterKit.Box::title).distinct().count());
+		assertEquals(kit.boxes().size(), kit.boxes().stream().map(StarterKit.Box::colour).distinct().count());
+		// They fit the main inventory (slots 9 to 35) and leave room to pick things up.
+		assertTrue(StarterKit.FIRST_BOX_SLOT + kit.boxes().size() <= Inventory.INVENTORY_SIZE - 9);
 	}
 
 	@Test
@@ -190,12 +192,155 @@ class StarterKitTest {
 		assertTrue(plain.getItem().toString().contains("pickaxe"));
 		assertTrue(plain.getEnchantments().isEmpty());
 		assertTrue(kit.placements().stream().anyMatch(p -> p.slot() < 9 && p.stack().is(Items.ENDER_CHEST)));
-		for (int i = 0; i < 9; i++) {
+		for (int i = 0; i < kit.boxes().size(); i++) {
 			assertSame(kit.boxes().get(i).stack(), placed(StarterKit.FIRST_BOX_SLOT + i));
 		}
+		// The hotbar is the eight items it always was.
+		assertEquals(8, kit.placements().stream().filter(p -> p.slot() < Inventory.SELECTION_SIZE).count());
 		// Fireworks for elytra flight fly for 3.
 		assertTrue(leaves(box("Travel").stack()).stream().anyMatch(stack -> stack.is(Items.FIREWORK_ROCKET)
 			&& stack.get(DataComponents.FIREWORKS).flightDuration() == 3));
+	}
+
+	@Test
+	void combatHasWeaponsAndNoArmour() {
+		List<ItemStack> combat = leaves(box("Combat").stack());
+		assertFalse(combat.stream().anyMatch(StarterKitTest::isArmourPiece), "armour left in Combat");
+		for (Item weapon : List.of(Items.NETHERITE_SWORD, Items.MACE, Items.TRIDENT, Items.BOW, Items.CROSSBOW, Items.SHIELD, Items.WOODEN_SPEAR)) {
+			assertTrue(combat.stream().anyMatch(stack -> stack.is(weapon)), "no " + weapon);
+		}
+		assertEquals(2, combat.stream().filter(stack -> stack.is(Items.MACE) && level(stack, Enchantments.WIND_BURST) == 3).count());
+		assertTrue(combat.stream().anyMatch(stack -> stack.is(Items.NETHERITE_SWORD) && level(stack, Enchantments.SMITE) == 5));
+		assertTrue(combat.stream().anyMatch(stack -> stack.is(Items.TRIDENT) && level(stack, Enchantments.RIPTIDE) == 3));
+		assertTrue(combat.stream().anyMatch(stack -> stack.is(Items.ENCHANTED_GOLDEN_APPLE)));
+	}
+
+	@Test
+	void armorSetsHaveEveryTier() {
+		List<ItemStack> sets = leaves(box("Armor Sets").stack());
+		for (String tier : List.of("leather", "chainmail", "iron", "golden", "diamond", "netherite")) {
+			for (String piece : List.of("helmet", "chestplate", "leggings", "boots")) {
+				Item item = BuiltInRegistries.ITEM.getValue(Identifier.withDefaultNamespace(tier + "_" + piece));
+				assertTrue(sets.stream().anyMatch(stack -> stack.is(item)), "no " + tier + " " + piece);
+			}
+		}
+		for (Item extra : List.of(Items.TURTLE_HELMET, Items.WOLF_ARMOR, Items.ELYTRA)) {
+			assertTrue(sets.stream().anyMatch(stack -> stack.is(extra)), "no " + extra);
+		}
+		assertEquals(KitPacker.SLOTS, box("Armor Sets").packed().slots().size());
+	}
+
+	@Test
+	void enchantedArmorIsMaxedOut() {
+		List<ItemStack> pieces = leaves(box("Enchanted Armor").stack()).stream().filter(StarterKitTest::isArmourPiece).toList();
+		for (var kind : List.of(Enchantments.PROTECTION, Enchantments.FIRE_PROTECTION, Enchantments.BLAST_PROTECTION, Enchantments.PROJECTILE_PROTECTION)) {
+			for (String piece : List.of("helmet", "chestplate", "leggings", "boots")) {
+				assertTrue(pieces.stream().anyMatch(stack -> id(stack).equals("netherite_" + piece) && level(stack, kind) == 4), "netherite " + piece + " of " + kind);
+			}
+		}
+		assertEquals(4, pieces.stream().filter(stack -> id(stack).startsWith("diamond_") && level(stack, Enchantments.PROTECTION) == 4).count());
+		for (ItemStack piece : pieces) {
+			String id = id(piece);
+			assertEquals(3, level(piece, Enchantments.UNBREAKING), id);
+			assertEquals(1, level(piece, Enchantments.MENDING), id);
+			if (id.endsWith("_helmet")) {
+				assertEquals(3, level(piece, Enchantments.RESPIRATION), id);
+				assertEquals(1, level(piece, Enchantments.AQUA_AFFINITY), id);
+			} else if (id.endsWith("_leggings")) {
+				assertEquals(3, level(piece, Enchantments.SWIFT_SNEAK), id);
+			} else if (id.endsWith("_boots")) {
+				assertEquals(4, level(piece, Enchantments.FEATHER_FALLING), id);
+				assertTrue(level(piece, Enchantments.DEPTH_STRIDER) == 3 || level(piece, Enchantments.SOUL_SPEED) == 3 || level(piece, Enchantments.FROST_WALKER) == 2, id);
+			}
+		}
+		assertTrue(pieces.stream().anyMatch(stack -> level(stack, Enchantments.THORNS) == 3));
+		assertTrue(pieces.stream().anyMatch(stack -> level(stack, Enchantments.SOUL_SPEED) == 3));
+		// Twins are told apart by name.
+		assertTrue(pieces.stream().anyMatch(stack -> stack.getHoverName().getString().equals("Netherite Helmet (Fire Protection)")));
+	}
+
+	@Test
+	void trimmedArmorUsesEveryPatternAndTemplate() {
+		List<ItemStack> leaves = leaves(box("Trimmed Armor").stack());
+		var patterns = registries.lookupOrThrow(net.minecraft.core.registries.Registries.TRIM_PATTERN).listElements().toList();
+		Set<Object> usedPatterns = new java.util.HashSet<>();
+		Set<Object> usedMaterials = new java.util.HashSet<>();
+		Set<Integer> dyes = new java.util.HashSet<>();
+		for (ItemStack stack : leaves) {
+			var trim = stack.get(DataComponents.TRIM);
+			if (trim != null) {
+				usedPatterns.add(trim.pattern().value());
+				usedMaterials.add(trim.material().value());
+			}
+			var dye = stack.get(DataComponents.DYED_COLOR);
+			if (dye != null) {
+				dyes.add(dye.rgb());
+			}
+		}
+		assertEquals(patterns.size(), usedPatterns.size(), "every trim pattern on a set");
+		assertTrue(usedMaterials.size() >= 8, "materials: " + usedMaterials.size());
+		assertTrue(dyes.size() >= 3, "dyed leather colours: " + dyes.size());
+		for (Item template : BuiltInRegistries.ITEM.stream().filter(item -> BuiltInRegistries.ITEM.getKey(item).getPath().endsWith("_smithing_template")).toList()) {
+			assertTrue(leaves.stream().anyMatch(stack -> stack.is(template)), "no " + template);
+		}
+	}
+
+	@Test
+	void fireworksForEveryStarCountAndFlight() {
+		List<ItemStack> leaves = leaves(box("Fireworks").stack());
+		Set<net.minecraft.world.item.component.FireworkExplosion.Shape> shapes = new java.util.HashSet<>();
+		Set<Integer> colours = new java.util.HashSet<>();
+		boolean trail = false;
+		boolean twinkle = false;
+		for (int flight = 1; flight <= 3; flight++) {
+			for (int stars = 1; stars <= 7; stars++) {
+				int f = flight;
+				int n = stars;
+				ItemStack rocket = leaves.stream().filter(stack -> stack.is(Items.FIREWORK_ROCKET)).filter(stack -> stack.get(DataComponents.FIREWORKS).flightDuration() == f
+					&& stack.get(DataComponents.FIREWORKS).explosions().size() == n).findFirst().orElseThrow(() -> new AssertionError(n + " stars, flight " + f));
+				assertEquals(64, rocket.getCount());
+				String name = rocket.getHoverName().getString();
+				assertEquals(StarterKit.rocketName(stars, flight), name);
+				assertTrue(name.contains(Math.round(dev.libertycraft.combat.FireworkBlast.radius(stars)) + " m blast"), name);
+				for (var explosion : rocket.get(DataComponents.FIREWORKS).explosions()) {
+					shapes.add(explosion.shape());
+					colours.addAll(explosion.colors());
+					trail |= explosion.hasTrail();
+					twinkle |= explosion.hasTwinkle();
+				}
+			}
+		}
+		assertEquals("5 stars: 8 m blast (flight 2)", StarterKit.rocketName(5, 2));
+		assertEquals(5, shapes.size());
+		assertTrue(colours.size() >= 6);
+		assertTrue(trail && twinkle);
+		assertEquals(5, leaves.stream().filter(stack -> stack.is(Items.FIREWORK_STAR)).map(stack -> stack.get(DataComponents.FIREWORK_EXPLOSION).shape()).distinct().count());
+		assertTrue(leaves.stream().anyMatch(stack -> stack.is(Items.GUNPOWDER) && stack.getCount() == 64));
+		assertTrue(leaves.stream().anyMatch(stack -> stack.is(Items.PAPER) && stack.getCount() == 64));
+		assertTrue(leaves.stream().anyMatch(stack -> stack.is(Items.CROSSBOW) && level(stack, Enchantments.MULTISHOT) == 1 && level(stack, Enchantments.QUICK_CHARGE) == 3));
+		assertTrue(leaves.stream().anyMatch(stack -> stack.is(Items.CROSSBOW) && level(stack, Enchantments.PIERCING) == 4 && level(stack, Enchantments.QUICK_CHARGE) == 3));
+		// A row per flight duration: 1 to 7 stars left to right.
+		List<ItemStack> slots = box("Fireworks").packed().slots();
+		for (int row = 0; row < 3; row++) {
+			for (int col = 0; col < 7; col++) {
+				var fireworks = slots.get(row * 9 + col).get(DataComponents.FIREWORKS);
+				assertEquals(row + 1, fireworks.flightDuration());
+				assertEquals(col + 1, fireworks.explosions().size());
+			}
+		}
+	}
+
+	private static boolean isArmourPiece(ItemStack stack) {
+		String id = id(stack);
+		return id.endsWith("_helmet") || id.endsWith("_chestplate") || id.endsWith("_leggings") || id.endsWith("_boots");
+	}
+
+	private static String id(ItemStack stack) {
+		return BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+	}
+
+	private static int level(ItemStack stack, net.minecraft.resources.ResourceKey<net.minecraft.world.item.enchantment.Enchantment> key) {
+		return stack.getEnchantments().getLevel(registries.lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT).getOrThrow(key));
 	}
 
 	@Test

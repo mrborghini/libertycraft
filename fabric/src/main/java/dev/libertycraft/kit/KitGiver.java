@@ -72,7 +72,7 @@ public final class KitGiver {
 			// A world from before the kit: the player already has the old builder kit, and the new one
 			// would land on top of whatever they collected since. Say how to get it instead.
 			player.addTag(TAG);
-			player.sendSystemMessage(Component.literal("LibertyCraft: type /libertycraft kit for the starter kit (nine themed shulker boxes; it only fills empty slots)."));
+			player.sendSystemMessage(Component.literal("LibertyCraft: type /libertycraft kit for the starter kit (themed shulker boxes; it only fills empty slots)."));
 			LibertyCraft.LOG.info("[LibertyCraft] starter kit: {} is from a world made before it; told them about /libertycraft kit", name);
 			return;
 		}
@@ -209,7 +209,7 @@ public final class KitGiver {
 			String on = props.getProperty("starterKit");
 			if (on == null) {
 				List<String> lines = Files.exists(file) ? new ArrayList<>(Files.readAllLines(file)) : new ArrayList<>(List.of("# LibertyCraft"));
-				lines.add("# A new player starts with the starter kit: nine themed shulker boxes and tools in the hotbar");
+				lines.add("# A new player starts with the starter kit: themed shulker boxes and tools in the hotbar");
 				lines.add("# (false: an empty inventory; /libertycraft kit still gives it).");
 				lines.add("starterKit=true");
 				Files.createDirectories(file.getParent());

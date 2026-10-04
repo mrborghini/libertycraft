@@ -19,6 +19,7 @@
     "ItemMixin",
     "MeleeAttackGoalMixin",
     "MinecraftServerFlightMixin",
+    "MinecraftServerWeatherMixin",
     "MobSightMixin",
     "MobTargetSelectorAccessor",
     "NearestAttackableTargetGoalAccessor",
@@ -27,7 +28,9 @@
     "PressurePlateMixin",
     "ProjectileMixin",
     "ProjectileUtilMixin",
+    "ServerClockManagerMixin",
     "ServerExplosionMixin",
+    "ServerLevelWeatherMixin",
     "ServerPlayerMixin",
     "TargetGoalAccessor",
     "WalkNodeEvaluatorMixin"

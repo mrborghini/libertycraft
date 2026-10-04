@@ -100,6 +100,25 @@ namespace libertycraft::proto
 		// when the bit clears.
 		kSkyInVehicle = 1u << 4,
 	};
+	// LibertyCraft addition (bits only; the layout and kVersion stay SkyCraft's): GTA IV's weather in
+	// SkyState::flags bits 8 to 11, as its weather type + 1 (GtaWeather; 0: the host doesn't say).
+	// Minecraft's own weather cycle stops while linked and follows it: raining for kGtaRain, kGtaDrizzle
+	// and kGtaLightning, thundering for kGtaLightning.
+	inline constexpr std::uint32_t kSkyWeatherShift = 8;
+	inline constexpr std::uint32_t kSkyWeatherMask = 0xFu << kSkyWeatherShift;
+
+	// GTA IV's weather types (FORCE_WEATHER_NOW, CWeather).
+	enum GtaWeather : std::uint32_t
+	{
+		kGtaExtraSunny = 0,
+		kGtaSunny = 1,
+		kGtaSunnyWindy = 2,
+		kGtaCloudy = 3,
+		kGtaRain = 4,
+		kGtaDrizzle = 5,
+		kGtaFoggy = 6,
+		kGtaLightning = 7,
+	};
 
 	// Skyrim's water (lakes, rivers, the sea) around the player, for Minecraft to treat as its own
 	// water: swimming, floating, drowning. Seqlock like SkyState.
@@ -383,6 +402,17 @@ namespace libertycraft::proto
 		// the rest run) and lets GTA IV's bullets hit it (kInMobHit). Not sent again for kMobGoneSeconds:
 		// gone (dead, unloaded, out of range).
 		kEvMob = 8,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): Minecraft's time of day was set
+		// (/time set or add, a night slept through in a bed): a = GTA IV's hour for it, 0 to 24 with the
+		// minutes as its fraction (Minecraft tick t: (t / 1000 + 6) mod 24). The host sets its clock there
+		// (SET_TIME_OF_DAY); Minecraft's clock then follows GTA IV's again (SkyState::gameHour).
+		kEvSetTime = 9,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): Minecraft's weather was set
+		// (/weather clear, rain or thunder): formId = the GtaWeather for it (clear kGtaExtraSunny, rain
+		// kGtaRain, thunder kGtaLightning), a = for how long (seconds; 0: until told otherwise). The host
+		// forces it (FORCE_WEATHER_NOW) and gives GTA IV its own weather back when the time is up
+		// (RELEASE_WEATHER); Minecraft follows GTA IV's weather (kSkyWeatherShift).
+		kEvSetWeather = 10,
 	};
 
 	enum MobFlags : std::uint32_t

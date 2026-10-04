@@ -128,6 +128,10 @@ public final class Proto {
 	public static final int MOB_AFTER_PLAYER = 1 << 16;
 	public static final double MOB_RANGE = 80.0;
 	public static final int MAX_MOBS = 32;
+	/** LibertyCraft: Minecraft's time of day was set (kEvSetTime): a = GTA IV's hour for it (0 to 24, minutes as the fraction). */
+	public static final int EV_SET_TIME = 9;
+	/** LibertyCraft: Minecraft's weather was set (kEvSetWeather): formId = GTA_* weather type, a = seconds (0: until told otherwise). */
+	public static final int EV_SET_WEATHER = 10;
 	// SkyCraft's Skyrim skills (ActorValue). Kept for protocol parity; LibertyCraft never sends
 	// EV_SKILL_USE because GTA IV has no skill XP to feed.
 	public static final int SKILL_BLOCK = 9;
@@ -221,6 +225,12 @@ public final class Proto {
 	public static final int SKY_HOST_DRIVES = 1 << 3;
 	/** With SKY_HOST_DRIVES: in a vehicle; pos is the rider's feet on the mount, yaw the vehicle heading. */
 	public static final int SKY_IN_VEHICLE = 1 << 4;
+	/** LibertyCraft: SkyState flags bits 8 to 11 hold GTA IV's weather type + 1 (0: not sent); see GTA_WEATHER_*. */
+	public static final int SKY_WEATHER_SHIFT = 8;
+	public static final int SKY_WEATHER_MASK = 0xF << SKY_WEATHER_SHIFT;
+	/** GTA IV's weather types (GtaWeather). */
+	public static final int GTA_EXTRA_SUNNY = 0, GTA_SUNNY = 1, GTA_SUNNY_WINDY = 2, GTA_CLOUDY = 3, GTA_RAIN = 4, GTA_DRIZZLE = 5, GTA_FOGGY = 6,
+		GTA_LIGHTNING = 7;
 
 	// McState (relative to OFF_MC_STATE)
 	public static final long MS_SEQ = 0x00;

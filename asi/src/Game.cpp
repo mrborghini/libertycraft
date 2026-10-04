@@ -17,6 +17,7 @@
 #include "Link.h"
 #include "Log.h"
 #include "Perf.h"
+#include "SkyControl.h"
 #include "ViewportRoom.h"
 
 #include <algorithm>
@@ -1106,7 +1107,9 @@ namespace lc::Game
 		// ---- tell Minecraft where the player is and where they look -----------------------------------
 		proto::SkyState sky{};
 		sky.flags = (inGame ? proto::kSkyInGame : 0u) | (paused ? proto::kSkyMenuOpen : 0u) | (loading ? proto::kSkyLoading : 0u)
-		          | (drive.hostDrives ? proto::kSkyHostDrives : 0u) | (drive.inVehicle ? proto::kSkyInVehicle : 0u);
+		          | (drive.hostDrives ? proto::kSkyHostDrives : 0u) | (drive.inVehicle ? proto::kSkyInVehicle : 0u)
+		          | (inGame ? SkyControl::WeatherBits() : 0u);  // GTA IV's weather, for Minecraft's (SkyControl)
+		SkyControl::Tick(dt, inGame && !loading && !paused);
 		sky.worldId = worldId;
 		sky.collisionEpoch = epoch;
 		const McVec skyPos = drive.inVehicle ? GtaToMc(drive.seatFeet) : feetMc;  // in a vehicle: the rider's feet

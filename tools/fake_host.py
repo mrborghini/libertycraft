@@ -114,7 +114,11 @@ class Link:
         head, tail = struct.unpack_from("<Q", self.m, OFF_EVENTS)[0], struct.unpack_from("<Q", self.m, OFF_EVENTS + 0x40)[0]
         while tail < head:
             typ, form, a, b, c, d, flags = struct.unpack_from("<IIffffI", self.m, OFF_EVENTS + 0x80 + (tail % 512) * 32)
-            if typ == 8:  # kEvMob: a hostile mob near the player (every 5 ticks each): only the first of each mob is shown
+            if typ in (9, 10):  # kEvSetTime / kEvSetWeather
+                names = ["EXTRASUNNY", "SUNNY", "SUNNY_WINDY", "CLOUDY", "RAIN", "DRIZZLE", "FOGGY", "LIGHTNING"]
+                print(f"  event from Minecraft: " + (f"set the time to {a:.2f} h" if typ == 9 else
+                      f"set the weather to {names[form] if form < len(names) else form} for {a:.0f} s"))
+            elif typ == 8:  # kEvMob: a hostile mob near the player (every 5 ticks each): only the first of each mob is shown
                 if flags not in self.mobs:
                     self.mobs.add(flags)
                     print(f"  event from Minecraft: mob {flags} at MC {a:.1f} {b:.1f} {c:.1f}, {d:.1f} tall, after actor {form:08X}")

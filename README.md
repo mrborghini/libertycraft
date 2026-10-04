@@ -134,12 +134,22 @@ behind you is dropped and comes back as you return.
 
 A new world starts with a kit. In the hotbar: a netherite pickaxe with Silk Touch, Unbreaking III and
 Efficiency V, a plain diamond pickaxe, cobblestone and planks to bridge with, torches, steak, a crafting
-table and an ender chest. Above them, nine shulker boxes, each its own colour and name: **Spawn Eggs**
-(every mob's egg, monster spawners), **Redstone**, **Travel**, **Building**, **Combat**, **Food &
+table and an ender chest. Above them, thirteen shulker boxes, each its own colour and name: **Spawn
+Eggs** (every mob's egg, monster spawners), **Redstone**, **Travel**, **Building**, **Combat** (enchanted
+swords, axes, maces, tridents, bows and a spear, every tier unenchanted, tipped arrows), **Armor Sets**
+(every tier, a turtle shell, wolf armour, an elytra), **Enchanted Armor** (netherite sets in each kind of
+Protection IV and a diamond set, every piece with Unbreaking III and Mending), **Trimmed Armor** (every
+trim pattern, the trim materials, dyed leather, the smithing templates), **Fireworks**, **Food &
 Farming**, **Potions & Utility** (every brewable potion, drinkable, splash and lingering), **Nether &
 End** and **Spares**. A box holds 27 different things; where a theme has more, they come in bundles (a
 few each of many items, such as one bundle per four spawn eggs) or in named chests of full stacks (place
 the chest to unpack it, as with the building blocks and the potions).
+
+The **Fireworks** box is for the crossbow (one with Multishot, one with Piercing IV, both Quick Charge
+III): a row of rockets per flight duration (1 to 3), each row 1 to 7 stars of every shape and colour,
+64 of each. GTA IV turns a crossbow's rocket into a blast that grows with its stars, and each rocket's
+name says how far: "1 star: 4 m blast" up to "5 stars: 8 m blast" (GTA's full rocket blast; more stars
+only add colour). Firework stars, gunpowder and paper are there to make more.
 
 `/libertycraft kit` gives the kit again in a world you already play in: it only fills empty slots, never
 adds to what you carry, and says what didn't fit. `starterKit=false` in `config/libertycraft.properties`
@@ -164,6 +174,16 @@ Minecraft's mobs and GTA IV's city meet:
   at night by GTA IV's clock hostile mobs 24 to 64 blocks from you on the street (up to 24 around you), by
   day now and then a few farm animals on GTA IV's grass. Undead burn in GTA IV's sun: Minecraft's time of
   day follows GTA IV's clock. `off` removes the mobs it spawned (not those from eggs, spawners or commands).
+
+## One sky
+
+Minecraft's time and weather are GTA IV's. Minecraft's clock follows GTA IV's, and its weather follows
+GTA IV's weather (rain while it rains, thunder in its storms; rain puts out fires and keeps the undead
+from burning). The other way round, `/time set` (day, noon, night, midnight or a tick count) and
+`/time add` set GTA IV's clock (Minecraft's tick 0 is 06:00, so `night` is 19:00 and `midnight` 00:00),
+sleeping through the night in a bed brings GTA IV's morning, and `/weather clear`, `/weather rain` and
+`/weather thunder` (with an optional duration) change GTA IV's weather on the spot (extra sunny, rain, a
+thunderstorm); when the time is up GTA IV's own weather takes over again.
 
 ## Milestones
 
@@ -199,7 +219,8 @@ Mobs: they path over GTA IV's collision as 1/8-block voxels, so very narrow gaps
 furniture still stop them (a mob that finds no path walks straight at its target and may stand at a wall);
 a mob's plain blow doesn't knock a ped over; only the ped a mob is after and police within 25 m react, peds
 in cars don't shoot; GTA IV's vehicles more than 60 m from you (and trains, planes, rotors) don't run mobs
-over; the spawner only uses ground GTA IV has described around you, and beds can't skip GTA IV's night.
+over; the spawner only uses ground GTA IV has described around you. Time and weather: GTA IV's 19:00
+(`/time set night`) is still dusk; GTA IV's cloudy and foggy weathers are clear in Minecraft.
 
 ## Licenses
 

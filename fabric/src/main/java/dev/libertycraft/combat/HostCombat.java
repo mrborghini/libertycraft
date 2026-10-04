@@ -72,6 +72,7 @@ public final class HostCombat {
 		PedTargets.init();
 		PlayerVehicleHits.init();
 		dev.libertycraft.world.MobSpawner.init();
+		dev.libertycraft.world.HostSky.init();
 	}
 
 	public static @Nullable HostActorEntity proxy(int formId) {
