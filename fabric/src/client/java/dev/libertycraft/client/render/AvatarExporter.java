@@ -1023,8 +1023,46 @@ final class AvatarExporter implements SubmitNodeCollector {
 	public void submitTextBackground(PoseStack poseStack, float x0, float y0, float x1, float y1, int color, Font.DisplayMode displayMode, int lightCoords) {
 	}
 
+	/**
+	 * A burning entity's flames, as vanilla's FlameFeatureRenderer draws them: fire_0 and fire_1 in turn,
+	 * stacked up its height, facing the camera, at full block light. They come from the block atlas, so
+	 * GTA IV animates them with the rest of it (HostAtlas). Not on the body's parts (the ragdoll export):
+	 * that is captured standing still, and a flame has to face the camera every frame.
+	 */
 	@Override
 	public void submitFlame(PoseStack poseStack, EntityRenderState renderState, Quaternionf rotation) {
+		if (this.tagParts) {
+			return;
+		}
+		var atlases = Minecraft.getInstance().getAtlasManager();
+		var fire0 = atlases.get(net.minecraft.client.resources.model.ModelBakery.FIRE_0);
+		var fire1 = atlases.get(net.minecraft.client.resources.model.ModelBakery.FIRE_1);
+		this.capture.begin(this.batch(0, UV_BLOCK_ATLAS, PARTICLE));
+		PoseStack.Pose pose = poseStack.last().copy();
+		float s = renderState.boundingBoxWidth * 1.4F;
+		pose.scale(s, s, s);
+		float r = 0.5F, h = renderState.boundingBoxHeight / s, yo = 0.0F, zo = 0.0F;
+		pose.rotate(rotation);
+		pose.translate(0.0F, 0.0F, 0.3F - (int) h * 0.02F);
+		int light = net.minecraft.util.LightCoordsUtil.withBlock(renderState.lightCoords, 15);
+		for (int ss = 0; h > 0.0F; ss++) {
+			var tex = ss % 2 == 0 ? fire0 : fire1;
+			float u0 = tex.getU0(), v0 = tex.getV0(), u1 = tex.getU1(), v1 = tex.getV1();
+			if (ss / 2 % 2 == 0) {
+				float tmp = u1;
+				u1 = u0;
+				u0 = tmp;
+			}
+			this.capture.addVertex(pose, -r, -yo, zo).setColor(-1).setUv(u1, v1).setUv1(0, 10).setLight(light);
+			this.capture.addVertex(pose, r, -yo, zo).setColor(-1).setUv(u0, v1).setUv1(0, 10).setLight(light);
+			this.capture.addVertex(pose, r, 1.4F - yo, zo).setColor(-1).setUv(u0, v0).setUv1(0, 10).setLight(light);
+			this.capture.addVertex(pose, -r, 1.4F - yo, zo).setColor(-1).setUv(u1, v0).setUv1(0, 10).setLight(light);
+			h -= 0.45F;
+			yo -= 0.45F;
+			r *= 0.9F;
+			zo -= 0.03F;
+		}
+		this.capture.flush();
 	}
 
 	@Override

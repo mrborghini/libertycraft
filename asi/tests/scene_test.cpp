@@ -193,23 +193,28 @@ namespace
 
 	void PromptTokens()
 	{
-		using lc::drive::PromptControl;
-		auto t = Wide("Press ~INPUT_PICKUP~ to play.");
-		const int pickup = PromptControl(t.data(), t.size());
-		CHECK(pickup == 23);  // INPUT_PICKUP in ePadControls order
-		CHECK(lc::drive::IsContextAction(pickup));
-		t = Wide("Hold ~INPUT_ATTACK~ to swing, ~INPUT_PICKUP~ to pick up");
-		const int attack = PromptControl(t.data(), t.size());
-		CHECK(attack == 4);
-		CHECK(!lc::drive::IsContextAction(attack));  // hints for attacks, moves, the phone aren't context actions
+		using namespace lc::drive;
+		// The bowling alley's own texts (american.gxt).
+		auto t = Wide("Press ~INPUT_PICKUP~ if you want to bowl.");
+		CHECK(PromptActions(t.data(), t.size()) == kPromptPickup);
+		t = Wide("Press ~INPUT_PICKUP~ to play a half game.~n~Press ~ACCEPT~ to play a full game.");
+		CHECK(PromptActions(t.data(), t.size()) == (kPromptPickup | kPromptAccept));
+		t = Wide("You already have a weapon in this slot.~n~Press ~INPUT_FRONTEND_ACCEPT~ to replace your current weapon.~n~Press ~INPUT_FRONTEND_CANCEL~ to go "
+				 "back.~n~Press ~INPUT_PICKUP~ to quit.~n~~g~9mm $420");
+		CHECK(PromptActions(t.data(), t.size()) == (kPromptPickup | kPromptAccept | kPromptCancel));
+		t = Wide("Use ~PAD_RSTICK_DOWN~ then ~PAD_RSTICK_UP~, angling left or right, to direct the shot.~n~Press ~CANCEL~ to cancel your ready position.");
+		CHECK(PromptActions(t.data(), t.size()) == kPromptCancel);
+		// Attacks and aiming are never offered (pool: "Press ~INPUT_ATTACK~ to continue").
+		t = Wide("Press ~INPUT_ATTACK~ to continue.~n~Hold ~INPUT_AIM~ to aim.");
+		CHECK(PromptActions(t.data(), t.size()) == 0u);
 		t = Wide("Go to the ~y~bowling alley~s~.");
-		CHECK(PromptControl(t.data(), t.size()) == -1);
-		t = Wide("~INPUT_NO_SUCH_THING~");
-		CHECK(PromptControl(t.data(), t.size()) == -1);
+		CHECK(PromptActions(t.data(), t.size()) == 0u);
 		t = Wide("~INPUT_PICK");  // cut off at the buffer's end
-		CHECK(PromptControl(t.data(), t.size() - 1) == -1);
-		CHECK(PromptControl(nullptr, 10) == -1);
-		CHECK(std::string(lc::pad::kControlNames[3]) == "ENTER");
+		CHECK(PromptActions(t.data(), t.size() - 1) == 0u);
+		CHECK(PromptActions(nullptr, 10) == 0u);
+		CHECK(PromptControlOf(kPromptPickup) == 23);  // INPUT_PICKUP in ePadControls order
+		CHECK(std::string(lc::pad::kControlNames[PromptControlOf(kPromptAccept)]) == "FRONTEND_ACCEPT");
+		CHECK(std::string(lc::pad::kControlNames[PromptControlOf(kPromptCancel)]) == "FRONTEND_CANCEL");
 	}
 }
 

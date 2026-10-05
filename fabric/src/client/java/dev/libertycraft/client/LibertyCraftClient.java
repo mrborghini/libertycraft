@@ -38,6 +38,7 @@ public final class LibertyCraftClient implements ClientModInitializer {
 		});
 		// GTA IV's peds and cars that moved into the player put it back out (and cars shove it).
 		ClientTickEvents.END_CLIENT_TICK.register(ProxyPushClient::tick);
+		ClientTickEvents.END_CLIENT_TICK.register(MoverClient::tick);  // fast movers vs GTA IV's props (PropSmash), elytra crashes
 		// Multiplayer testing on one PC: LIBERTYCRAFT_LAN_PORT opens the world to LAN on that port as soon
 		// as it's loaded, and LIBERTYCRAFT_LAN_OFFLINE lets offline (dev) clients join it.
 		net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.JOIN.register((handler, sender, minecraft) -> {

@@ -557,7 +557,10 @@ namespace lc::Render
 			// and the body rides its mount at the seat.
 			const bool nikoMode = st.nikoMode;
 			const bool hostDrivesOnFoot = st.hostDrives && !st.inVehicle;
-			if (alive && !menu && ok) {
+			// (Dying, GTA plays no player and Game counts it as loading: the blocks and the body still show
+			// through the wasted sequence, until its fade is black.)
+			const bool deathScene = menu && NikoBody::DeathSceneShown() && !::Scripting::IS_PAUSE_MENU_ACTIVE() && !::Scripting::IS_SCREEN_FADED_OUT();
+			if (alive && (!menu || deathScene) && ok) {
 				a_f.flags |= render::kFrameDrawWorld;
 			}
 			using OM = Config::OverlayMode;

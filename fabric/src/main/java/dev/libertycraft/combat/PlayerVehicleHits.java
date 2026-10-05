@@ -15,7 +15,11 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Mobs attack the player's own vehicle while the player sits in it. That vehicle has no stand-in (the
+ * Mobs hit the player while GTA IV drives him: on foot (Niko mode, getting back up) GTA IV's player ped
+ * takes the hit (Proto.EV_MOB_HIT_PLAYER: Niko loses health, a heavy blow knocks him over), seated in a
+ * vehicle the vehicle does, as follows.
+ *
+ * <p>Mobs attack the player's own vehicle while the player sits in it. That vehicle has no stand-in (the
  * player's mount sits inside it: {@link Proto#ACTOR_PLAYER_VEHICLE}), so hostile mobs go for the player
  * as usual; a mob's blow or arrow that reaches the seated player hits the vehicle instead, through the
  * same path as hits on any vehicle's stand-in (body and engine damage, windows, fire; an arrow through
@@ -33,14 +37,46 @@ public final class PlayerVehicleHits {
 	public static void init() {
 		ServerLivingEntityEvents.ALLOW_DAMAGE.addPhaseOrdering(EARLY, net.fabricmc.fabric.api.event.Event.DEFAULT_PHASE);
 		ServerLivingEntityEvents.ALLOW_DAMAGE.register(EARLY, (entity, source, amount) -> {
-			if (!(entity instanceof ServerPlayer player) || !(source.getEntity() instanceof Mob) || !Link.active() || !HostDrive.isMount(player.getVehicle())) {
+			if (!(entity instanceof ServerPlayer player) || !(source.getEntity() instanceof Mob) || !Link.active()) {
 				return true;
 			}
-			if (!source.is(DamageTypeTags.IS_EXPLOSION)) {
-				hitVehicle(player, source, amount);
+			if (HostDrive.isMount(player.getVehicle())) {
+				if (!source.is(DamageTypeTags.IS_EXPLOSION)) {
+					hitVehicle(player, source, amount);
+				}
+				return false; // the vehicle takes it, not the player in it
 			}
-			return false; // the vehicle takes it, not the player in it
+			if (HostDrive.drivenByHost(player)) {
+				// GTA IV drives him on foot (Niko mode, getting back up): GTA IV's player takes it. A mob's blast
+				// reaches him as GTA IV's own explosion already (kEvExplosion).
+				if (!source.is(DamageTypeTags.IS_EXPLOSION)) {
+					hitNiko(player, source, amount);
+				}
+				return false;
+			}
+			return true;
 		});
+	}
+
+	/** A mob's blow or projectile on the player GTA IV drives on foot: GTA IV's player ped takes it (Proto.EV_MOB_HIT_PLAYER). */
+	private static void hitNiko(ServerPlayer player, DamageSource source, float amount) {
+		if (amount <= 0.0F || player.isCreative() || player.isSpectator()) {
+			return;
+		}
+		Vec3 from = source.getSourcePosition() != null ? source.getSourcePosition() : player.position();
+		double dx = player.getX() - from.x, dz = player.getZ() - from.z, len = Math.sqrt(dx * dx + dz * dz);
+		float px = len > 1.0E-6 ? (float) (dx / len) : 0.0F, pz = len > 1.0E-6 ? (float) (dz / len) : 0.0F;
+		boolean projectile = source.getDirectEntity() instanceof Projectile;
+		// A blow's knockback is 0.4 plus the mob's own (a ravager's 1.5): what is beyond a plain blow's staggers him.
+		float strength = 0.0F;
+		if (!projectile && source.getEntity() instanceof Mob mob) {
+			strength = (float) Math.max(0.0, 0.4 + mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_KNOCKBACK) - 0.45);
+		}
+		Link.pushEvent(Proto.EV_MOB_HIT_PLAYER, 0, amount, px, pz, strength, projectile ? Proto.HIT_PROJECTILE : 0, HostActorEntity.weaponClass(source));
+		if (logs++ < 100) {
+			LibertyCraft.LOG.info("[LibertyCraft] {} hit the player GTA IV drives for {}{}: GTA IV's player takes it", source.getEntity().getType().toShortString(),
+				String.format("%.1f", amount), projectile ? " (projectile)" : "");
+		}
 	}
 
 	private static void hitVehicle(ServerPlayer player, DamageSource source, float amount) {

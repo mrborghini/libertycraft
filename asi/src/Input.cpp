@@ -10,6 +10,7 @@
 #include "HostDrive.h"
 #include "Link.h"
 #include "Log.h"
+#include "drive/Prompt.h"
 #include "Perf.h"
 
 #include <algorithm>
@@ -66,10 +67,25 @@ namespace lc::Input
 		// (select, back, dialling). Minecraft gets none of them then, except key-ups (it may have
 		// seen the key go down before the phone came out).
 		std::atomic<bool> phoneOut{ false };
-		// A context action GTA's help text offers (SetPrompt): its pad control, -1 none. promptKeyHeld: the
-		// context key went down to GTA (its key-up goes there too).
-		std::atomic<int>  promptControl{ -1 };
-		std::atomic<bool> promptKeyHeld{ false };
+		// The context actions and menu choices GTA's help text offers (SetPrompt: drive::PromptAction bits);
+		// promptKeysHeld: the keys of theirs that went down to GTA (their key-ups go there too).
+		std::atomic<unsigned> promptActions{ 0 };
+		std::atomic<unsigned> promptKeysHeld{ 0 };
+
+		// The choice a key makes while it's offered: ContextKey (E) picks up, Enter accepts, Backspace cancels.
+		unsigned PromptKeyAction(std::uint32_t a_dik)
+		{
+			if (a_dik != 0 && a_dik == Config::Get().ContextKeyDik()) {
+				return drive::kPromptPickup;
+			}
+			if (a_dik == 0x1C || a_dik == 0x9C) {  // Enter, keypad Enter
+				return drive::kPromptAccept;
+			}
+			if (a_dik == 0x0E) {  // Backspace
+				return drive::kPromptCancel;
+			}
+			return 0;
+		}
 
 		bool IsArrowKey(std::uint32_t a_dik) { return a_dik == 0xC8 || a_dik == 0xD0 || a_dik == 0xCB || a_dik == 0xCD; }
 		bool IsPhoneKey(std::uint32_t a_dik)
@@ -253,13 +269,14 @@ namespace lc::Input
 				if (dik == kDikEscape || dik == kDikGrave) {
 					return false;  // the game's (pause menu, console mods)
 				}
-				// A context action is offered ("Press E to ..."): its key is GTA's, not Minecraft's inventory.
-				if (dik == Config::Get().ContextKeyDik() && dik != 0 && (promptControl.load(std::memory_order_relaxed) >= 0 || promptKeyHeld.load())) {
+				// A context action or menu choice is offered ("Press E to play a half game. Press Enter to play a
+				// full game."): its key is GTA's, not Minecraft's (E would open the inventory).
+				if (const unsigned act = PromptKeyAction(dik); act && ((promptActions.load(std::memory_order_relaxed) & act) || (promptKeysHeld.load() & act))) {
 					if (down && !repeat) {
-						promptKeyHeld = true;
-						LC_LOG("context key pressed: to GTA (its offered action), not Minecraft");
+						promptKeysHeld.fetch_or(act);
+						LC_LOG("context key pressed: to GTA (an offered %s), not Minecraft", act == drive::kPromptPickup ? "action" : act == drive::kPromptAccept ? "accept" : "cancel");
 					} else if (!down) {
-						promptKeyHeld = false;
+						promptKeysHeld.fetch_and(~act);
 					}
 					return false;
 				}
@@ -935,7 +952,9 @@ namespace lc::Input
 		// GTA's phone (PhoneKeys): its controls stay (no Minecraft screen open: then every key is Minecraft's).
 		const bool phone = Config::Get().phoneKeys && !st.mcScreenOpen.load(std::memory_order_relaxed);
 		const bool out = phoneOut.load(std::memory_order_relaxed);
-		const int  prompt = promptControl.load(std::memory_order_relaxed);
+		const unsigned prompt = promptActions.load(std::memory_order_relaxed);
+		static const int kPromptControls[3] = { drive::PromptControlOf(drive::kPromptPickup), drive::PromptControlOf(drive::kPromptAccept),
+			drive::PromptControlOf(drive::kPromptCancel) };
 		for (int i = 0; i < kControls; ++i) {
 			if (keepPause && i == INPUT_FRONTEND_PAUSE) {
 				continue;
@@ -943,8 +962,9 @@ namespace lc::Input
 			if (phone && IsPhoneControl(i, out)) {
 				continue;
 			}
-			if (i == prompt) {
-				continue;  // the context action GTA's help text offers
+			if (prompt && ((i == kPromptControls[0] && (prompt & drive::kPromptPickup)) || (i == kPromptControls[1] && (prompt & drive::kPromptAccept)) ||
+							  (i == kPromptControls[2] && (prompt & drive::kPromptCancel)))) {
+				continue;  // a context action or menu choice GTA's help text offers
 			}
 			// Axes rest at 128 (0 is a full push: a ped with player control on walked off at 1.8 m/s).
 			const std::uint8_t rest = IsAxisControl(i) ? 128 : 0;
@@ -1022,9 +1042,9 @@ namespace lc::Input
 		SendKey(a_dik, a_down);
 	}
 
-	void SetPrompt(int a_control)
+	void SetPrompt(unsigned a_actions)
 	{
-		promptControl.store(a_control, std::memory_order_relaxed);
+		promptActions.store(a_actions, std::memory_order_relaxed);
 	}
 
 	bool PhoneOut()

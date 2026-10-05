@@ -12,8 +12,10 @@
 #include "Link.h"
 #include "Log.h"
 #include "Missions.h"
+#include "Blasts.h"
 #include "MobFight.h"
 #include "SkyControl.h"
+#include "PropSmash.h"
 #include "NpcBlocks.h"
 #include "collision/Rays.h"
 #include "combat/CombatMath.h"
@@ -1952,7 +1954,10 @@ namespace lc::Combat
 				// A creeper's blast leaves the mission's characters (and the cars they sit in) standing.
 				Missions::ShieldFromMobBlast(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), radius + 4.0f);
 			}
-			S::ADD_EXPLOSION(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), Cfg().explosionType, radius, true, false, shake);
+			{
+				Blasts::FromMinecraft mirrored;  // (Minecraft's own blast: not sent back to it)
+				S::ADD_EXPLOSION(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), Cfg().explosionType, radius, true, false, shake);
+			}
 			++counters.explosions;
 			LC_LOG("Minecraft explosion (radius %.1f blocks) -> ADD_EXPLOSION type %d radius %.1f m at GTA %.1f %.1f %.1f, %.1f m from the player, shake %.2f%s",
 				a_ev.d, Cfg().explosionType, radius, c.x, c.y, c.z, dist, shake, proofSet ? " (player explosion-proof)" : "");
@@ -2016,7 +2021,10 @@ namespace lc::Combat
 				S::GET_CAR_HEALTH(struck, &body);
 			}
 			const float shake = ExplosionShake(radius, dist);
-			S::ADD_EXPLOSION(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), type, size, true, false, shake);
+			{
+				Blasts::FromMinecraft mirrored;  // (Minecraft's own blast: not sent back to it)
+				S::ADD_EXPLOSION(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), type, size, true, false, shake);
+			}
 			++counters.explosions;
 			char what[96] = "";
 			if (struck) {
@@ -2603,6 +2611,39 @@ namespace lc::Combat
 					batch.hits == 1 ? "" : "s", batch.kind == proto::kHurtMelee ? "melee" : batch.kind == proto::kHurtProjectile ? "projectile" : "other",
 					batch.attacker, (batch.flags & proto::kHurtHasDirection) ? static_cast<int>((batch.flags >> proto::kHurtDirectionShift) & 0x1FFu) : -1, mcDamage);
 			}
+		}
+
+		// ---- a Minecraft mob hit the player while GTA IV drives him on foot (proto::kEvMobHitPlayer) ----------
+		// Niko mode: GTA IV owns his health, so the ped takes it (PedDamageScale, as for GTA's other peds), and a
+		// heavy blow (a ravager's) knocks him over. Getting back up (Minecraft owns his health, GTA moves him):
+		// straight back to Minecraft as one of GTA's hits. Seated in a vehicle the vehicle takes it (Minecraft's
+		// PlayerVehicleHits), not this.
+		void MobHitPlayer(const proto::McEvent& a_ev, const Frame& a_frame)
+		{
+			if (!a_frame.exists || a_frame.loading || a_frame.dead || a_frame.puppeting || a_frame.seated || !a_frame.ped || killing || !(a_ev.a > 0.0f)) {
+				return;
+			}
+			float      gx = 0.0f, gy = 0.0f;
+			const bool dir = PushDirToGta(a_ev.b, a_ev.c, gx, gy);
+			const bool projectile = (a_ev.flags & proto::kHitProjectile) != 0;
+			if (owned.engaged) {
+				pacer.Add(projectile ? proto::kHurtProjectile : proto::kHurtMelee, a_ev.a * Cfg().playerDamageScale, 0u, dir ? HurtDirectionFlags(-gx, -gy) : 0u);
+				LC_LOG("a Minecraft mob hit the player while he gets back up: %.1f Minecraft damage back to Minecraft", a_ev.a);
+				return;
+			}
+			unsigned    before = 0, after = 0, damage = 0;
+			S::GET_CHAR_HEALTH(a_frame.ped, &before);
+			const char* how = DamagePed(a_frame.ped, a_ev.a, before, after, damage);
+			int         ragdollMs = 0;
+			if (a_ev.d > 0.0f && dir && after > static_cast<unsigned>(kDeathHealth) && !S::IS_CHAR_IN_ANY_CAR(a_frame.ped)) {
+				float heading = 0.0f;
+				S::GET_CHAR_HEADING(a_frame.ped, &heading);
+				ragdollMs = RagdollMs(a_ev.d, false);
+				S::SWITCH_PED_TO_RAGDOLL(a_frame.ped, ragdollMs, ragdollMs, false, false, false, false);
+				Knock(a_frame.ped, gx, gy, HitShoveForce(a_ev.d, Cfg().hitForce), heading, kKnockVariant);
+			}
+			LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s%s", a_ev.a, damage, how, before, after,
+				projectile ? ", projectile" : "", ragdollMs ? ", knocked over" : "");
 		}
 
 		// ---- the Minecraft player died: so does the GTA IV one --------------------------------------------
@@ -3914,6 +3955,12 @@ namespace lc::Combat
 				}
 				continue;
 			}
+			if (ev.type == proto::kEvImpact || ev.type == proto::kEvMover) {
+				if (playable) {
+					PropSmash::OnEvent(ev);  // elytra crashes, fast movers against GTA's props (PropSmash.h)
+				}
+				continue;
+			}
 			// A cutscene or a script's camera (Minecraft pauses for it, but a world open to friends runs on):
 			// what Minecraft's mobs do waits for no one, it is dropped.
 			if (a_frame.scene && ((ev.type == proto::kEvHitActor && (ev.flags & proto::kHitByMob)) || ev.type == proto::kEvMob ||
@@ -3955,6 +4002,11 @@ namespace lc::Combat
 				break;
 			case proto::kEvMob:
 				MobFight::OnMob(ev);  // a hostile Minecraft mob near the player (and the ped it is after)
+				break;
+			case proto::kEvMobHitPlayer:
+				if (playable) {
+					MobHitPlayer(ev, a_frame);
+				}
 				break;
 			case proto::kEvBump:
 				if (playable && a_frame.puppeting) {
@@ -4007,6 +4059,17 @@ namespace lc::Combat
 		}
 		if (want && !owned.engaged) {
 			Engage(a_frame.player, a_frame.ped);
+		}
+		// GTA IV's own explosions go to Minecraft (Blasts). In Minecraft mode Minecraft's explosion hurts and
+		// throws the player, so GTA IV's to the player ped is dropped (explosion-proof for a moment), never both.
+		{
+			float bx = 0.0f, by = 0.0f, bz = 0.0f;
+			if (playable && a_frame.ped) {
+				S::GET_CHAR_COORDINATES(a_frame.ped, &bx, &by, &bz);
+			}
+			if (Blasts::Tick(a_frame, bx, by, bz) && a_frame.puppeting && !a_frame.seated && !a_frame.vehicle) {
+				blastProof = kBlastProofSeconds;
+			}
 		}
 		// Explosion-proof: for a moment around Minecraft's own blasts (blastProof), and seated in a vehicle
 		// while Minecraft owns his health (GTA's blow-up kills its occupants outright: WatchSeatedVehicle).

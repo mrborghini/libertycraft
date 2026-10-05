@@ -107,6 +107,8 @@ namespace lc
 			"MinecraftBodyCutscenes=1\n"
 			"MinecraftBodyVehicles=1\n"
 			"MinecraftBodyNikoMode=0\n"
+			"; ... dying (wasted, until the hospital) and being busted\n"
+			"MinecraftBodyDeath=1\n"
 			"; the body's size on top of the automatic fit to Niko (1.0)\n"
 			"MinecraftBodyScale=1.0\n"
 			"; Minecraft's fire, lava and magma burn GTA IV's peds, and vehicles (engine fire; lava wrecks them)\n"
@@ -288,6 +290,8 @@ namespace lc
 		if (auto v = get("pedsfightmobs")) pedsFightMobs = ToBool(*v, pedsFightMobs);
 		if (auto v = get("debugmobshoot")) debugMobShoot = std::atoi(v->c_str());
 		if (auto v = get("debugmobfight")) debugMobFight = std::atoi(v->c_str());
+		if (auto v = get("debuggtablast")) debugGtaBlast = std::atoi(v->c_str());
+		if (auto v = get("debugshore")) debugShore = std::atoi(v->c_str());
 		if (auto v = get("debugfireworktargets")) debugFireworkTargets = std::atoi(v->c_str());
 		if (auto v = get("debugfireworkheliahead")) debugFireworkHeliAhead = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugstumblekind")) debugStumbleKind = std::atoi(v->c_str());
@@ -320,6 +324,7 @@ namespace lc
 		if (auto v = get("debugvehiclehit")) debugVehicleHit = Lower(*v);
 		if (auto v = get("debugcutscene")) debugCutscene = *v;
 		if (auto v = get("debuggiveweapon")) debugGiveWeapon = std::atoi(v->c_str());
+		if (auto v = get("debugpropsmash")) debugPropSmash = Lower(*v);
 		if (auto v = get("debugviewportroom")) debugViewportRoom = std::atoi(v->c_str());
 		if (auto v = get("hazardsburnpeds")) hazardsBurnPeds = ToBool(*v, hazardsBurnPeds);
 		if (auto v = get("hazardsburnvehicles")) hazardsBurnVehicles = ToBool(*v, hazardsBurnVehicles);
@@ -343,7 +348,7 @@ namespace lc
 		if (auto v = get("debugmissionprobeab")) debugMissionProbeAB = ToBool(*v, debugMissionProbeAB);
 		if (auto v = get("debugmissionblips")) debugMissionBlips = ToBool(*v, debugMissionBlips);
 		if (auto v = get("debugphonecall")) debugPhoneCall = static_cast<float>(std::atof(v->c_str()));
-		if (auto v = get("debugcontextkey")) debugContextKey = ToBool(*v, debugContextKey);
+		if (auto v = get("debugcontextkey")) debugContextKey = *v;
 		if (auto v = get("debugfakeprompt")) debugFakePrompt = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugprop")) debugProp = *v;
 		if (auto v = get("minecraftbodyprops")) minecraftBodyProps = ToBool(*v, minecraftBodyProps);
@@ -352,6 +357,7 @@ namespace lc
 		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
 		if (auto v = get("minecraftbodyvehicles")) minecraftBodyVehicles = ToBool(*v, minecraftBodyVehicles);
 		if (auto v = get("minecraftbodynikomode")) minecraftBodyNikoMode = ToBool(*v, minecraftBodyNikoMode);
+		if (auto v = get("minecraftbodydeath")) minecraftBodyDeath = ToBool(*v, minecraftBodyDeath);
 		if (auto v = get("minecraftbodyhide")) minecraftBodyHide = Lower(*v) == "alpha" ? "alpha" : "visible";
 		if (auto v = get("minecraftbodyscale")) minecraftBodyScale = std::clamp(static_cast<float>(std::atof(v->c_str())), 0.5f, 2.0f);
 		if (auto v = get("debugbody")) debugBody = ToBool(*v, debugBody);
@@ -403,14 +409,14 @@ namespace lc
 		LC_LOG("config: PuppetMove=%s%s%s%s%s", puppetMove.c_str(), debugWalkThroughCar ? " DebugWalkThroughCar=1" : "",
 			debugVehicleDriver ? " DebugVehicleDriver=1" : "", debugFocusCycle ? " DebugFocusCycle=1" : "", debugInjectEnterKey ? " DebugInjectEnterKey=1" : "");
 		LC_LOG("config: PhoneKeys=%d%s", phoneKeys, debugPhone ? " DebugPhone=1" : "");
-		LC_LOG("config: PedsFightMobs=%d DebugMobShoot=%d DebugMobFight=%d", pedsFightMobs, debugMobShoot, debugMobFight);
+		LC_LOG("config: PedsFightMobs=%d DebugMobShoot=%d DebugMobFight=%d DebugGtaBlast=%d", pedsFightMobs, debugMobShoot, debugMobFight, debugGtaBlast);
 		LC_LOG("config: HazardsBurnPeds=%d HazardsBurnVehicles=%d LiquidsSlowVehicles=%d LiquidsSlowPeds=%d MinecraftWaterIsGtaWater=%d%s%s%s", hazardsBurnPeds,
 			hazardsBurnVehicles, liquidsSlowVehicles, liquidsSlowPeds, minecraftWaterIsGtaWater,
 			debugHazards ? " DebugHazards=1" : "", debugHazardInject.empty() ? "" : " DebugHazardInject=", debugHazardInject.c_str());
 		LC_LOG("config: RagdollOnVehicleHit=%d%s%s%s%s%s%s", ragdollOnVehicleHit, debugBailOut ? " DebugBailOut=1" : "", debugRunOver ? " DebugRunOver=1" : "",
 			debugCutscene.empty() ? "" : " DebugCutscene=", debugCutscene.c_str(), debugVehicleHit.empty() ? "" : " DebugVehicleHit=", debugVehicleHit.c_str());
-		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
-			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyScale, minecraftBodyHide.c_str(),
+		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyDeath=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
+			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyDeath, minecraftBodyScale, minecraftBodyHide.c_str(),
 			debugBody ? " DebugBody=1" : "");
 		LC_LOG("config: ContextActions=%d ContextKey=%s (dik 0x%02X)", contextActions, contextKey.c_str(), ContextKeyDik());
 		LC_LOG("config: ScriptScenes=%d MissionPedsSafe=%d ScenesPauseMinecraft=%d%s%s%s", scriptScenes, missionPedsSafe, scenesPauseMinecraft,

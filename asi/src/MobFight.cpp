@@ -87,6 +87,94 @@ namespace lc::MobFight
 			int   cop = 0, civ = 0;
 		} test;
 
+		// DebugShore=N: N s into puppet mode, the player is put in the nearest water (GTA's water searched in 16
+		// directions out to 600 m), 6 m past where it starts, at its surface. 4 s later, once GTA IV has the
+		// collision there, it logs a map of the ground around (GET_GROUND_Z_FOR_3D_COORD from just above the
+		// water and from high up, GET_WATER_HEIGHT) in Minecraft's coordinates, to pick test spots from: a
+		// beach, shallow water over a probed sea bed, a pier.
+		struct ShoreTest
+		{
+			int   stage = 0;
+			float timer = 0.0f, water = 0.0f;
+		} shore;
+
+		void ShoreMap(float a_x, float a_y, float a_w)
+		{
+			constexpr int   kHalf = 25;   // cells each way
+			constexpr float kStep = 2.0f; // m
+			LC_LOG("DebugShore map around MC %.0f %.0f (water surface %.2f), 2 m cells, MC x across, MC z down. '~' water over ground 3+ m"
+				   " down, '=' 1.5 to 3 m, '-' up to 1.5 m, 'b' ground 0 to 1.5 m above the water, '#' higher, '?' no ground; uppercase or '*': something more"
+				   " than 2.5 m above that ground (a pier, a boardwalk)", a_x, -a_y, a_w);
+			for (int j = -kHalf; j <= kHalf; ++j) {
+				char row[2 * kHalf + 2] = {};
+				for (int i = -kHalf; i <= kHalf; ++i) {
+					const float gx = a_x + i * kStep, gy = a_y - j * kStep;  // MC z grows southward: GTA y shrinks
+					float       low = -1.0e4f, top = -1.0e4f, h = 0.0f;
+					S::GET_GROUND_Z_FOR_3D_COORD(gx, gy, a_w + 2.5f, &low);
+					S::GET_GROUND_Z_FOR_3D_COORD(gx, gy, a_w + 60.0f, &top);
+					const bool wet = S::GET_WATER_HEIGHT(gx, gy, a_w + 2.0f, &h) && std::fabs(h - a_w) < 1.0f;
+					char       c = '?';
+					if (std::fabs(low) > 1.0e-4f && low > -1.0e3f) {
+						const float d = low - a_w;
+						c = d > 1.5f ? '#' : d >= 0.0f ? 'b' : !wet ? 'b' : d < -3.0f ? '~' : d < -1.5f ? '=' : '-';
+						if (top - low > 2.5f) {
+							c = c == 'b' ? 'B' : c == '#' ? '*' : c == '~' ? 'W' : c == '=' ? 'E' : c == '-' ? 'S' : c;
+						}
+					}
+					row[i + kHalf] = c;
+				}
+				LC_LOG("DebugShore map z %+4d: %s", static_cast<int>(std::lround(-a_y + j * kStep)), row);
+			}
+		}
+
+		void ShoreHook(const Combat::Frame& a_frame)
+		{
+			if (Cfg().debugShore <= 0 || shore.stage >= 2 || !a_frame.exists || !a_frame.ped) {
+				return;
+			}
+			if (shore.stage == 0 && !a_frame.puppeting) {
+				return;
+			}
+			shore.timer += a_frame.dt;
+			float x = 0, y = 0, z = 0;
+			S::GET_CHAR_COORDINATES(a_frame.ped, &x, &y, &z);
+			if (shore.stage == 1) {
+				if (shore.timer >= 4.0f) {
+					shore.stage = 2;
+					ShoreMap(x, y, shore.water);
+				}
+				return;
+			}
+			if (shore.timer < static_cast<float>(Cfg().debugShore)) {
+				return;
+			}
+			shore.stage = 1, shore.timer = 0.0f;
+			float best = 1e9f, bx = 0, by = 0, w = 0;
+			for (int k = 0; k < 16; ++k) {
+				const float a = static_cast<float>(k) * (kPi / 8.0f), cx = std::cos(a), cy = std::sin(a);
+				for (float d = 4.0f; d <= 600.0f && d < best; d += 2.0f) {
+					float h = 0.0f;
+					if (S::GET_WATER_HEIGHT(x + cx * d, y + cy * d, z + 2.0f, &h)) {
+						best = d, bx = cx, by = cy, w = h;
+						break;
+					}
+				}
+			}
+			if (best > 1e8f) {
+				shore.stage = 2;
+				LC_LOG("DebugShore: no water within 600 m");
+				return;
+			}
+			shore.water = w;
+			const float px = x + bx * (best + 6.0f), py = y + by * (best + 6.0f);
+			const float heading = std::atan2(-bx, by) / kDegToRad;
+			S::SET_CHAR_COORDINATES(a_frame.ped, px, py, w + 1.0f);
+			S::SET_CHAR_HEADING(a_frame.ped, heading);
+			const McVec at = GtaToMc(px, py, w), edge = GtaToMc(x + bx * best, y + by * best, w);
+			LC_LOG("DebugShore: player put in the water at GTA %.1f %.1f (MC %.1f %.1f %.1f) heading %.0f, %.0f m from where he was; the water (surface %.2f) starts 6 m back, at MC %.1f %.1f; a ground map follows in 4 s",
+				px, py, at.x, at.y, at.z, heading, best + 6.0f, w, edge.x, edge.z);
+		}
+
 		std::int32_t Bits(float a_f)
 		{
 			std::int32_t i = 0;
@@ -528,6 +616,7 @@ namespace lc::MobFight
 			return;
 		}
 		TestHook(a_dt, a_player, a_frame.mc);
+		ShoreHook(a_frame);
 		if (!Cfg().pedsFightMobs) {
 			return;
 		}

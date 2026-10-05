@@ -23,6 +23,13 @@ public abstract class GroundPathNavigationMixin extends PathNavigation {
 		super(mob, level);
 	}
 
+	/** Avoiding the sun (RestrictSunGoal): GTA IV's cover counts as shade (HostCover). */
+	@com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(method = "trimPath",
+		at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;canSeeSky(Lnet/minecraft/core/BlockPos;)Z"))
+	private boolean libertycraft$gtaShade(Level level, BlockPos pos, com.llamalad7.mixinextras.injector.wrapoperation.Operation<Boolean> original) {
+		return dev.libertycraft.world.HostCover.seesSky(level, pos, original.call(level, pos));
+	}
+
 	@Inject(method = "findSurfacePosition", at = @At("HEAD"), cancellable = true)
 	private void libertycraft$gtaSurface(LevelChunk chunk, BlockPos pos, int reachRange, CallbackInfoReturnable<BlockPos> cir) {
 		if (!chunk.getBlockState(pos).isAir() || !HostPath.applies(this.level)) {

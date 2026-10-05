@@ -135,6 +135,11 @@ namespace libertycraft::proto
 	// water: swimming, floating, drowning. Seqlock like SkyState.
 	inline constexpr std::uint32_t kWaterGridSize = 16;
 	inline constexpr float         kNoWater = -1.0e30f;
+	// Flag bit in WaterGrid::worldId: this grid is not the one around the player but one tile of a
+	// lattice of 16-block tiles (origins multiples of 16) around them, sent in turn with it. Readers
+	// keep such tiles for a few seconds and use them where the grid around the player doesn't reach;
+	// that grid wins where both do (it alone knows the player is sealed off from water above).
+	inline constexpr std::uint32_t kWaterGridTile = 0x80000000u;
 
 	struct WaterGrid
 	{
@@ -299,6 +304,31 @@ namespace libertycraft::proto
 		// of the ped that fired (0: not known, kMobHitByPlayer: the player), c = the Minecraft damage * 100
 		// (GTA IV's damage for the weapon / kMobDamageScale). Minecraft hurts the mob as from that ped.
 		kInMobHit = 11,
+		// LibertyCraft addition (a new type only): one of GTA IV's own explosions (a car or a gas pump blowing
+		// up, a grenade, a rocket, a molotov; not the ones Minecraft asked for with kEvExplosion). a, b, c =
+		// where, Minecraft coordinates * 256; code = GtaBlastBits: GTA IV's explosion type (bits 0 to 4), the
+		// radius it hurts within in half metres (bits 5 to 11), kGtaBlastByPlayer, kGtaBlastFire. Minecraft
+		// makes an explosion of its own there that hurts and knocks back its mobs and its player (not GTA IV's
+		// stand-ins, not blocks): its radius is half that, as a Minecraft explosion hurts out to twice its own.
+		// Whoever GTA IV's blast would hurt twice is left to one of them: in Minecraft mode the player takes
+		// Minecraft's (GTA IV's to the player ped is dropped), while GTA IV drives the player GTA IV's.
+		kInGtaExplosion = 12,
+		// LibertyCraft addition (a new type only): the Minecraft mover (kEvMover) broke one of GTA IV's props
+		// (it is knocked over and off Minecraft's collision): code = PropHitBits: how much of its speed the mover
+		// keeps, in percent (bits 0 to 6; a heavy prop takes more); a, b, c = the prop's bottom centre, Minecraft
+		// coordinates * 256. Minecraft slows the player (or the mount it rides) by that much.
+		kInPropHit = 13,
+	};
+	enum PropHitBits : std::uint16_t
+	{
+		kPropKeepMask = 0x7F,
+	};
+	enum GtaBlastBits : std::uint16_t
+	{
+		kGtaBlastTypeMask = 0x1F,
+		kGtaBlastRadiusShift = 5,  // 7 bits: half metres
+		kGtaBlastByPlayer = 1u << 12,  // the player set it off (his grenade, rocket, the car he blew up)
+		kGtaBlastFire = 1u << 13,      // it starts fires (a molotov, a car): Minecraft sets what it hurts alight
 	};
 	inline constexpr std::int32_t kMobHitByPlayer = -1;
 	inline constexpr float        kMobDamageScale = 5.0f;  // GTA IV damage / this = Minecraft damage (a pistol's 25: 5)
@@ -442,7 +472,46 @@ namespace libertycraft::proto
 		// forces it (FORCE_WEATHER_NOW) and gives GTA IV its own weather back when the time is up
 		// (RELEASE_WEATHER); Minecraft follows GTA IV's weather (kSkyWeatherShift).
 		kEvSetWeather = 10,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): a Minecraft mob hit the player while
+		// GTA IV drives him on foot (Niko mode, getting back up), where Minecraft takes no damage of its own:
+		// GTA IV's player ped takes it instead. a = Minecraft damage (the host's PedDamageScale makes it GTA
+		// IV's, as for its peds), b/c = the push's direction (MC x/z, unit), d = its strength beyond a plain
+		// blow's (0: none; a ravager's, a Knockback arrow's: a stagger), flags = HitFlags (kHitProjectile),
+		// weapon = HitWeapon. A mob's blast reaches him as GTA IV's own (kEvExplosion), not as this.
+		kEvMobHitPlayer = 11,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): the Minecraft player crashed in elytra
+		// flight, into a wall (GTA IV's or Minecraft's) or onto the ground, hard: a = the crash's speed (m/s: the
+		// horizontal speed a wall took away, the ground's sqrt(vertical^2 + (horizontal / 2)^2)), b/c = the
+		// horizontal direction it was flying (MC x/z, unit), d = its horizontal speed before (m/s), flags =
+		// ImpactFlags. Minecraft hurts its player itself (flying into a wall, falling); the host knocks the player
+		// over (a ragdoll along the crash).
+		kEvImpact = 12,
+		// LibertyCraft addition (a new type; the layout and kVersion stay): the Minecraft player is moving fast,
+		// sent every tick it moves at kMoverMinSpeed or more (sprinting, elytra flight, riding a Minecraft mount):
+		// a/b/c = the moving box's bottom centre (MC coords: the mount's box when riding, else the player's), d =
+		// its speed (m/s), formId = MoverFlags | the box's width in centimetres << kMoverWidthShift | its height in
+		// centimetres << kMoverHeightShift (10 bits each), flags = the motion's yaw and weapon its pitch (float
+		// bits, Minecraft degrees: yaw 0 south, pitch down positive). The host knocks over or breaks GTA IV's
+		// props (street furniture) the box runs into fast enough, and slows the mover (kInPropHit).
+		kEvMover = 13,
 	};
+
+	enum ImpactFlags : std::uint32_t
+	{
+		kImpactWall = 1u << 0,
+		kImpactGround = 1u << 1,
+	};
+
+	enum MoverFlags : std::uint32_t
+	{
+		kMoverFlying = 1u << 0,     // elytra flight
+		kMoverRiding = 1u << 1,     // riding a Minecraft mount (the box is the mount's)
+		kMoverSprinting = 1u << 2,
+		kMoverFlagsMask = 0xFFu,
+	};
+	inline constexpr std::uint32_t kMoverWidthShift = 8;
+	inline constexpr std::uint32_t kMoverHeightShift = 18;
+	inline constexpr float         kMoverMinSpeed = 5.0f;  // m/s
 
 	enum MobFlags : std::uint32_t
 	{

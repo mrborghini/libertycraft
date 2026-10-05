@@ -1948,7 +1948,10 @@ namespace lc::HostDrive
 		                      logic.mode() == drive::Mode::kMinecraft && !out.hostDrives && !handingBack && !resyncBody;
 		drovePrev = out.hostDrives || handingBack || resyncBody || fadeHold;
 		const drive::Why bodyWhy = handingBack || fadeHold ? lastWhy : resyncBody ? drive::Why::kRagdoll : out.why;
-		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, bodyWhy, out.hostDrives || handingBack || resyncBody || fadeHold, a_f.mcInWorld);
+		// Dying (wasted) or busted: the body stays on Niko through GTA's whole sequence (NikoBody::DeathScenePed).
+		const int  deathPed = NikoBody::DeathScenePed(logic.mode() == drive::Mode::kMinecraft);
+		const int  bodyPed = deathPed ? NikoBody::Target(deathPed, drive::Why::kRagdoll, true, a_f.mcInWorld)
+		                              : NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, bodyWhy, out.hostDrives || handingBack || resyncBody || fadeHold, a_f.mcInWorld);
 		static int loggedResync = 0;  // 0 none, 1 with the body, 2 without (no body from Minecraft yet)
 		const int  resyncState = resyncBody ? (bodyPed ? 1 : 2) : 0;
 		if (resyncState != loggedResync) {

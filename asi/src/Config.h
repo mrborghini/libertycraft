@@ -171,6 +171,8 @@ namespace lc
 		bool pedsFightMobs = true;
 		int  debugMobShoot = 0;  // test hook: how peds shoot at mobs (0 TASK_SHOOT_AT_COORD, 1 aim + FIRE_PED_WEAPON)
 		int  debugMobFight = 0;  // test hook: N s into play, a cop and a civilian stand still ahead of the player (MobFight)
+		int  debugGtaBlast = 0;  // test hook: N s into puppet mode, GTA explosions of each kind go off ahead of the player (Blasts)
+		int  debugShore = 0;     // test hook: N s into puppet mode, the player is put in the nearest GTA water, 6 m past its edge (MobFight)
 		// N s into puppet mode, targets for crossbow fireworks where the player looks: a police helicopter
 		// hovers DebugFireworkHeliAhead m ahead, two peds and a car stand 14 m ahead (Combat.cpp
 		// FireworkTargetsHook); 0 off.
@@ -252,6 +254,10 @@ namespace lc
 		std::string debugCutscene;
 		// Test hook (not in the default ini): give Niko this GTA weapon (7 pistol) 10 s into play.
 		int debugGiveWeapon = 0;
+		// Test hook (not in the default ini): "SECONDS:KIND|..." after puppet mode first starts: pole (an elytra
+		// flight into the nearest tall prop), wall (into a building's wall), horse (put 30 m from a tall prop; W
+		// held for 4 s). PropSmash.cpp.
+		std::string debugPropSmash;
 		// Test hook (not in the default ini): 1 logs the room GTA renders from against the camera's place
 		// near interiors (ViewportRoom.cpp) every 0.25 s; 2 also switches its correction off and on every 8 s.
 		int debugViewportRoom = 0;
@@ -283,6 +289,9 @@ namespace lc
 		bool minecraftBodyCutscenes = true;
 		bool minecraftBodyVehicles = true;
 		bool minecraftBodyNikoMode = false;
+		// Dying (GTA's wasted flow: its death ragdoll or animation, the fade, the hospital) and being
+		// arrested (busted) in Minecraft mode; in Niko mode with MinecraftBodyNikoMode.
+		bool minecraftBodyDeath = true;
 		// The body's size on top of the automatic fit to Niko (1: torso and arms his size, the top of
 		// the head at his, the feet on the ground); larger covers more of him.
 		float minecraftBodyScale = 1.0f;
@@ -332,10 +341,10 @@ namespace lc
 		float       debugMissionProbe = 0.0f;
 		bool        debugMissionProbeAB = false;  // ...twice: first with ScriptScenes off, then on
 		bool        debugMissionBlips = false;
-		float       debugPhoneCall = 0.0f;
-		bool        debugContextKey = false;
-		float       debugFakePrompt = 0.0f;  // test hook: N s into puppet mode, GTA's help box asks for INPUT_PICKUP
-		std::string debugProp;  // test hook: an object of this model on Niko's right hand during a 6 s scene, 10 s into play  // test hook: press ContextKey 1.5 s into the first offered context action  // test hook: N s into play, 6 s of kSkyPhoneCall (Minecraft's sounds duck)
+		float       debugPhoneCall = 0.0f;   // test hook: N s into play, 6 s of kSkyPhoneCall (Minecraft's sounds duck)
+		std::string debugContextKey;         // test hook: press this key (e.g. E, Enter) 1.5 s into the first offered context actions
+		float       debugFakePrompt = 0.0f;  // test hook: N s into puppet mode, GTA's help box offers a half game (E) or a full game (Enter)
+		std::string debugProp;               // test hook: an object of this model on Niko's right hand during a 6 s scene, 10 s into play
 		std::string debugMissionWarp;
 
 		static Config& Get();

@@ -22,6 +22,7 @@
 #include "Overlay.cpp"
 #include "Combat.cpp"
 #include "MobFight.cpp"
+#include "Blasts.cpp"
 #include "SkyControl.cpp"
 #include "NpcBlocks.cpp"
 #include "Doors.cpp"
@@ -31,6 +32,7 @@
 #include "BlockyCity.cpp"
 #include "PauseMenu.cpp"
 #include "Missions.cpp"
+#include "PropSmash.cpp"
 
 #undef LC_MODULE
 #define LC_MODULE "main"

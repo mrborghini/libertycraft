@@ -56,6 +56,9 @@ public final class HostCombat {
 			.build(HOST_ACTOR_KEY)
 	);
 
+	/** A fresh player (a respawn) takes none of GTA IV's hits for this long (ticks). */
+	public static final int RESPAWN_GRACE_TICKS = 40;
+
 	/** GTA IV damage is divided by this for Minecraft (a 15-damage bandit swing = 3 = 1.5 hearts). */
 	public static final float HOST_TO_MC_DAMAGE = 5.0F;
 
@@ -268,6 +271,11 @@ public final class HostCombat {
 	 */
 	public static void hurtPlayer(ServerPlayer player, int kind, float hostDamage, int attackerFormId, int flags) {
 		if (!player.isAlive() || hostDamage <= 0.0F) {
+			return;
+		}
+		if (player.tickCount < RESPAWN_GRACE_TICKS) {
+			// Just respawned (or joined): what GTA IV still reports is from the death it shows (a burning body).
+			LibertyCraft.LOG.info("[LibertyCraft] GTA IV hit the player {} ticks after a respawn: ignored", player.tickCount);
 			return;
 		}
 		ServerLevel level = player.level();

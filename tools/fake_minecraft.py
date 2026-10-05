@@ -70,6 +70,7 @@ EXPLOSION_FIREWORK, EXPLOSION_BY_PLAYER = 1, 2  # LibertyCraft: kEvExplosion fla
 EV_BUMP = 7  # LibertyCraft: the player ran into a ped's stand-in
 EV_MOB = 8  # LibertyCraft: a hostile mob near the player (flags = entity id, formId = the ped it is after)
 MOB_AFTER_PLAYER = 1 << 16  # kEvMob weapon bits: it is after the player
+EV_MOB_HIT_PLAYER = 11  # LibertyCraft: a mob hit the player GTA drives on foot (a = damage, b/c = push dir, d = strength)
 EV_SET_TIME, EV_SET_WEATHER = 9, 10  # LibertyCraft: /time and /weather (a = GTA hour; formId = GTA weather, a = seconds)
 GTA_WEATHERS = ["EXTRASUNNY", "SUNNY", "SUNNY_WINDY", "CLOUDY", "RAIN", "DRIZZLE", "FOGGY", "LIGHTNING"]
 SKY_WEATHER_SHIFT = 8  # SkyState flags bits 8 to 11: GTA's weather + 1 (0: not sent)
@@ -102,7 +103,7 @@ assert struct.calcsize(MC_FMT) == 0xC8
 assert struct.calcsize(ACTOR_FMT) == 64
 
 INPUT_TYPES = {1: "Key", 2: "MouseButton", 3: "Scroll", 4: "Cursor", 5: "Text", 6: "ReleaseAll", 7: "Hurt", 8: "OpenMenu", 9: "BulletImpact",
-               10: "Restore", 11: "MobHit"}
+               10: "Restore", 11: "MobHit", 12: "GtaExplosion"}
 COL_TYPES = {0: "Pad", 1: "Clear", 2: "Region", 3: "Tris", 4: "Forget"}
 
 # SDL3 scancodes -> names, for printing kInKey.
@@ -298,6 +299,9 @@ def describe_input(typ, code, a, b, c):
         return f"Hurt kind {code} damage {a / 100:.2f} attacker {b:08X} flags {c:#x}"
     if typ == 11:
         return f"MobHit mob {a} by {'the player' if b == -1 else f'{b & 0xFFFFFFFF:08X}'} weapon {code} for {c / 100:.2f}"
+    if typ == 12:  # kInGtaExplosion: code = type | radius in half metres << 5 | by player (bit 12) | fire (bit 13)
+        return (f"GtaExplosion type {code & 0x1F} radius {(code >> 5 & 0x7F) / 2:.1f} m at MC {a / 256:.1f} {b / 256:.1f} {c / 256:.1f}"
+                f"{' (the player)' if code & 0x1000 else ''}{' (fire)' if code & 0x2000 else ''}")
     return name
 
 

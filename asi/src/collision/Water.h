@@ -1,6 +1,7 @@
 // GTA IV's water (the rivers, the harbour, the sea) around the player as protocol WaterGrid, so
 // Minecraft swims, floats and drowns in it (HostWater.java). SDK-dependent: included by
-// Collision.cpp, called from Collision::Update (game thread) every third harvest frame.
+// Collision.cpp, called from Collision::Update (game thread) every third harvest frame (the grid
+// around the player and the tiles around it in turn, see WriteWater).
 #pragma once
 
 #include "Sdk.h"
@@ -24,13 +25,28 @@ namespace lc::col
 	// (false where no water quad covers it). Water above the player's feet that the player is
 	// sealed off from (a tunnel under the river: something's underside between the feet and the
 	// surface) is not reported, or Minecraft would drown the player in the tunnel.
+	//
+	// Every other write is instead one tile of a 5x5 lattice of 16-block tiles (aligned to 16) around
+	// the player's tile, flagged kWaterGridTile, in turn: Minecraft keeps those for a few seconds, so
+	// mobs up to about 40 blocks from the player are in GTA IV's water too, not only those within 8.
 	inline void WriteWater(const McVec& a_centerMc)
 	{
 		constexpr int     kSize = static_cast<int>(proto::kWaterGridSize);
+		static unsigned   writeNo = 0, tileNo = 0;
+		const bool        tile = (writeNo++ & 1u) != 0;
 		proto::WaterGrid  grid{};
-		grid.originX = static_cast<std::int32_t>(std::floor(a_centerMc.x)) - kSize / 2;
-		grid.originZ = static_cast<std::int32_t>(std::floor(a_centerMc.z)) - kSize / 2;
-		grid.worldId = 0;
+		if (tile) {
+			const int k = static_cast<int>(tileNo++ % 25u);
+			const int tx = static_cast<int>(std::floor(a_centerMc.x / kSize)) + k % 5 - 2;
+			const int tz = static_cast<int>(std::floor(a_centerMc.z / kSize)) + k / 5 - 2;
+			grid.originX = tx * kSize;
+			grid.originZ = tz * kSize;
+			grid.worldId = proto::kWaterGridTile;
+		} else {
+			grid.originX = static_cast<std::int32_t>(std::floor(a_centerMc.x)) - kSize / 2;
+			grid.originZ = static_cast<std::int32_t>(std::floor(a_centerMc.z)) - kSize / 2;
+			grid.worldId = 0;
+		}
 		const float probeZ = static_cast<float>(a_centerMc.y) + 2.0f;  // GTA z == MC y
 		float       highest = -1e30f;
 		int         wet = 0;
@@ -47,7 +63,7 @@ namespace lc::col
 				}
 			}
 		}
-		if (wet && highest > static_cast<float>(a_centerMc.y) + 0.3f) {
+		if (!tile && wet && highest > static_cast<float>(a_centerMc.y) + 0.3f) {
 			// Water above the feet: only if nothing covers the player below its surface.
 			const float from[3] = { static_cast<float>(a_centerMc.x), static_cast<float>(a_centerMc.y) + 0.5f, static_cast<float>(a_centerMc.z) };
 			const float to[3] = { from[0], highest, from[2] };

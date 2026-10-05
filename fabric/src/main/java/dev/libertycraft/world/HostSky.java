@@ -38,6 +38,7 @@ public final class HostSky {
 	private static boolean syncing;
 	private static final Link.SkyState SKY = new Link.SkyState();
 	private static boolean inGame;
+	private static boolean indoors;
 	private static int gtaWeather = -1;
 	// A change sent to GTA IV, until it shows (or PENDING_NANOS pass): the following waits.
 	private static float pendingHour = Float.NaN;
@@ -57,6 +58,11 @@ public final class HostSky {
 		return inGame && gtaWeather >= 0 && Link.active();
 	}
 
+	/** The player is in one of GTA IV's interiors (SkyState's worldId): no sun or rain gets in (HostCover). */
+	public static boolean indoors() {
+		return indoors && Link.active();
+	}
+
 	/** Our own change is being made (the mixins leave it alone). */
 	public static boolean syncing() {
 		return syncing;
@@ -72,10 +78,11 @@ public final class HostSky {
 			return;
 		}
 		if (!Link.active() || !Link.readSkyState(SKY)) {
-			inGame = false;
+			inGame = indoors = false;
 			return;
 		}
 		inGame = SKY.inGame() && !SKY.loading();
+		indoors = inGame && SKY.worldId != 0;
 		gtaWeather = inGame ? SkyRules.weatherOfFlags(SKY.flags) : -1;
 		if (!inGame) {
 			return;

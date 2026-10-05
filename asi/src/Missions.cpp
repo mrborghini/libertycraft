@@ -642,12 +642,12 @@ namespace lc::Missions
 			s.phoneCall = S::IS_MOBILE_PHONE_CALL_ONGOING();
 			s.onMission = S::GET_MISSION_FLAG();
 		}
-		// GTA's help text asking for a context action (drive/Prompt.h): Input lets that control through and
-		// keeps the prompt key from Minecraft while it shows.
-		int prompt = -1;
+		// GTA's help text offering context actions and menu choices (drive/Prompt.h): Input lets their controls
+		// through and keeps their keys from Minecraft while it shows.
+		unsigned prompt = 0;
 		if (inGame && addr.help && *reinterpret_cast<const std::int32_t*>(addr.help + kHelpShown) != 0) {
 			const auto* text = reinterpret_cast<const std::uint16_t*>(addr.help + kHelpText);
-			prompt = drive::PromptControl(text, kHelpTextChars);
+			prompt = drive::PromptActions(text, kHelpTextChars);
 			std::uint32_t hash = 2166136261u;
 			for (std::size_t i = 0; i < kHelpTextChars && text[i]; ++i) {
 				hash = (hash ^ text[i]) * 16777619u;
@@ -660,14 +660,15 @@ namespace lc::Missions
 					ascii[n++] = text[i] < 0x80 && text[i] >= 0x20 ? static_cast<char>(text[i]) : '?';
 				}
 				ascii[n] = 0;
-				LC_LOG("GTA's help text: \"%s\" (asks for %s%s)", ascii, prompt >= 0 ? "INPUT_" : "no control", prompt >= 0 ? pad::kControlNames[prompt] : "");
+				LC_LOG("GTA's help text: \"%s\" (offers%s%s%s%s)", ascii, (prompt & drive::kPromptPickup) ? " INPUT_PICKUP" : "",
+					(prompt & drive::kPromptAccept) ? " FRONTEND_ACCEPT" : "", (prompt & drive::kPromptCancel) ? " FRONTEND_CANCEL" : "", prompt ? "" : " no menu choice");
 			}
 		} else {
 			lastHelpHash = 0;
 		}
-		const int action = Cfg().contextActions && drive::IsContextAction(prompt) ? prompt : -1;
+		const unsigned action = Cfg().contextActions ? prompt : 0u;
 		if (action != state.prompt) {
-			LC_LOG("%s", action >= 0 ? "a context action is offered: GTA gets its control (and the prompt key, not Minecraft) while it shows" : "the context action is gone");
+			LC_LOG("%s", action ? "context actions offered: GTA gets their controls (and their keys, not Minecraft) while they show" : "the context actions are gone");
 		}
 		state.prompt = action;
 		Input::SetPrompt(action);
@@ -683,10 +684,10 @@ namespace lc::Missions
 			std::memcpy(&rel, call + 6, sizeof rel);
 			const auto target = reinterpret_cast<std::uintptr_t>(call + 10) + rel;
 			if (addr.help && call[0] == 0xB9 && HoldsAbs(call + 1, kHelp) && call[5] == 0xE8 && target == reinterpret_cast<std::uintptr_t>(Abs(0x8ABA20))) {
-				static std::uint16_t text[64];
-				const char*          ascii = "Press ~INPUT_PICKUP~ to test the context key.";
+				static std::uint16_t text[96];
+				const char*          ascii = "Press ~INPUT_PICKUP~ to play a half game.~n~Press ~ACCEPT~ to play a full game.";
 				std::size_t          n = 0;
-				for (; ascii[n] && n < 63; ++n) {
+				for (; ascii[n] && n < 95; ++n) {
 					text[n] = static_cast<std::uint8_t>(ascii[n]);
 				}
 				text[n] = 0;
@@ -697,30 +698,32 @@ namespace lc::Missions
 				LC_LOG("DebugFakePrompt: the help box setter isn't where 1.0.8.0 has it");
 			}
 		}
-		if (Cfg().debugContextKey && inGame) {
-			static bool wasDown = false;
-			const bool  down = S::IS_CONTROL_PRESSED(0, INPUT_PICKUP);
+		const std::uint8_t testKey = Cfg().debugContextKey.empty() ? 0 : Config::KeyDik(Cfg().debugContextKey);
+		if (testKey && inGame) {
+			static unsigned wasDown = 0;
+			const unsigned  down = (S::IS_CONTROL_PRESSED(0, INPUT_PICKUP) ? 1u : 0u) | (S::IS_CONTROL_PRESSED(0, INPUT_FRONTEND_ACCEPT) ? 2u : 0u) |
+			                      (S::IS_CONTROL_PRESSED(0, INPUT_FRONTEND_CANCEL) ? 4u : 0u);
 			if (down != wasDown) {
 				wasDown = down;
-				LC_LOG("DebugContextKey: GTA's pad reads INPUT_PICKUP %s (puppeting %d, a Minecraft screen open %d)", down ? "DOWN" : "up", a_f.puppeting ? 1 : 0,
-					Game::State().mcScreenOpen.load() ? 1 : 0);
+				LC_LOG("DebugContextKey: GTA's pad reads INPUT_PICKUP %s, FRONTEND_ACCEPT %s, FRONTEND_CANCEL %s (puppeting %d, a Minecraft screen open %d)",
+					(down & 1) ? "DOWN" : "up", (down & 2) ? "DOWN" : "up", (down & 4) ? "DOWN" : "up", a_f.puppeting ? 1 : 0, Game::State().mcScreenOpen.load() ? 1 : 0);
 			}
 		}
-		// DebugContextKey: 1.5 s into an offered context action while puppeting, the context key is pressed
-		// (a real key event) for 0.15 s.
+		// DebugContextKey=<key>: 1.5 s into the first offered context actions while puppeting, that key is
+		// pressed (a real key event) for 0.15 s.
 		static float keyT = 0.0f;
 		static int   keyStep = 0;  // 0 waiting, 1 held, 2 done
-		if (Cfg().debugContextKey && keyStep < 2) {
-			keyT = (action >= 0 && a_f.puppeting) || keyStep == 1 ? keyT + (a_f.paused ? 0.0f : a_f.dt) : 0.0f;
+		if (testKey && keyStep < 2) {
+			keyT = (action && a_f.puppeting) || keyStep == 1 ? keyT + (a_f.paused ? 0.0f : a_f.dt) : 0.0f;
 			if (keyStep == 0 && keyT >= 1.5f) {
-				Input::SendTestKey(Cfg().ContextKeyDik(), true);
+				Input::SendTestKey(testKey, true);
 				keyStep = 1;
 				keyT = 0.0f;
-				LC_LOG("DebugContextKey: context key down (offered: INPUT_%s)", pad::kControlNames[action]);
+				LC_LOG("DebugContextKey: %s down (offered bits 0x%X)", Cfg().debugContextKey.c_str(), action);
 			} else if (keyStep == 1 && keyT >= 0.15f) {
-				Input::SendTestKey(Cfg().ContextKeyDik(), false);
+				Input::SendTestKey(testKey, false);
 				keyStep = 2;
-				LC_LOG("DebugContextKey: context key up");
+				LC_LOG("DebugContextKey: %s up", Cfg().debugContextKey.c_str());
 			}
 		}
 

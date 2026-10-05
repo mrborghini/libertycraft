@@ -167,6 +167,12 @@ Minecraft's mobs and GTA IV's city meet:
   their own weapons: blows, arrows, potions, a creeper's blast, a ghast's fireball. They walk GTA IV's
   streets, stairs and ramps, don't see through its walls, and walk straight at what they can't find a
   path to. Your survival player is still their target too; none of it is your crime.
+* **GTA IV's explosions reach Minecraft.** A car or a gas pump blowing up, a grenade, a rocket or a
+  molotov hurts and throws Minecraft's mobs and, in Minecraft mode, you, like a Minecraft explosion of that
+  size (a molotov or a burning car also sets them alight); it breaks no blocks. Only one of the two ever
+  counts: in Minecraft mode Minecraft's, while GTA IV drives you (Niko mode, a car) GTA IV's own.
+* **Mobs hurt Niko too.** In Niko mode a mob's blow, arrow or crossbow bolt takes GTA IV's health off
+  Niko (a heavy blow knocks him over), and a creeper's blast is GTA IV's own explosion.
 * **Peds fight back.** Armed peds and police nearby shoot at a mob that goes after someone, and GTA IV's
   bullets hurt mobs (four pistol shots kill a zombie); other peds run, drivers drive off. `PedsFightMobs=0`
   in `LibertyCraft.ini` turns this off.
@@ -174,12 +180,20 @@ Minecraft's mobs and GTA IV's city meet:
   at night by GTA IV's clock hostile mobs 24 to 64 blocks from you on the street (up to 24 around you), by
   day now and then a few farm animals on GTA IV's grass. Undead burn in GTA IV's sun: Minecraft's time of
   day follows GTA IV's clock. `off` removes the mobs it spawned (not those from eggs, spawners or commands).
+* **GTA IV's roofs are shade.** Undead don't burn in GTA IV's interiors or under its roofs, balconies,
+  bridges, awnings and el-train tracks, and a burning one with no target runs for that shade as in
+  Minecraft (one with a target keeps fighting). Rain doesn't reach under them either.
+* **GTA IV's water is theirs too.** By day a drowned on land heads for GTA IV's harbour, rivers and sea; a
+  zombie that stays under its water turns into a drowned (a husk into a zombie) as in Minecraft.
+* **Nothing falls through the city.** A mob over ground GTA IV hasn't described yet (far below you on a
+  roof, deep water, just after a world change) waits where it is until it has, instead of falling into
+  the void.
 
 ## One sky
 
 Minecraft's time and weather are GTA IV's. Minecraft's clock follows GTA IV's, and its weather follows
 GTA IV's weather (rain while it rains, thunder in its storms; rain puts out fires and keeps the undead
-from burning). The other way round, `/time set` (day, noon, night, midnight or a tick count) and
+from burning, but not indoors or under GTA IV's roofs, which stay dry). The other way round, `/time set` (day, noon, night, midnight or a tick count) and
 `/time add` set GTA IV's clock (Minecraft's tick 0 is 06:00, so `night` is 19:00 and `midnight` 00:00),
 sleeping through the night in a bed brings GTA IV's morning, and `/weather clear`, `/weather rain` and
 `/weather thunder` (with an optional duration) change GTA IV's weather on the spot (extra sunny, rain, a
@@ -219,7 +233,10 @@ Mobs: they path over GTA IV's collision as 1/8-block voxels, so very narrow gaps
 furniture still stop them (a mob that finds no path walks straight at its target and may stand at a wall);
 a mob's plain blow doesn't knock a ped over; only the ped a mob is after and police within 25 m react, peds
 in cars don't shoot; GTA IV's vehicles more than 60 m from you (and trains, planes, rotors) don't run mobs
-over; the spawner only uses ground GTA IV has described around you. Time and weather: GTA IV's 19:00
+over; the spawner only uses ground GTA IV has described around you. GTA IV's water reaches Minecraft out
+to about 40 blocks from you: further out a mob in it stands on a dry sea bed (and burns by day). Where
+GTA IV's collision has no sea bed (deep water) a mob sinks to where its collision stops and waits there.
+Shade is only what GTA IV has described above a spot (up to 48 blocks). Time and weather: GTA IV's 19:00
 (`/time set night`) is still dusk; GTA IV's cloudy and foggy weathers are clear in Minecraft.
 
 ## Licenses

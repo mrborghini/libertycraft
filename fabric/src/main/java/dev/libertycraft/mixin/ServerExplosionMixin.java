@@ -35,7 +35,9 @@ public abstract class ServerExplosionMixin {
 	@Inject(method = "explode", at = @At("HEAD"))
 	private void libertycraft$begin(CallbackInfoReturnable<Integer> cir) {
 		// The blocky city is made of real blocks: no GTA IV ground to blow apart there (GTA IV still feels the blast).
-		this.libertycraft$blast = BlockyCity.isCity(((ServerExplosion) (Object) this).level()) ? null : HostDigBlast.begin((ServerExplosion) (Object) this);
+		// GTA IV's own explosions (GtaBlasts) blow nothing apart.
+		this.libertycraft$blast = BlockyCity.isCity(((ServerExplosion) (Object) this).level()) || dev.libertycraft.combat.GtaBlasts.mirroring()
+			? null : HostDigBlast.begin((ServerExplosion) (Object) this);
 	}
 
 	@WrapOperation(
@@ -68,8 +70,8 @@ public abstract class ServerExplosionMixin {
 			this.libertycraft$blast.finish();
 			this.libertycraft$blast = null;
 		}
-		if (!Link.active()) {
-			return;
+		if (!Link.active() || dev.libertycraft.combat.GtaBlasts.mirroring()) {
+			return; // (GTA IV's own explosion: it has already happened there)
 		}
 		ServerExplosion self = (ServerExplosion) (Object) this;
 		var center = self.center();

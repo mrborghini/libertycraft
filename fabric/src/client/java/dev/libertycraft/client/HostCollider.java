@@ -21,12 +21,14 @@ public final class HostCollider {
 		List<HostTri> tris = new ArrayList<>();
 		HostCollision.trianglesNear(box.expandTowards(move).inflate(1.0, 1.0 + step, 1.0), tris);
 		if (tris.isEmpty()) {
+			MoverClient.hostCollided(false);
 			return move;
 		}
 		double[] r = TriCollider.resolve(
 			tris, (box.minX + box.maxX) * 0.5, box.minY, (box.minZ + box.maxZ) * 0.5, box.getXsize() * 0.5, box.getYsize(), step, player.onGround(),
 			move.x, move.y, move.z
 		);
+		MoverClient.hostCollided(Math.abs(r[0] - move.x) + Math.abs(r[2] - move.z) > 1.0E-4); // (elytra crashes into GTA IV's walls)
 		if (r[0] == move.x && r[1] == move.y && r[2] == move.z) {
 			return move;
 		}

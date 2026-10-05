@@ -96,6 +96,7 @@ namespace lc
 			int                                          still = 0;
 			bool                                         movedOnce = false;  // moved since first seen (knocked over): holds nothing back
 			bool                                         inside = false;     // the player is inside it: not solid for now
+			bool                                         passable = false;   // PropSmash: about to be run through (not solid until it moves)
 			Clock::time_point                            firstSeen{};
 			float                                        lo[3]{}, hi[3]{};   // MC bounds of the grown model box
 			std::shared_ptr<const std::vector<col::Tri>> tris;               // null: not probed (yet), or moving
@@ -122,6 +123,8 @@ namespace lc
 		Clock::time_point                              objProbeStart{};
 		std::vector<const void*>                       objQueue;  // to probe, nearest first
 		std::uint32_t                                  objScanNo = 0;
+		int                                            objPrx = 0, objPrz = 0;  // the player's region column at the last object scan
+		bool                                           objScanned = false;
 		float                                          objArea[4]{};  // x0, x1, z0, z1 of the object area at the last scan
 		std::uint32_t                                  objLogged = 0;
 		std::vector<std::int32_t>                      doorModelsLogged;
@@ -370,7 +373,7 @@ namespace lc
 							}
 							continue;  // moving (or stuck): not solid for now
 						}
-						if (t.inside || t.tris->empty()) {
+						if (t.inside || t.passable || t.tris->empty()) {
 							continue;
 						}
 						hash += Mix64(t.hash);
@@ -451,6 +454,7 @@ namespace lc
 					Describe(t, obj, false);
 					t.still = 0;
 					t.movedOnce = true;
+					t.passable = false;  // (knocked over: solid again where it comes to rest, once probed)
 					if (t.tris) {
 						t.tris.reset();
 						t.boxes.clear();
@@ -504,6 +508,9 @@ namespace lc
 				return dx * dx + dy * dy + dz * dz;
 			};
 			std::sort(objQueue.begin(), objQueue.end(), [&](const void* a, const void* b) { return d2(a) > d2(b); });  // nearest at the back
+			objPrx = a_prx;
+			objPrz = a_prz;
+			objScanned = true;
 			UpdateObjectColumns(a_prx, a_prz);
 
 			if (!objListed && !objects.empty() && objScanNo > 4) {
@@ -1007,6 +1014,29 @@ namespace lc
 				std::memory_order_relaxed);
 			counters.builds.fetch_add(1, std::memory_order_relaxed);
 		}
+	}
+
+	void Collision::ForEachSolidObject(const std::function<void(const ObjectView&)>& a_visit) const
+	{
+		for (const auto& [ptr, t] : objects) {
+			if (!Solid(t) || !t.tris || t.boxes.empty()) {
+				continue;
+			}
+			a_visit(ObjectView{ ptr, t.model, t.hashKey, t.boxes.data(), t.boxes.size(), t.passable });
+		}
+	}
+
+	bool Collision::SetObjectPassable(const void* a_key, bool a_passable)
+	{
+		const auto it = objects.find(a_key);
+		if (it == objects.end() || it->second.passable == a_passable) {
+			return false;
+		}
+		it->second.passable = a_passable;
+		if (objScanned) {
+			UpdateObjectColumns(objPrx, objPrz);  // (the regions it touches are unsent; Update sends them again)
+		}
+		return true;
 	}
 
 	Collision::Counters Collision::TakeCounters()

@@ -23,6 +23,8 @@ public final class Proto {
 	public static final long OFF_WATER_GRID = 0x400;
 	public static final int WATER_GRID_SIZE = 16;
 	public static final long WG_SEQ = 0x0, WG_ORIGIN_X = 0x4, WG_ORIGIN_Z = 0x8, WG_WORLD_ID = 0xC, WG_SURFACE = 0x10;
+	/** WaterGrid worldId flag: a tile of the lattice around the player (origins multiples of 16), not the grid around them. */
+	public static final int WATER_GRID_TILE = 0x80000000;
 	public static final long OFF_OVERLAY_CTL = 0x300;
 	public static final long OFF_OVERLAY_SLOT_HDR = 0x340;
 	public static final long OFF_INPUT_RING = 0x1000;
@@ -53,6 +55,15 @@ public final class Proto {
 	 */
 	public static final int IN_MOB_HIT = 11;
 	public static final int MOB_HIT_BY_PLAYER = -1;
+	/**
+	 * LibertyCraft: one of GTA IV's own explosions (kInGtaExplosion): a, b, c = MC position * 256, code = GTA type
+	 * (GTA_BLAST_TYPE_MASK) | radius in half metres (GTA_BLAST_RADIUS_SHIFT, 7 bits) | GTA_BLAST_BY_PLAYER | GTA_BLAST_FIRE.
+	 */
+	public static final int IN_GTA_EXPLOSION = 12;
+	public static final int GTA_BLAST_TYPE_MASK = 0x1F, GTA_BLAST_RADIUS_SHIFT = 5, GTA_BLAST_BY_PLAYER = 1 << 12, GTA_BLAST_FIRE = 1 << 13;
+	/** LibertyCraft: the mover broke one of GTA IV's props (kInPropHit): code = percent of its speed it keeps (PROP_KEEP_MASK), a/b/c = the prop, MC * 256. */
+	public static final int IN_PROP_HIT = 13;
+	public static final int PROP_KEEP_MASK = 0x7F;
 	public static final int HURT_MELEE = 0;
 	public static final int HURT_PROJECTILE = 1;
 	public static final int HURT_MAGIC = 2;
@@ -134,6 +145,26 @@ public final class Proto {
 	public static final int EV_SET_TIME = 9;
 	/** LibertyCraft: Minecraft's weather was set (kEvSetWeather): formId = GTA_* weather type, a = seconds (0: until told otherwise). */
 	public static final int EV_SET_WEATHER = 10;
+	/**
+	 * LibertyCraft: a mob hit the player while GTA IV drives him on foot (kEvMobHitPlayer): a = MC damage, b/c = push
+	 * direction, d = push strength beyond a plain blow's, flags = HIT_*, weapon = WEAPON_*.
+	 */
+	public static final int EV_MOB_HIT_PLAYER = 11;
+	/**
+	 * LibertyCraft: an elytra crash (kEvImpact): a = the crash's speed (m/s), b/c = horizontal flight direction x/z,
+	 * d = horizontal speed before (m/s), flags = IMPACT_*.
+	 */
+	public static final int EV_IMPACT = 12;
+	public static final int IMPACT_WALL = 1, IMPACT_GROUND = 1 << 1;
+	/**
+	 * LibertyCraft: the player moving fast (kEvMover), every tick from MOVER_MIN_SPEED: a/b/c = the moving box's
+	 * bottom centre, d = speed (m/s), formId = MOVER_* | width cm << MOVER_WIDTH_SHIFT | height cm <<
+	 * MOVER_HEIGHT_SHIFT, flags / weapon = the motion's yaw / pitch (float bits, MC degrees).
+	 */
+	public static final int EV_MOVER = 13;
+	public static final int MOVER_FLYING = 1, MOVER_RIDING = 1 << 1, MOVER_SPRINTING = 1 << 2;
+	public static final int MOVER_WIDTH_SHIFT = 8, MOVER_HEIGHT_SHIFT = 18;
+	public static final double MOVER_MIN_SPEED = 5.0;
 	// SkyCraft's Skyrim skills (ActorValue). Kept for protocol parity; LibertyCraft never sends
 	// EV_SKILL_USE because GTA IV has no skill XP to feed.
 	public static final int SKILL_BLOCK = 9;

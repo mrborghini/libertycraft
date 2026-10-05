@@ -121,6 +121,11 @@ public final class HostDrive {
 		return entity instanceof ServerPlayer && STATES.containsKey(entity.getUUID());
 	}
 
+	/** GTA IV drives this player (Niko mode, a vehicle, getting back up): Minecraft takes no damage of its own then. */
+	public static boolean drivenByHost(Entity entity) {
+		return isFollowing(entity);
+	}
+
 	private static boolean isActiveMount(Entity entity) {
 		if (entity == spawning) {
 			return true;

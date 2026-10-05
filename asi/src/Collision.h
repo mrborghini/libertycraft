@@ -30,7 +30,9 @@
 
 #include "Coords.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace lc
 {
@@ -51,6 +53,22 @@ namespace lc
 		// Game thread, once a frame: probe and queue what's due around a_centerMc (the player's
 		// feet, MC space). a_feetGtaZ: the player's feet height in GTA space.
 		void Update(const McVec& a_centerMc, float a_feetGtaZ);
+
+		// Street furniture (collision/Objects.h), for PropSmash. Game thread only.
+		struct ObjectView
+		{
+			const void*   key;       // the CObject
+			std::int32_t  model;
+			std::uint32_t hash;      // its model's hash (logging)
+			const void*   boxes;     // col::OBox[count]: its probed shape, MC space
+			std::size_t   count;
+			bool          passable;  // left out of Minecraft's collision (SetObjectPassable)
+		};
+		// Each tracked object Minecraft collides with (solid, probed, keeping still).
+		void ForEachSolidObject(const std::function<void(const ObjectView&)>& a_visit) const;
+		// Leaves an object out of the collision Minecraft gets (or puts it back), at once: the regions it
+		// touches are sent again. It goes back by itself once it has moved (knocked over) and keeps still.
+		bool SetObjectPassable(const void* a_key, bool a_passable);
 
 		struct Counters
 		{

@@ -1,6 +1,7 @@
 // DriveLogic.h: who drives the player (Minecraft or GTA IV) through toggles, the vehicle key,
 // vehicles entered by scripts, and the hand-back after leaving a car.
 #include "DriveLogic.h"
+#include "drive/PropHit.h"
 #include "drive/VehicleHit.h"
 
 #include <cmath>
@@ -552,6 +553,55 @@ static void TestBlows()
 	CHECK(hit::RotorBlow(true).force * hit::kForceToSpeed <= hit::kMaxThrowSpeed);
 }
 
+// drive/PropHit.h: a mover's path against a prop's boxes, the speeds that knock props over, elytra crashes.
+static void TestPropHits()
+{
+	namespace P = lc::drive::prop;
+	// A pole 0.3 m square, 4 m tall, at MC (10, 64, 0), axis-aligned.
+	P::Box pole{ { 10.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f }, -0.15f, 0.15f, -0.15f, 0.15f, 64.0f, 68.0f };
+	P::Mover m;
+	m.bottom[0] = 0.0f, m.bottom[1] = 65.0f, m.bottom[2] = 0.0f;
+	m.vel[0] = 25.0f;  // elytra flight east, 1 m up
+	m.halfWidth = 0.3f, m.height = 0.6f;
+	// It reaches the pole's west face (9.85) less the box's reach (0.33) at about (9.85 - 0.33) / 25 s.
+	const float t = P::FirstContact(m, &pole, 1, 0.45f, 0.05f);
+	CHECK(t > 0.36f && t < 0.39f);
+	CHECK(P::FirstContact(m, &pole, 1, 0.3f, 0.05f) < 0.0f);  // not within 0.3 s
+	m.bottom[2] = 1.0f;  // a metre beside it: passes
+	CHECK(P::FirstContact(m, &pole, 1, 0.45f, 0.05f) < 0.0f);
+	m.bottom[2] = 0.0f, m.bottom[1] = 68.5f;  // over its top
+	CHECK(P::FirstContact(m, &pole, 1, 0.45f, 0.05f) < 0.0f);
+	m.bottom[1] = 65.0f, m.bottom[0] = 9.8f, m.vel[0] = 0.0f;  // standing in it
+	CHECK(P::FirstContact(m, &pole, 1, 0.45f, 0.05f) == 0.0f);
+	// Rotated 45 degrees: the box frame's axes.
+	const float r = std::sqrt(0.5f);
+	P::Box turned{ { 10.0f, 0.0f }, { r, r }, { -r, r }, -0.15f, 0.15f, -0.15f, 0.15f, 64.0f, 68.0f };
+	P::Mover m2;
+	m2.bottom[0] = 0.0f, m2.bottom[1] = 65.0f, m2.bottom[2] = 0.0f, m2.vel[0] = 25.0f;
+	const float t2 = P::FirstContact(m2, &turned, 1, 0.45f, 0.05f);
+	CHECK(t2 > 0.35f && t2 < 0.39f);  // its corner (0.21 out) faces the mover
+	// Who knocks what over: a walk or a sprint never a traffic light, elytra flight and a galloping horse do;
+	// a sprint knocks a bin over, a walk doesn't; nothing moves a kiosk.
+	CHECK(P::BreakSpeed(400.0f) > 5.6f && P::BreakSpeed(400.0f) <= 14.0f && P::BreakSpeed(400.0f) <= 10.0f);
+	CHECK(P::BreakSpeed(40.0f) <= 5.6f && P::BreakSpeed(40.0f) > 4.3f);
+	CHECK(P::BreakSpeed(9000.0f) > 100.0f && P::BreakSpeed(0.0f) > 100.0f);
+	// A player loses about half his speed to a traffic light, a horse a little, nobody keeps it all.
+	const float keepPlayer = P::Keep(P::kPlayerMass, 400.0f), keepHorse = P::Keep(P::kMountMass, 400.0f);
+	CHECK(keepPlayer > 0.3f && keepPlayer < 0.6f && keepHorse > 0.8f && keepHorse < 1.0f && P::Keep(P::kPlayerMass, 30.0f) > 0.85f);
+	CHECK(P::Keep(P::kPlayerMass, 3999.0f) >= P::kMinKeep);
+	const float vPole = P::PropSpeed(P::kPlayerMass, 400.0f, 25.0f, keepPlayer);
+	CHECK(vPole >= 1.0f && vPole <= 12.0f);
+	// Elytra crashes: a wall at 20 m/s throws him back off it, gently; the ground at speed sends him on.
+	const float east[2] = { 1.0f, 0.0f };
+	const auto wall = P::CrashOf(true, 20.0f, east, 25.0f);
+	CHECK(wall.knock && wall.dir[0] < -0.99f && wall.throwSpeed <= 4.0f && wall.ms >= 1500);
+	CHECK(!P::CrashOf(true, 6.0f, east, 25.0f).knock);   // Minecraft's own damage starts here; no tumble
+	const float south[2] = { 0.0f, 1.0f };            // MC +z is GTA -y
+	const auto ground = P::CrashOf(false, 15.0f, south, 20.0f);
+	CHECK(ground.knock && ground.dir[1] < -0.99f && ground.throwSpeed > 10.0f && ground.throwSpeed <= 20.0f);
+	CHECK(!P::CrashOf(false, 7.0f, south, 12.0f).knock);  // a landing
+}
+
 int main()
 {
 	TestDefaultMinecraftMode();
@@ -579,6 +629,7 @@ int main()
 	TestComingDown();
 	TestRotorStrike();
 	TestBlows();
+	TestPropHits();
 	if (failures) {
 		std::fprintf(stderr, "drive_test: %d failure(s)\n", failures);
 		return EXIT_FAILURE;

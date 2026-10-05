@@ -16,6 +16,7 @@
     "IntegratedServerMixin",
     "LevelExtractorMixin",
     "LevelRendererMixin",
+    "LivingEntityFallFlyingMixin",
     "MinecraftDigMixin",
     "MinecraftMixin",
     "MinecraftUseMixin",

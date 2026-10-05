@@ -54,6 +54,7 @@ set(LC_SDK_UNITY_SOURCES
 	src/Overlay.cpp
 	src/Combat.cpp
 	src/MobFight.cpp
+	src/Blasts.cpp
 	src/SkyControl.cpp
 	src/NpcBlocks.cpp
 	src/Doors.cpp
@@ -63,6 +64,7 @@ set(LC_SDK_UNITY_SOURCES
 	src/BlockyCity.cpp
 	src/PauseMenu.cpp
 	src/Missions.cpp
+	src/PropSmash.cpp
 )
 set(LC_SOURCES
 	src/dllmain.cpp
@@ -79,7 +81,7 @@ set(LC_HEADERS
 	src/Game.h src/Input.h src/Collision.h src/Render.h src/Overlay.h src/Sdk.h
 	src/Combat.h src/combat/CombatMath.h src/NpcBlocks.h src/combat/BlockPush.h
 	src/render/Frame.h src/render/RenderMath.h src/render/Shaders.h src/render/D3D9Util.h src/render/World.h src/render/Shadows.h src/render/ShadowPass.h src/render/OpaqueDepth.h
-	src/HostDrive.h src/DriveLogic.h src/Doors.h src/NikoBody.h src/render/Body.h src/Hazards.h src/hazard/HazardGrid.h src/ViewportRoom.h src/BlockyCity.h src/PauseMenu.h src/MobFight.h src/SkyControl.h
+	src/HostDrive.h src/DriveLogic.h src/Doors.h src/NikoBody.h src/render/Body.h src/Hazards.h src/hazard/HazardGrid.h src/ViewportRoom.h src/BlockyCity.h src/PauseMenu.h src/MobFight.h src/Blasts.h src/SkyControl.h src/PropSmash.h src/drive/PropHit.h
 	src/Missions.h src/drive/SceneLogic.h
 	src/compat/d3dx9.h
 	../protocol/libertycraft_protocol.h

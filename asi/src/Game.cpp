@@ -20,6 +20,7 @@
 #include "Missions.h"
 #include "NikoBody.h"
 #include "Perf.h"
+#include "PropSmash.h"
 #include "SkyControl.h"
 #include "ViewportRoom.h"
 
@@ -713,6 +714,19 @@ namespace lc::Game
 	void ReportHurt(std::uint16_t a_kind, float a_damage, std::uint32_t a_attacker, std::uint32_t a_flags)
 	{
 		// Combat calls this when GTA damages the player while puppeting.
+		// Never while GTA IV's player is dead, dying, being arrested or in the respawn fade: Minecraft's player
+		// has died already (or does with him), and its fresh one mustn't take the burning body's damage or the
+		// shots at it (it played hurt sounds through GTA IV's death scene).
+		{
+			const int player = static_cast<int>(S::GET_PLAYER_ID());
+			CPed*     p = FindPlayerPed();
+			const int ped = p && CPools::ms_pPedPool ? static_cast<int>(CPools::ms_pPedPool->GetIndex(p)) : 0;
+			if (S::IS_PLAYER_DEAD(player) || !S::IS_PLAYER_PLAYING(player) || S::IS_PLAYER_BEING_ARRESTED() || !S::IS_SCREEN_FADED_IN() ||
+				(ped && S::DOES_CHAR_EXIST(ped) && S::IS_CHAR_DEAD(ped))) {
+				LC_LOG_EVERY(1000, "GTA IV hurt the player while he is dead, dying, arrested or fading in: %.2f not passed on to Minecraft", a_damage);
+				return;
+			}
+		}
 		Link::Get().PushInput(proto::kInHurt, a_kind, static_cast<std::int32_t>(a_damage * 100.0f), static_cast<std::int32_t>(a_attacker),
 			static_cast<std::int32_t>(a_flags));
 	}
@@ -726,6 +740,7 @@ namespace lc::Game
 		HostDrive::OnIngameStartup();
 		Missions::OnIngameStartup();
 		ViewportRoom::OnIngameStartup();
+		PropSmash::OnIngameStartup();
 		BlockyCity::OnIngameStartup();
 		teleportPending = true;
 		haveLastSet = false;
@@ -1211,6 +1226,7 @@ namespace lc::Game
 			if (!paused) {
 				Hazards::Tick(cf);  // Minecraft's fire, lava and magma burn GTA's peds
 			}
+			PropSmash::Tick(exists ? ped : 0, puppeting, paused, dt);  // fast Minecraft movers knock GTA's props over (PropSmash.h)
 		}
 
 		// ---- collision --------------------------------------------------------------------------------

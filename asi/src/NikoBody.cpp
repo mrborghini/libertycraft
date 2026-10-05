@@ -698,6 +698,43 @@ namespace lc::NikoBody
 		}
 	}
 
+	namespace
+	{
+		bool deathShown = false;
+	}
+
+	bool DeathSceneShown() { return deathShown; }
+
+	int DeathScenePed(bool a_minecraftMode)
+	{
+		static bool        inScene = false;
+		static const char* lastWhat = nullptr;
+		const auto&        c = Config::Get();
+		const int          player = static_cast<int>(S::GET_PLAYER_ID());
+		CPed*              ped = FindPlayerPed();
+		auto*              pool = CPools::ms_pPedPool;
+		const int          handle = ped && pool ? static_cast<int>(pool->GetIndex(ped)) : 0;
+		const bool         dead = S::IS_PLAYER_DEAD(player) || (handle && S::DOES_CHAR_EXIST(handle) && S::IS_CHAR_DEAD(handle));
+		const bool         arrested = !dead && S::IS_PLAYER_BEING_ARRESTED();
+		// From the death or the cuffs on, through the fade, until the respawn has faded in (he is back
+		// at the hospital or the police station; the teleport handshake then keeps the body on him).
+		const bool fadedIn = S::IS_SCREEN_FADED_IN();
+		if (dead || arrested) {
+			inScene = true;
+		} else if (inScene && fadedIn && S::IS_PLAYER_PLAYING(player)) {
+			inScene = false;
+		}
+		const bool  wanted = c.minecraftBody && c.minecraftBodyDeath && (a_minecraftMode || c.minecraftBodyNikoMode) && handle && S::DOES_CHAR_EXIST(handle);
+		const char* what = !inScene ? nullptr : dead ? "dying" : arrested ? "being arrested" : "the respawn fade";
+		if (what != lastWhat) {
+			LC_LOG("death scene: %s%s", what ? what : "over (back in play)",
+				what && !wanted ? (c.minecraftBodyDeath ? " (Niko mode: Niko as he is)" : " (MinecraftBodyDeath=0: Niko as he is)") : "");
+			lastWhat = what;
+		}
+		deathShown = inScene && wanted;
+		return deathShown ? handle : 0;
+	}
+
 	int Target(int a_player, drive::Why a_why, bool a_hostDrives, bool a_mcInWorld)
 	{
 		DebugTrainTick(a_player);

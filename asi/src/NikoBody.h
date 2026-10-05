@@ -16,6 +16,14 @@ namespace lc::NikoBody
 	// HostDrive::Tick: the ped whose animation the body follows (0: no body this frame). a_why is
 	// why GTA drives; a_player the player's ped.
 	int Target(int a_player, drive::Why a_why, bool a_hostDrives, bool a_mcInWorld);
+	// HostDrive::Tick: the player ped while he dies (GTA's wasted flow: the death, the fade, until he is
+	// back at the hospital) or is being arrested (busted), when the body should be on him then
+	// (MinecraftBodyDeath; in Niko mode only with MinecraftBodyNikoMode); else 0. GTA no longer
+	// "plays" a dying player (GET_PLAYER_CHAR has no ped for him), so the ped is found here.
+	int DeathScenePed(bool a_minecraftMode);
+	// The body is on him for a death scene this frame (GTA counts its wasted flow as no player in play,
+	// which the renderer takes for a loading screen: it draws the blocks and the body anyway).
+	bool DeathSceneShown();
 	// Hides (or shows again) a ped under the body, the configured way (MinecraftBodyHide).
 	void Hide(int a_ped, bool a_hide);
 	// Render::Capture: the target's bones this frame -> a_f.bodyParts / bodyOrigin / kFrameBody.

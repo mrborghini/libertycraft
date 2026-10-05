@@ -114,7 +114,9 @@ class Link:
         head, tail = struct.unpack_from("<Q", self.m, OFF_EVENTS)[0], struct.unpack_from("<Q", self.m, OFF_EVENTS + 0x40)[0]
         while tail < head:
             typ, form, a, b, c, d, flags = struct.unpack_from("<IIffffI", self.m, OFF_EVENTS + 0x80 + (tail % 512) * 32)
-            if typ in (9, 10):  # kEvSetTime / kEvSetWeather
+            if typ == 11:  # kEvMobHitPlayer
+                print(f"  event from Minecraft: a mob hit the player GTA drives for {a:.1f} (push {b:.2f},{c:.2f} x{d:.2f}, flags {flags:#x})")
+            elif typ in (9, 10):  # kEvSetTime / kEvSetWeather
                 names = ["EXTRASUNNY", "SUNNY", "SUNNY_WINDY", "CLOUDY", "RAIN", "DRIZZLE", "FOGGY", "LIGHTNING"]
                 print(f"  event from Minecraft: " + (f"set the time to {a:.2f} h" if typ == 9 else
                       f"set the weather to {names[form] if form < len(names) else form} for {a:.0f} s"))

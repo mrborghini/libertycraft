@@ -28,6 +28,7 @@ import net.minecraft.client.Minecraft;
  * # wait 10             the commands below run 10 seconds later (as many waits as needed)
  * # screen inventory    the client opens the inventory (or "chat", "pause"; "none" closes it)
  * # hotbar 3            the client selects hotbar slot 3 (1 to 9)
+ * # view third          the camera goes to third person (behind); "first" back to first person
  * tp @s ~ ~ ~4
  * ? execute if block ~ ~-1 ~ minecraft:glass    "?": the command's feedback goes to the log (a check)
  * </pre>
@@ -80,7 +81,7 @@ public final class DevAutorun {
 					fromIngame = true;
 				} else if (line.startsWith("# wait ")) {
 					commands.add(WAIT + (long) (Double.parseDouble(line.substring(7).strip()) * 1000));
-				} else if (line.startsWith("# screen ") || line.startsWith("# hotbar ")) {
+				} else if (line.startsWith("# screen ") || line.startsWith("# hotbar ") || line.startsWith("# view ")) {
 					commands.add(CLIENT + line.substring(2));
 				} else if (line.startsWith("? ")) {
 					commands.add(line); // a check: its feedback is logged
@@ -121,6 +122,8 @@ public final class DevAutorun {
 			case "screen chat" -> minecraft.gui.setScreen(new net.minecraft.client.gui.screens.ChatScreen("hello from the autorun", false));
 			case "screen pause" -> minecraft.gui.setScreen(new net.minecraft.client.gui.screens.PauseScreen(true));
 			case "screen none" -> minecraft.gui.setScreen(null);
+			case "view third" -> minecraft.options.setCameraType(net.minecraft.client.CameraType.THIRD_PERSON_BACK);
+			case "view first" -> minecraft.options.setCameraType(net.minecraft.client.CameraType.FIRST_PERSON);
 			default -> {
 				if (step.startsWith("hotbar ")) {
 					player.getInventory().setSelectedSlot(Math.clamp(Integer.parseInt(step.substring(7).strip()) - 1, 0, 8));

@@ -30,9 +30,10 @@ namespace lc::Input
 	// GTA's phone is out (taken out by the player, or a call): from the game's own flag, updated by
 	// Tick. Safe from any thread.
 	bool PhoneOut();
-	// GTA's help text offers a context action (Missions.h): this pad control (-1: none) is let through
-	// while puppeting, and ContextKey goes to GTA instead of Minecraft. Game thread.
-	void SetPrompt(int a_control);
+	// GTA's help text offers context actions or menu choices (Missions.h; drive::PromptAction bits): their pad
+	// controls are let through while puppeting, and their keys (ContextKey, Enter, Backspace) go to GTA
+	// instead of Minecraft. Game thread.
+	void SetPrompt(unsigned a_actions);
 	// processPadEvent: while puppeting (or Niko gets back up, Game::Shared::padLocked), zero every
 	// control except the pause menu's, the phone's and an offered context action's.
 	void Pad(CPad* a_pad);
