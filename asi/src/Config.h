@@ -150,6 +150,13 @@ namespace lc
 		// Minecraft damage x this = GTA body and engine health off a vehicle (1000 each; the engine burns
 		// below 0, and a car with no body health left blows up).
 		float vehicleDamageScale = 15.0f;
+		// A blow (sword, axe, fist) or an arrow dents the car where it landed (DAMAGE_CAR at the hit point):
+		// how deep (1: a sword blow's 11 Minecraft damage deforms with a force of about 1000; 0: no dents).
+		// An arrow dents 0.4 of a blow of the same damage.
+		float vehicleDentScale = 1.0f;
+		// Test hook: N s after DebugCarCover's car is parked, DAMAGE_CAR at its door, bonnet and boot with a
+		// few strengths in turn, each logged (GTA's deformation there, body and engine health).
+		float debugDentProbe = 0.0f;
 		// Minecraft's blocks are solid for GTA IV's peds and vehicles (NpcBlocks.h). Not in the default
 		// ini: how a ped is moved back out of blocks (0 the entity's own SetPosition, 1
 		// SET_CHAR_COORDINATES_NO_OFFSET).

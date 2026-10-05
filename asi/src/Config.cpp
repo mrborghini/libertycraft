@@ -80,6 +80,8 @@ namespace lc
 			"HitForce=1.0\n"
 			"; Minecraft damage x this = GTA body/engine health off a vehicle (1000 each)\n"
 			"VehicleDamageScale=15\n"
+			"; how deep a sword blow or an arrow dents a car where it hits (1.0; 0: no dents)\n"
+			"VehicleDentScale=1.0\n"
 			"; Minecraft blocks are solid for GTA IV's peds and vehicles\n"
 			"NpcBlocks=1\n"
 			"; Minecraft attacks are crimes: victims fight back or flee, witnesses and police give you a wanted level\n"
@@ -279,6 +281,8 @@ namespace lc
 		if (auto v = get("combatselftest")) combatSelfTest = ToBool(*v, combatSelfTest);
 		if (auto v = get("debugwarpoutdoors")) debugWarpOutdoors = ToBool(*v, debugWarpOutdoors);
 		if (auto v = get("vehicledamagescale")) vehicleDamageScale = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("vehicledentscale")) vehicleDentScale = std::max(0.0f, static_cast<float>(std::atof(v->c_str())));
+		if (auto v = get("debugdentprobe")) debugDentProbe = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("npcblocks")) npcBlocks = ToBool(*v, npcBlocks);
 		if (auto v = get("npcpushmethod")) npcPushMethod = std::atoi(v->c_str());
 		if (auto v = get("debugknockbackvariant")) debugKnockbackVariant = std::atoi(v->c_str());
@@ -393,6 +397,7 @@ namespace lc
 		if (debugFireworkTargets > 0) {
 			LC_LOG("config: DebugFireworkTargets=%d DebugFireworkHeliAhead=%.0f", debugFireworkTargets, debugFireworkHeliAhead);
 		}
+		LC_LOG("config: VehicleDentScale=%.2f%s", vehicleDentScale, debugDentProbe > 0.0f ? " DebugDentProbe on" : "");
 		LC_LOG("config: VehicleDamageScale=%.1f NpcBlocks=%d%s%s", vehicleDamageScale, npcBlocks, npcPushMethod ? " NpcPushMethod=1" : "",
 			debugKnockbackVariant >= 0 ? " DebugKnockbackVariant on" : "");
 		if (debugTestCar != 0) {

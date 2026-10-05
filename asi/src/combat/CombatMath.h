@@ -684,12 +684,26 @@ namespace lc::combat
 		return std::min(a_mcDamage * a_scale, 100000.0f);
 	}
 
-	// A blow (a sword, an axe, a fist: no arrow, rocket or fire) only dents a vehicle: the body takes
-	// all of it, the engine half, and never below kMeleeEngineFloor (GTA's engine smokes under 400
-	// and burns under 0), so no number of sword hits sets a car on fire or blows it up; a crit is
-	// just a bigger dent. Arrows and rockets keep their full damage (and can wreck it).
-	inline constexpr float kMeleeEngineShare = 0.5f;
+	// A blow (a sword, an axe, a fist: no arrow, rocket or fire) takes its full damage off the body
+	// and the engine, but never the engine below kMeleeEngineFloor (GTA's engine smokes under 400 and
+	// burns under 0), so no number of sword hits sets a car on fire or blows it up; fire, explosions,
+	// arrows and rockets still can.
+	inline constexpr float kMeleeEngineShare = 1.0f;
 	inline constexpr float kMeleeEngineFloor = 300.0f;
+
+	// A dent where a blow or an arrow struck (DAMAGE_CAR's deforming force; measured on an Admiral's door:
+	// 100 about 6 cm, 500 about 18, more crumples it further). VehicleDentScale 1: a sword blow's 11
+	// Minecraft damage gives about 1000; an arrow 0.4 of a blow of the same damage; 0: none.
+	inline constexpr float kDentForcePerDamage = 90.0f;
+	inline constexpr float kArrowDentShare = 0.4f;
+
+	inline float DentForce(float a_mcDamage, float a_scale, bool a_arrow)
+	{
+		if (!(a_mcDamage > 0.0f) || !(a_scale > 0.0f)) {
+			return 0.0f;
+		}
+		return std::min(a_mcDamage, 100.0f) * kDentForcePerDamage * a_scale * (a_arrow ? kArrowDentShare : 1.0f);
+	}
 
 	inline float EngineAfterVehicleHit(float a_engine, float a_damage, bool a_melee)
 	{

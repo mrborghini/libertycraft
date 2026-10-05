@@ -1052,6 +1052,13 @@ namespace lc::Input
 		return phoneOut.load(std::memory_order_relaxed);
 	}
 
+	void SetScriptLook(int a_yaw, int a_pitch)
+	{
+		scriptYaw.store(a_yaw, std::memory_order_relaxed);
+		scriptPitch.store(a_pitch, std::memory_order_relaxed);
+		scriptAbsolute.store(true, std::memory_order_release);
+	}
+
 	bool ConsumeScriptLook(float& a_yaw, float& a_pitch)
 	{
 		const bool absolute = scriptAbsolute.exchange(false, std::memory_order_acquire);

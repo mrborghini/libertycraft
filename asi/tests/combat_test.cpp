@@ -423,15 +423,21 @@ static void TestVehicles()
 
 	CHECK(Near(VehicleDamageFromMc(7.0f, 15.0f), 105.0f));
 	CHECK(VehicleDamageFromMc(0.0f, 15.0f) == 0.0f && VehicleDamageFromMc(5.0f, 0.0f) == 0.0f);
-	// Sword blows dent: a Sharpness V netherite crit (15) twenty times leaves the engine smoking, never burning.
+	// Sword blows: a Sharpness V netherite crit (15) twenty times leaves the engine smoking, never burning.
 	float engine = 1000.0f;
 	for (int i = 0; i < 20; ++i) {
 		engine = EngineAfterVehicleHit(engine, VehicleDamageFromMc(15.0f, 15.0f), true);
 	}
 	CHECK(Near(engine, kMeleeEngineFloor));
-	CHECK(Near(EngineAfterVehicleHit(1000.0f, 180.0f, true), 910.0f));
+	CHECK(Near(EngineAfterVehicleHit(1000.0f, 180.0f, true), 820.0f));  // the full blow
+	CHECK(Near(EngineAfterVehicleHit(400.0f, 180.0f, true), kMeleeEngineFloor));
 	CHECK(Near(EngineAfterVehicleHit(200.0f, 180.0f, true), 200.0f));  // already under the floor: left as it is
 	CHECK(Near(EngineAfterVehicleHit(-100.0f, 180.0f, true), -100.0f));  // burning: a blow doesn't finish it
+	// Dents: a sword blow's 11 damage about the probe's 1000 at scale 1, an arrow 0.4 of that, 0: none.
+	CHECK(Near(DentForce(11.0f, 1.0f, false), 990.0f));
+	CHECK(Near(DentForce(11.0f, 1.0f, true), 396.0f));
+	CHECK(Near(DentForce(11.0f, 0.5f, false), 495.0f));
+	CHECK(DentForce(11.0f, 0.0f, false) == 0.0f && DentForce(0.0f, 1.0f, false) == 0.0f);
 	// Arrows and rockets keep their full damage.
 	CHECK(Near(EngineAfterVehicleHit(100.0f, 180.0f, false), -80.0f));
 	CHECK(Near(EngineAfterVehicleHit(500.0f, 0.0f, false), 500.0f));

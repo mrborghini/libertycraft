@@ -58,7 +58,7 @@ namespace lc::Combat
 			std::uint32_t hits = 0, hitsStale = 0, hitsDamageChar = 0, hitsSetHealth = 0, hitsResisted = 0, hitGtaDamage = 0, kills = 0, ragdolls = 0;
 			std::uint32_t explosions = 0, deaths = 0, arrows = 0, unknownEvents = 0;
 			std::uint32_t vehiclesSent = 0, vehicleHits = 0, vehicleHitsStale = 0, vehicleBlastHits = 0, occupantHits = 0, windows = 0, wrecked = 0;
-			std::uint32_t vehiclePointsOnCar = 0, vehiclePointsOff = 0, vehicleNoPoint = 0;
+			std::uint32_t vehiclePointsOnCar = 0, vehiclePointsOff = 0, vehicleNoPoint = 0, vehicleDents = 0;
 			std::uint32_t crimes = 0, fights = 0, flees = 0, driversFled = 0;
 			std::uint32_t corpseHits = 0, corpseBumps = 0, bumpNudges = 0, bumpStumbles = 0, bumpKnockdowns = 0;
 			std::uint32_t hurtsSent = 0, hurtFrames = 0, hurtDroppedIgnored = 0, hurtDroppedBlast = 0;
@@ -1737,8 +1737,25 @@ namespace lc::Combat
 			++(havePoint ? (onCar ? counters.vehiclePointsOnCar : counters.vehiclePointsOff) : counters.vehicleNoPoint);
 
 			const char* what = "damaged";
-			// A blow (no arrow, rocket or fire) only dents it: the engine smokes at worst (CombatMath.h).
+			// A blow (no arrow, rocket or fire): the engine smokes at worst (CombatMath.h).
 			const bool melee = !projectile && !(a_ev.flags & proto::kHitFire);
+			// ... and dents the car where it landed: GTA's own damage at a point (DAMAGE_CAR: an offset in the
+			// car's frame, the damage, then the force that deforms it there, as a collision does; measured:
+			// 100 dents a door about 6 cm, 500 about 18, more crumples it further; GTA applies it a frame
+			// later). The force comes from the Minecraft damage and VehicleDentScale (CombatMath.h DentForce);
+			// an arrow dents less; glass breaks instead (below). The health DAMAGE_CAR takes off is put back
+			// to ours below.
+			char        dentText[96] = "";
+			const bool  arrow = projectile && !(a_ev.flags & proto::kHitFire);
+			const float force = melee || arrow ? DentForce(a_ev.a, Cfg().vehicleDentScale, arrow) : 0.0f;
+			if (onCar && strike.window == kWindowNone && damage > 0.0f && force > 0.0f) {
+				Scripting::Vector3 before{};
+				S::GET_CAR_DEFORMATION_AT_POS(veh, local[0], local[1], local[2], &before);
+				S::DAMAGE_CAR(veh, local[0], local[1], local[2], damage, force, true);
+				std::snprintf(dentText, sizeof(dentText), "; %s dent of force %.0f there (deformed %.3f m by earlier ones)", arrow ? "an arrow's" : "a blow's", force,
+					std::sqrt(before.x * before.x + before.y * before.y + before.z * before.z));
+				++counters.vehicleDents;
+			}
 			if (engineBefore < 0.0f && damage > 0.0f && !melee) {
 				// Already burning: one more shot finishes it.
 				S::EXPLODE_CAR(veh, true, false);
@@ -1815,9 +1832,9 @@ namespace lc::Combat
 			}
 			unsigned bodyNow = 0;
 			S::GET_CAR_HEALTH(veh, &bodyNow);
-			LC_LOG("hit vehicle %d (piece %u) for %.2f Minecraft -> %.0f GTA damage%s%s: %s; %s, body %u -> %u, engine %.0f -> %.0f%s", veh, a_piece, a_ev.a,
+			LC_LOG("hit vehicle %d (piece %u) for %.2f Minecraft -> %.0f GTA damage%s%s: %s; %s, body %u -> %u, engine %.0f -> %.0f%s%s", veh, a_piece, a_ev.a,
 				damage, projectile ? ", projectile" : "", crit ? ", critical" : "", where, what, body, bodyNow, engineBefore, car ? car->m_fEngineHealth : 0.0f,
-				occupantText);
+				dentText, occupantText);
 		}
 
 		// A ped's pelvis bone in a vehicle's frame (x right, y forward, z up). False if either is gone.
@@ -2851,6 +2868,67 @@ namespace lc::Combat
 			ApplyVehicleHit(ev, a_frame, static_cast<std::uint32_t>(a_car), 0);
 		}
 
+		// DebugDentProbe: GTA's DAMAGE_CAR on DebugCarCover's car (unfrozen) at a few points and strengths in
+		// turn, 5 s apart: the look first turns to the spot (first person: a close-up), 2 s later the
+		// damage, logging the deformation GTA reports there and the car's health.
+		void DentProbeTick(const Frame& a_frame)
+		{
+			static int   step = 0;
+			static float t = 0.0f;
+			static bool  looked = false;
+			const int    car = testCar.car;
+			if (Cfg().debugDentProbe <= 0.0f || !Cfg().debugCarCover || testCar.stage < 2 || !car || !S::DOES_VEHICLE_EXIST(car) || a_frame.paused) {
+				return;
+			}
+			struct Step
+			{
+				float       x, y, z, damage, force;
+				int         yaw, pitch;  // the look (Minecraft degrees) for its close-up
+				const char* what;
+			};
+			// (The car faces north with its left side 0.9 m east of the player, its front 0.7 m north of him.)
+			static const Step kSteps[] = { { 0, 0, 0, 0, 0, -45, 30, "baseline" }, { -1.0f, 0.4f, 0.1f, 100, 100, -45, 30, "front door, 100, 100" },
+				{ -1.0f, 0.4f, 0.1f, 100, 500, -45, 30, "front door, 100, 500" }, { -1.0f, 0.4f, 0.1f, 100, 2000, -45, 30, "front door, 100, 2000" },
+				{ 0, 1.9f, 0.45f, 300, 1000, -100, 55, "bonnet, 300, 1000" }, { 0, -2.4f, 0.45f, 300, 1000, -20, 30, "boot, 300, 1000" },
+				{ -1.0f, -1.1f, 0.1f, 1000, 3000, -30, 25, "rear door, 1000, 3000" } };
+			constexpr int kCount = sizeof(kSteps) / sizeof(kSteps[0]);
+			if (step >= kCount) {
+				return;
+			}
+			if (step == 0 && t == 0.0f) {
+				S::FREEZE_CAR_POSITION(car, false);
+				LC_LOG("DebugDentProbe: the car unfrozen; %d steps", kCount);
+			}
+			t += a_frame.dt;
+			const Step& st = kSteps[step];
+			const float at = Cfg().debugDentProbe + 5.0f * static_cast<float>(step);
+			if (!looked && t >= at - 2.0f) {
+				looked = true;
+				Input::SetScriptLook(st.yaw, st.pitch);
+				LC_LOG("DebugDentProbe: looking at the spot of step %d (%s)", step, st.what);
+			}
+			if (t < at) {
+				return;
+			}
+			looked = false;
+			CVehicle* v = CPools::ms_pVehiclePool ? CPools::ms_pVehiclePool->GetAt(static_cast<std::uint32_t>(car)) : nullptr;
+			if (st.damage > 0.0f) {
+				S::DAMAGE_CAR(car, st.x, st.y, st.z, st.damage, st.force, true);
+			}
+			static const float kAt[5][3] = { { -1.0f, 0.4f, 0.1f }, { -1.0f, -1.1f, 0.1f }, { 0, 1.9f, 0.45f }, { 0, -2.4f, 0.45f }, { -0.95f, 1.8f, 0.1f } };
+			float defo[5];
+			for (int k = 0; k < 5; ++k) {
+				Scripting::Vector3 d{};
+				S::GET_CAR_DEFORMATION_AT_POS(car, kAt[k][0], kAt[k][1], kAt[k][2], &d);
+				defo[k] = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+			}
+			unsigned body = 0;
+			S::GET_CAR_HEALTH(car, &body);
+			LC_LOG("DebugDentProbe: step %d (%s): body %u, engine %.0f, petrol tank %.0f; deformed (m) front door %.3f, rear door %.3f, bonnet %.3f, boot %.3f, front wing %.3f",
+				step, st.what, body, v ? v->m_fEngineHealth : 0.0f, v ? v->m_fPetrolTankHealth : 0.0f, defo[0], defo[1], defo[2], defo[3], defo[4]);
+			++step;
+		}
+
 		// Puts a car's wheels on the ground at (a_x, a_y), heading a_heading.
 		void PlaceCar(int a_car, float a_x, float a_y, float a_zHint, float a_heading)
 		{
@@ -3807,6 +3885,7 @@ namespace lc::Combat
 				}
 			}
 			TestCarHook(a_frame);
+			DentProbeTick(a_frame);
 			WantedHook(a_frame);
 			BumpPedHook(a_frame);
 			FireworkTargetsHook(a_frame);

@@ -44,6 +44,8 @@ namespace lc::Input
 	// DebugInputScript's look turns ("v" entries): degrees of Minecraft yaw and pitch (down positive).
 	// True: an "a" entry, the look set to them instead.
 	bool ConsumeScriptLook(float& a_yaw, float& a_pitch);
+	// Test hooks: set Minecraft's look (yaw, pitch down positive; degrees) as an "a" entry would.
+	void SetScriptLook(int a_yaw, int a_pitch);
 	// kInReleaseAll (focus left Minecraft). Safe from any thread.
 	void ReleaseAll();
 
