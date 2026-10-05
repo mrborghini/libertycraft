@@ -147,7 +147,8 @@ public final class Proto {
 	public static final int EV_SET_WEATHER = 10;
 	/**
 	 * LibertyCraft: a mob hit the player while GTA IV drives him on foot (kEvMobHitPlayer): a = MC damage, b/c = push
-	 * direction, d = push strength beyond a plain blow's, flags = HIT_*, weapon = WEAPON_*.
+	 * direction, d = Minecraft knockback strength (0.4 a plain blow or arrow, plus half the mob's attack knockback),
+	 * flags = HIT_*, weapon = WEAPON_*.
 	 */
 	public static final int EV_MOB_HIT_PLAYER = 11;
 	/**

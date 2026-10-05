@@ -16,7 +16,7 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * Mobs hit the player while GTA IV drives him: on foot (Niko mode, getting back up) GTA IV's player ped
- * takes the hit (Proto.EV_MOB_HIT_PLAYER: Niko loses health, a heavy blow knocks him over), seated in a
+ * takes the hit (Proto.EV_MOB_HIT_PLAYER: Niko loses health and is knocked over), seated in a
  * vehicle the vehicle does, as follows.
  *
  * <p>Mobs attack the player's own vehicle while the player sits in it. That vehicle has no stand-in (the
@@ -67,10 +67,12 @@ public final class PlayerVehicleHits {
 		double dx = player.getX() - from.x, dz = player.getZ() - from.z, len = Math.sqrt(dx * dx + dz * dz);
 		float px = len > 1.0E-6 ? (float) (dx / len) : 0.0F, pz = len > 1.0E-6 ? (float) (dz / len) : 0.0F;
 		boolean projectile = source.getDirectEntity() instanceof Projectile;
-		// A blow's knockback is 0.4 plus the mob's own (a ravager's 1.5): what is beyond a plain blow's staggers him.
-		float strength = 0.0F;
+		// Minecraft's knockback: 0.4 for any hit (LivingEntity.hurtServer), and a blow adds half the mob's attack
+		// knockback (Mob.doHurtTarget's causeExtraKnockback: a ravager's 1.5). GTA IV knocks him over by it as
+		// a Minecraft hit knocks a ped (RagdollOnHit, HitForce).
+		float strength = 0.4F;
 		if (!projectile && source.getEntity() instanceof Mob mob) {
-			strength = (float) Math.max(0.0, 0.4 + mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_KNOCKBACK) - 0.45);
+			strength += (float) (0.5 * mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_KNOCKBACK));
 		}
 		Link.pushEvent(Proto.EV_MOB_HIT_PLAYER, 0, amount, px, pz, strength, projectile ? Proto.HIT_PROJECTILE : 0, HostActorEntity.weaponClass(source));
 		if (logs++ < 100) {

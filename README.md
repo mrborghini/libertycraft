@@ -172,7 +172,9 @@ Minecraft's mobs and GTA IV's city meet:
   size (a molotov or a burning car also sets them alight); it breaks no blocks. Only one of the two ever
   counts: in Minecraft mode Minecraft's, while GTA IV drives you (Niko mode, a car) GTA IV's own.
 * **Mobs hurt Niko too.** In Niko mode a mob's blow, arrow or crossbow bolt takes GTA IV's health off
-  Niko (a heavy blow knocks him over), and a creeper's blast is GTA IV's own explosion.
+  Niko and knocks him over the way your hits knock peds over (`RagdollOnHit`, `HitForce`; a ravager's
+  blow throws him further), so a swarm can keep him down; he gets back up when it lets him. A creeper's
+  blast is GTA IV's own explosion.
 * **Peds fight back.** Armed peds and police nearby shoot at a mob that goes after someone, and GTA IV's
   bullets hurt mobs (four pistol shots kill a zombie); other peds run, drivers drive off. `PedsFightMobs=0`
   in `LibertyCraft.ini` turns this off.

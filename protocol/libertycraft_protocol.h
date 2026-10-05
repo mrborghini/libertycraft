@@ -475,8 +475,9 @@ namespace libertycraft::proto
 		// LibertyCraft addition (a new type; the layout and kVersion stay): a Minecraft mob hit the player while
 		// GTA IV drives him on foot (Niko mode, getting back up), where Minecraft takes no damage of its own:
 		// GTA IV's player ped takes it instead. a = Minecraft damage (the host's PedDamageScale makes it GTA
-		// IV's, as for its peds), b/c = the push's direction (MC x/z, unit), d = its strength beyond a plain
-		// blow's (0: none; a ravager's, a Knockback arrow's: a stagger), flags = HitFlags (kHitProjectile),
+		// IV's, as for its peds), b/c = the push's direction (MC x/z, unit), d = its Minecraft knockback
+		// strength (0.4 a plain blow or arrow, plus half the mob's attack knockback: a ravager's 1.15; the host
+		// knocks him over by it as a Minecraft hit knocks a ped), flags = HitFlags (kHitProjectile),
 		// weapon = HitWeapon. A mob's blast reaches him as GTA IV's own (kEvExplosion), not as this.
 		kEvMobHitPlayer = 11,
 		// LibertyCraft addition (a new type; the layout and kVersion stay): the Minecraft player crashed in elytra

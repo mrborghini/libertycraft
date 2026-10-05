@@ -2614,10 +2614,20 @@ namespace lc::Combat
 		}
 
 		// ---- a Minecraft mob hit the player while GTA IV drives him on foot (proto::kEvMobHitPlayer) ----------
-		// Niko mode: GTA IV owns his health, so the ped takes it (PedDamageScale, as for GTA's other peds), and a
-		// heavy blow (a ravager's) knocks him over. Getting back up (Minecraft owns his health, GTA moves him):
-		// straight back to Minecraft as one of GTA's hits. Seated in a vehicle the vehicle takes it (Minecraft's
-		// PlayerVehicleHits), not this.
+		// Niko mode: GTA IV owns his health, so the ped takes it (PedDamageScale, as for GTA's other peds), and
+		// every blow or arrow knocks him over as a Minecraft hit knocks a ped (RagdollOnHit): a ragdoll as long
+		// as the knockback asks (RagdollMs: 0.8 s for a plain blow or arrow, longer for a ravager's) and a push
+		// along it (HitShoveForce, x HitForce). GTA IV gets him back up when the ragdoll runs out; a swarm's next
+		// blow knocks him down again first. Getting back up after a Minecraft-mode knockdown (Minecraft owns his
+		// health, GTA moves him): straight back to Minecraft as one of GTA's hits. Seated in a vehicle the
+		// vehicle takes it (Minecraft's PlayerVehicleHits), not this.
+		struct MobKnockWatch
+		{
+			bool  active = false;
+			float t = 0.0f, downFor = 0.0f;
+			int   knocks = 0;
+		} mobKnock;
+
 		void MobHitPlayer(const proto::McEvent& a_ev, const Frame& a_frame)
 		{
 			if (!a_frame.exists || a_frame.loading || a_frame.dead || a_frame.puppeting || a_frame.seated || !a_frame.ped || killing || !(a_ev.a > 0.0f)) {
@@ -2635,15 +2645,52 @@ namespace lc::Combat
 			S::GET_CHAR_HEALTH(a_frame.ped, &before);
 			const char* how = DamagePed(a_frame.ped, a_ev.a, before, after, damage);
 			int         ragdollMs = 0;
-			if (a_ev.d > 0.0f && dir && after > static_cast<unsigned>(kDeathHealth) && !S::IS_CHAR_IN_ANY_CAR(a_frame.ped)) {
+			float       force = 0.0f;
+			if (Cfg().ragdollOnHit && a_ev.d > 0.0f && dir && after > static_cast<unsigned>(kDeathHealth) && !S::IS_CHAR_IN_ANY_CAR(a_frame.ped)) {
 				float heading = 0.0f;
 				S::GET_CHAR_HEADING(a_frame.ped, &heading);
 				ragdollMs = RagdollMs(a_ev.d, false);
+				force = HitShoveForce(a_ev.d, Cfg().hitForce);
 				S::SWITCH_PED_TO_RAGDOLL(a_frame.ped, ragdollMs, ragdollMs, false, false, false, false);
-				Knock(a_frame.ped, gx, gy, HitShoveForce(a_ev.d, Cfg().hitForce), heading, kKnockVariant);
+				Knock(a_frame.ped, gx, gy, force, heading, kKnockVariant);
+				if (!mobKnock.active) {
+					mobKnock = MobKnockWatch{};
+					mobKnock.active = true;
+				}
+				mobKnock.t = 0.0f;
+				++mobKnock.knocks;
 			}
-			LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s%s", a_ev.a, damage, how, before, after,
-				projectile ? ", projectile" : "", ragdollMs ? ", knocked over" : "");
+			if (ragdollMs) {
+				LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s, knocked over (ragdoll %d ms, push %.1f)",
+					a_ev.a, damage, how, before, after, projectile ? ", projectile" : "", ragdollMs, force);
+			} else {
+				LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s", a_ev.a, damage, how, before, after,
+					projectile ? ", projectile" : "");
+			}
+		}
+
+		// After mob knockdowns in Niko mode: logs when GTA IV has him on his feet again (or that it hasn't).
+		void WatchMobKnock(const Frame& a_frame)
+		{
+			if (!mobKnock.active) {
+				return;
+			}
+			if (!a_frame.exists || a_frame.dead || a_frame.puppeting || a_frame.seated) {
+				mobKnock.active = false;
+				return;
+			}
+			mobKnock.t += a_frame.dt;
+			mobKnock.downFor += a_frame.dt;
+			const bool down = S::IS_PED_RAGDOLL(a_frame.ped) || S::IS_CHAR_GETTING_UP(a_frame.ped);
+			if (!down && mobKnock.t > 0.3f) {
+				LC_LOG("Niko is back on his feet %.1f s after the last mob knockdown (%d knockdown%s, %.1f s down in all)", mobKnock.t, mobKnock.knocks,
+					mobKnock.knocks == 1 ? "" : "s", mobKnock.downFor);
+				mobKnock.active = false;
+			} else if (mobKnock.t > 8.0f) {
+				LC_LOG("WARNING: Niko is still down 8 s after the last mob knockdown (ragdoll %d, getting up %d)", S::IS_PED_RAGDOLL(a_frame.ped) ? 1 : 0,
+					S::IS_CHAR_GETTING_UP(a_frame.ped) ? 1 : 0);
+				mobKnock.active = false;
+			}
 		}
 
 		// ---- the Minecraft player died: so does the GTA IV one --------------------------------------------
@@ -4094,6 +4141,7 @@ namespace lc::Combat
 		MobFight::Tick(a_frame);
 		TickBumps(a_frame.dt);
 		UpdateKill(a_frame);
+		WatchMobKnock(a_frame);
 		CheckShoves(a_frame.dt);
 		CheckSeats(a_frame.dt);
 		for (auto it = attackers.begin(); it != attackers.end();) {
