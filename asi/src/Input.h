@@ -30,9 +30,14 @@ namespace lc::Input
 	// GTA's phone is out (taken out by the player, or a call): from the game's own flag, updated by
 	// Tick. Safe from any thread.
 	bool PhoneOut();
+	// GTA's help text offers a context action (Missions.h): this pad control (-1: none) is let through
+	// while puppeting, and ContextKey goes to GTA instead of Minecraft. Game thread.
+	void SetPrompt(int a_control);
 	// processPadEvent: while puppeting (or Niko gets back up, Game::Shared::padLocked), zero every
-	// control except the pause menu's and the phone's.
+	// control except the pause menu's, the phone's and an offered context action's.
 	void Pad(CPad* a_pad);
+	// Test hooks: a real key event (SendInput, a DirectInput scan code).
+	void SendTestKey(std::uint32_t a_dik, bool a_down);
 	// Mouse-look counts accumulated since the last call (raw mouse units).
 	void ConsumeLook(float& a_dx, float& a_dy);
 	// DebugInputScript's look turns ("v" entries): degrees of Minecraft yaw and pitch (down positive).

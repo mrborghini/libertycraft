@@ -33,6 +33,7 @@ namespace lc::Missions
 		const char* why = nullptr;      // what holds it (for the log)
 		bool        scene = false;      // a cutscene or a script's camera is shown: Minecraft pauses (kSkyScene)
 		bool        phoneCall = false;  // a phone call: Minecraft's sounds duck (kSkyPhoneCall)
+		int         prompt = -1;        // GTA's help text offers a context action: its pad control (Input lets it through), else -1
 	};
 
 	// Game::Tick, before HostDrive::Tick.

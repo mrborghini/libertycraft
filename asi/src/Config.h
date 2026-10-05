@@ -290,6 +290,8 @@ namespace lc
 		// "alpha": SET_PED_ALPHA 0, in case an invisible ped stopped animating); log the bones
 		// (DebugBody: once a second, plus a ped scan in cutscenes).
 		std::string minecraftBodyHide = "visible";
+		// Not in the default ini: what Niko holds or carries (props, attached objects) stays visible under the body.
+		bool        minecraftBodyProps = true;
 		bool        debugBody = false;
 		// Test hook: while GTA drives the player, the camera looks at him from these views in turn,
 		// each "angle,distance,height" (degrees counter-clockwise from his front: 90 his left side;
@@ -320,13 +322,20 @@ namespace lc
 		bool missionPedsSafe = true;
 		// GTA's cutscenes and the scripts' cameras pause Minecraft like GTA's pause menu (kSkyScene).
 		bool scenesPauseMinecraft = true;
+		// GTA's help text offering a context action ("Press E to bowl", ~INPUT_PICKUP~): in Minecraft mode its
+		// control reaches GTA while it shows, and ContextKey (E) goes to GTA instead of Minecraft's inventory.
+		bool        contextActions = true;
+		std::string contextKey = "E";
 		// Test hooks (not in the default ini): a mission scene as a script plays one, N s into play
 		// (DebugMissionProbe); the radar's blips logged once (DebugMissionBlips); the player put at a
 		// contact's blip 20 s into play, e.g. "roman,vlad" or "any" (DebugMissionWarp).
 		float       debugMissionProbe = 0.0f;
 		bool        debugMissionProbeAB = false;  // ...twice: first with ScriptScenes off, then on
 		bool        debugMissionBlips = false;
-		float       debugPhoneCall = 0.0f;  // test hook: N s into play, 6 s of kSkyPhoneCall (Minecraft's sounds duck)
+		float       debugPhoneCall = 0.0f;
+		bool        debugContextKey = false;
+		float       debugFakePrompt = 0.0f;  // test hook: N s into puppet mode, GTA's help box asks for INPUT_PICKUP
+		std::string debugProp;  // test hook: an object of this model on Niko's right hand during a 6 s scene, 10 s into play  // test hook: press ContextKey 1.5 s into the first offered context action  // test hook: N s into play, 6 s of kSkyPhoneCall (Minecraft's sounds duck)
 		std::string debugMissionWarp;
 
 		static Config& Get();
@@ -336,6 +345,7 @@ namespace lc
 		std::uint8_t MenuKeyDik() const;
 		std::uint8_t VehicleKeyDik() const { return KeyDik(vehicleKey); }
 		std::uint8_t ToggleKeyDik() const { return KeyDik(toggleKey); }
+		std::uint8_t ContextKeyDik() const { return KeyDik(contextKey); }
 		// A key name -> DirectInput (set 1) scancode, 0 if unknown: a letter, digit, F1-F12, a name
 		// (Backslash, Grave, Tab, Minus, Equals, LBracket, RBracket, Semicolon, Apostrophe, Comma,
 		// Period, Slash, Space, Insert, Delete, Home, End, PageUp, PageDown, Numpad0-9, ...) or hex (0x2B).

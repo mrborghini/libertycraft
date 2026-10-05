@@ -320,6 +320,7 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `MinecraftBodyCutscenes`, `MinecraftBodyVehicles`, `MinecraftBodyNikoMode` | `1`, `1`, `0` | ... in cutscenes; getting into, driving, bailing out of and getting out of vehicles (0: Niko as before, the Minecraft player on its mount in the seat); in Niko mode. Knockdowns follow `MinecraftBody` alone |
 | `MinecraftBodyScale` | `1.0` | the body's size on top of the automatic fit (Minecraft's own proportions at Niko's height, the feet on the ground; seated 0.76 of Minecraft's size, the hips on the seat; never with its head over his); 0.5 to 2 |
 | `MinecraftBodyHide` | `visible` | not in the default ini: how a ped under the body is hidden, `visible` (`SET_CHAR_VISIBLE`, every frame) or `alpha` (`SET_PED_ALPHA` 0) |
+| `MinecraftBodyProps` | `1` | not in the default ini: what Niko holds or carries (the bowling ball, a bag, his phone) stays visible under the body (0: hidden with him, as before) |
 | `DebugBody` | `0` | test hook: log the skeleton once a second (bones, limb motion, ankle heights, the size and how much it sits; seated in a vehicle where the pelvis bone is in it against the ped's position this frame and last) and, in cutscenes, the animated objects around the camera |
 | `DebugBodyView`, `DebugBodyViewSeconds` | | test hook: while GTA drives the player, the camera looks at the body's hips (or the player) from these views in turn, `angle,distance,height` (degrees counter-clockwise from his front, 90 his left side; metres) separated by `\|`, `DebugBodyViewSeconds` (5) each; logs `DebugBodyView: view i` at each change |
 | `DebugBodyAB` | `0` | test hook: N s with the Minecraft body, N s without it (Niko, or Minecraft's rider), in turn (`DebugBodyAB: A/B`) |
@@ -332,9 +333,11 @@ Next to the `.asi` (`<gamedir>/plugins/LibertyCraft.ini`), written with defaults
 | `ScriptScenes` | `1` | a mission script that takes the player over on foot (his control off, its camera, a task on him, a minigame) gets him: GTA IV drives him until it lets go, with GTA's camera and pad and the Minecraft body on Niko (see Mission scripts; 0: puppet mode fights the script, as before) |
 | `MissionPedsSafe` | `1` | Minecraft's mobs leave mission characters and the vehicles they sit in alone (`kActorMission`: no hunting them, no mob's hit or blast reaches them), and they never fight or flee mobs (MobFight) |
 | `ScenesPauseMinecraft` | `1` | GTA's cutscenes and the scripts' cameras pause Minecraft like GTA's pause menu (`kSkyScene`: its mobs, their blasts and its sounds stand still, hostile mobs aren't drawn) |
+| `ContextActions`, `ContextKey` | `1`, `E` | GTA's context actions work in Minecraft mode: while GTA's help box asks for `~INPUT_PICKUP~` ("Press E if you want to bowl", "to buy a hotdog", "to play pool", "to open the cash register"), puppet mode lets that control through to GTA and `ContextKey` goes to GTA instead of Minecraft (no inventory then); see Mission scripts |
 | `DebugMissionProbe`, `DebugMissionProbeAB` | `0`, `0` | test hooks: N s into play (on foot) a mission scene as a script plays one: `TASK_GO_STRAIGHT_TO_COORD` 4 m ahead (12 s at most: a script waiting for it), the control off for 3 s, a script camera in front of the player for 4 s, `SET_MINIGAME_IN_PROGRESS` for 3 s, each logged (`DebugMissionProbe: ...`, `SCREENSHOT` lines for a watcher); `AB`: twice, first with `ScriptScenes` off, then on |
 | `DebugMissionBlips`, `DebugMissionWarp` | `0`, | test hooks: the radar's blips logged once 10 s into play (sprite, colour, place: where the contacts' missions start); the player put at the nearest blip of these contacts 20 s into play (5 s after `DebugMissionProbe`), e.g. `roman,vlad,jacob` or `any`, his control off from 1 s before to 1.5 s after as a script warps him (so in Minecraft mode GTA has him meanwhile) |
 | `DebugPhoneCall` | `0` | test hook: N s into play, 6 s of `kSkyPhoneCall` (Minecraft's sounds duck) without a call in GTA |
+| `DebugContextKey`, `DebugFakePrompt`, `DebugProp` | `0`, `0`, | test hooks: `ContextKey` pressed (a real key event, 0.15 s) 1.5 s into the first context action offered while puppeting, with the pad's `INPUT_PICKUP` logged as scripts read it (`IS_CONTROL_PRESSED`); N s into puppet mode GTA's help box shows "Press ~INPUT_PICKUP~ to test the context key." through the game's own setter (0x8ABA20, what `PRINT_HELP` calls; checked); 10 s into play an object of this model (e.g. `cj_bowling_ball3`) on Niko's right hand during a 6 s scene (his control off), a `SCREENSHOT` line in it |
 | `DebugViewportRoom` | `0` | test hook: `1` logs the room GTA renders from against the camera's place every 0.25 s near interiors (`ViewportRoom`); `2` also switches the correction off and on every 8 s |
 | `DebugGiveWeapon` | `0` | test hook: give Niko this GTA weapon (7 pistol) 10 s into play (puppet mode puts it away, Niko mode gives it back) |
 | `HazardsBurnPeds` | `1` | Minecraft's fire and lava (soul fire, lit campfires too) set GTA's peds on foot alight and hurt them like Minecraft's own (2 and 8 Minecraft damage a second, magma 1, x `PedDamageScale`); out of it they burn on for 4 s (lava 8 s) and are put out. Niko too, unless Minecraft owns him (puppet mode, knocked over) |
@@ -497,6 +500,12 @@ body is hidden for that frame, as GTA fades its own player; in vehicles (a train
 come close) only the parts within that of it go, and a cutscene's camera (close-ups) only hides the
 parts it is in or within its near plane + 0.1 m of (`camera at (or in) the Minecraft body` in the
 log); a mission scene's counts as a cutscene's while a script's camera shows it, else as GTA's own.
+What Niko holds or carries stays visible under the body (the bowling ball, a bag, his phone): hiding him
+hides it too (CPed's SetVisible, vtable +0x30 = 0x93B8E0 on 1.0.8.0, checked, passes it on to the four
+entities at CPed +0xD68), and objects a script attached to him (`m_pAttachedToEntity`) are drawn with him;
+`NikoBody::Hide` shows those again (`N prop(s) Niko holds or carries shown under the Minecraft body`;
+`DebugProp=cj_bowling_ball3` with `DebugBodyView`: the ball at the body's hand, gone with `MinecraftBodyProps=0`).
+Puppet mode's own hiding (first person) leaves them hidden.
 
 `Game::State()` exposes `hostDrives`, `inVehicle` and `nikoMode` for the renderer and overlay.
 The decisions are `DriveLogic.h` (pure, tested by `asi/tests/drive_test.cpp`).
@@ -534,6 +543,18 @@ cutscene (`CCutsceneMgr`) keeps its own reason. Logged as `a mission script has 
 control off, the script's camera, ...)` and `the mission script let go of the player`; every change of
 what the game says is a `mission state:` line (control flags, script camera, minigames, script task and
 status, cutscene, phone call, on a mission).
+
+**Context actions** (`ContextActions=1`): GTA offers them in its help box, "Press ~INPUT_PICKUP~ if you want
+to bowl" (the token in the GXT text; 258 of them use `INPUT_PICKUP`, E on the keyboard, among them bowling,
+darts, pool, QUB3D, food vendors and restaurants, shops' exits). The box (0xF38668, what `PRINT_HELP` fills)
+shows while its +0x9A8 isn't 0 (`IS_HELP_MESSAGE_BEING_DISPLAYED`, 0x8AAEB0), its text (UTF-16, tokens as in
+the GXT) is at +0x4B0 (`IS_THIS_HELP_MESSAGE_BEING_DISPLAYED`, 0x8AAFCA). While it asks for `INPUT_PICKUP` and
+Minecraft drives, Input's pad zeroing lets that control through and `ContextKey` (E) goes to GTA, not to
+Minecraft's inventory (`drive/Prompt.h`, tested). Once the script reacts it switches the control off or shows
+its camera, and the takeover above has the player. Logged as `GTA's help text: "..." (asks for INPUT_PICKUP)`,
+`a context action is offered` and `context key pressed: to GTA`. Measured (`DebugFakePrompt`,
+`DebugContextKey`): the key down, GTA's pad read `INPUT_PICKUP` down in the same frame, with puppet mode on and
+no Minecraft screen opened; the box's key glyph turned to E.
 
 **Scenes pause Minecraft** (`ScenesPauseMinecraft=1`): while GTA shows a cutscene or a script's camera
 (held 0.4 s over cuts, and through a cutscene's fade-out) SkyState carries `kSkyScene`, and the mod pauses a singleplayer world as for GTA's

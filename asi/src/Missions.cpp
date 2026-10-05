@@ -8,6 +8,9 @@
 #include "Config.h"
 #include "Coords.h"
 #include "Log.h"
+#include "Game.h"
+#include "Input.h"
+#include "drive/Prompt.h"
 #include "drive/SceneLogic.h"
 
 #include <algorithm>
@@ -45,6 +48,16 @@ namespace lc::Missions
 		constexpr std::size_t   kIntelligence = 0x224;  // CPed: its CPedIntelligence
 		constexpr std::size_t   kScriptTaskType = 0x2EC;
 		constexpr std::size_t   kScriptTaskStatus = 0x2EE;
+		// The help text box (0xF38668, what PRINT_HELP fills; IS_HELP_MESSAGE_BEING_DISPLAYED, 0xB54EC0, is
+		// its +0x9A8 not 0, 0x8AAEB0) and its text (UTF-16 at +0x4B0, what IS_THIS_HELP_MESSAGE_BEING_DISPLAYED
+		// compares, 0x8AAFCA), its tokens as in the GXT (~INPUT_PICKUP~).
+		constexpr std::uint32_t kHelpCode = 0xB54EC0;  // mov ecx,kHelp; jmp 0x8AAEB0
+		constexpr std::uint32_t kHelp = 0xF38668;
+		constexpr std::uint32_t kHelpShownCode = 0x8AAEB0;
+		constexpr std::uint32_t kHelpTextCode = 0x8AAFCA;
+		constexpr std::size_t   kHelpShown = 0x9A8;
+		constexpr std::size_t   kHelpText = 0x4B0;
+		constexpr std::size_t   kHelpTextChars = (kHelpShown - kHelpText) / 2;
 		// IS_PED_A_MISSION_PED: CPed::m_nCreatedBy == 2 (0xB41F70).
 		constexpr std::uint8_t kCreatedByMission = 2;
 
@@ -54,6 +67,7 @@ namespace lc::Missions
 			const std::uint8_t* scriptedCams = nullptr;
 			const std::int32_t* minigames = nullptr;
 			bool          scriptTask = false;
+			const std::uint8_t* help = nullptr;
 		} addr;
 
 		const std::uint8_t* Abs(std::uint32_t a_abs)
@@ -94,8 +108,16 @@ namespace lc::Missions
 			}
 			static constexpr std::uint8_t kTask[] = { 0x8B, 0x44, 0x24, 0x04, 0x8B, 0x88, 0x24, 0x02, 0x00, 0x00, 0x33, 0xC0, 0x66, 0x83, 0xB9, 0xEC, 0x02, 0x00, 0x00, 0xFF };
 			addr.scriptTask = std::memcmp(Abs(kScriptTaskCode), kTask, sizeof kTask) == 0;
-			LC_LOG("mission scenes: script camera flag %s, minigame counter %s, script task status %s", addr.scriptedCams ? "found" : "NOT where 1.0.8.0 has it",
-				addr.minigames ? "found" : "NOT where 1.0.8.0 has it (IS_MINIGAME_IN_PROGRESS instead)", addr.scriptTask ? "found" : "NOT where 1.0.8.0 has it");
+			static constexpr std::uint8_t kShown[] = { 0x33, 0xC0, 0x39, 0x81, 0xA8, 0x09, 0x00, 0x00, 0x0F, 0x95, 0xC0, 0xC3 };
+			static constexpr std::uint8_t kText[] = { 0x81, 0xC6, 0xB0, 0x04, 0x00, 0x00 };
+			const std::uint8_t* hc = Abs(kHelpCode);
+			if (hc[0] == 0xB9 && HoldsAbs(hc + 1, kHelp) && std::memcmp(Abs(kHelpShownCode), kShown, sizeof kShown) == 0 &&
+				std::memcmp(Abs(kHelpTextCode), kText, sizeof kText) == 0) {
+				addr.help = Abs(kHelp);
+			}
+			LC_LOG("mission scenes: script camera flag %s, minigame counter %s, script task status %s, help text %s", addr.scriptedCams ? "found" : "NOT where 1.0.8.0 has it",
+				addr.minigames ? "found" : "NOT where 1.0.8.0 has it (IS_MINIGAME_IN_PROGRESS instead)", addr.scriptTask ? "found" : "NOT where 1.0.8.0 has it",
+				addr.help ? "found" : "NOT where 1.0.8.0 has it (no context actions in Minecraft mode)");
 		}
 
 		CPlayerInfo* Info(int a_player)
@@ -147,6 +169,7 @@ namespace lc::Missions
 		Snapshot          last{};
 		bool              haveLast = false;
 		std::uint32_t     frameNo = 0;
+		std::uint32_t     lastHelpHash = 0;
 		bool              lastShown = false;  // a scene was shown last frame
 
 		void LogSnapshot(const Snapshot& a_s, const char* a_mode)
@@ -257,6 +280,7 @@ namespace lc::Missions
 			case SPRITE_MICHELLE: return "michelle";
 			case SPRITE_SAFEHOUSE: return "safehouse";
 			case SPRITE_BOWLING: return "bowling";
+			case SPRITE_RESTAURANT: return "restaurant";
 			case SPRITE_GIRLFRIEND: return "girlfriend";
 			default: return nullptr;
 			}
@@ -332,7 +356,8 @@ namespace lc::Missions
 				const auto blips = Blips();
 				for (const auto& b : blips) {
 					const char* name = SpriteName(b.sprite);
-					if (!name || std::strcmp(name, "safehouse") == 0 || std::strcmp(name, "bowling") == 0 || std::strcmp(name, "girlfriend") == 0) {
+					if (!name || ((std::strcmp(name, "safehouse") == 0 || std::strcmp(name, "bowling") == 0 || std::strcmp(name, "girlfriend") == 0 ||
+									  std::strcmp(name, "restaurant") == 0) && want == "any")) {
 						continue;
 					}
 					if (want != "any" && want.find(name) == std::string::npos) {
@@ -392,6 +417,71 @@ namespace lc::Missions
 			int   round = 0;     // DebugMissionProbeAB: 0 with ScriptScenes off (as before), 1 on
 			bool  scenesOff = false;
 		} probe;
+
+		// DebugProp=<model>: 10 s into play (on foot) an object of that model is attached to Niko's right hand and
+		// his control goes off for 6 s (a mission script has him: the Minecraft body on him), logged with a
+		// SCREENSHOT line; then the control comes back and the object goes.
+		struct Prop
+		{
+			float t = 0.0f;
+			int   step = 0;  // 0 wait, 1 loading the model, 2 attached (control off), 3 done
+			int   obj = 0;
+			bool  shot = false;
+		} prop;
+
+		void PropTick(const Frame& a_f)
+		{
+			if (Cfg().debugProp.empty() || prop.step >= 3 || !a_f.exists || a_f.loading || a_f.paused || a_f.dead) {
+				return;
+			}
+			const unsigned model = S::GET_HASH_KEY(Cfg().debugProp.c_str());
+			prop.t += a_f.dt;
+			if (prop.step == 0) {
+				if (prop.t < 10.0f || a_f.inCar || !a_f.puppeting) {
+					return;
+				}
+				CStreaming::ScriptRequestModel(static_cast<std::int32_t>(model));
+				prop.step = 1;
+				prop.t = 0.0f;
+				LC_LOG("DebugProp: requesting %s", Cfg().debugProp.c_str());
+				return;
+			}
+			if (prop.step == 1) {
+				if (!S::HAS_MODEL_LOADED(model)) {
+					if (prop.t > 10.0f) {
+						LC_LOG("DebugProp: %s didn't load", Cfg().debugProp.c_str());
+						prop.step = 3;
+					}
+					return;
+				}
+				float x = 0, y = 0, z = 0;
+				S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
+				S::CREATE_OBJECT(model, x, y, z + 2.0f, &prop.obj, true);
+				S::MARK_MODEL_AS_NO_LONGER_NEEDED(model);
+				if (prop.obj) {
+					S::ATTACH_OBJECT_TO_PED(prop.obj, a_f.ped, 0x4D0 /* right hand */, 0.1f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0);
+					S::SET_PLAYER_CONTROL(a_f.player, false);
+				}
+				LC_LOG("DebugProp: object %d (%s) attached to Niko's right hand; his control off for 6 s", prop.obj, Cfg().debugProp.c_str());
+				prop.step = prop.obj ? 2 : 3;
+				prop.t = 0.0f;
+				return;
+			}
+			if (!prop.shot && prop.t > 2.5f) {
+				prop.shot = true;
+				LC_LOG("DebugProp: SCREENSHOT (attached %d, scripted %d)", S::IS_OBJECT_ATTACHED(prop.obj) ? 1 : 0, state.scripted ? 1 : 0);
+			}
+			if (prop.t < 6.0f) {
+				return;
+			}
+			S::SET_PLAYER_CONTROL(a_f.player, true);
+			if (S::DOES_OBJECT_EXIST(prop.obj)) {
+				S::DETACH_OBJECT(prop.obj, true);
+				S::DELETE_OBJECT(&prop.obj);
+			}
+			LC_LOG("DebugProp: done");
+			prop.step = 3;
+		}
 
 		bool probeDone()
 		{
@@ -538,6 +628,7 @@ namespace lc::Missions
 			// are, before puppet mode moves him.)
 			WarpTick(a_f);
 			ProbeTick(a_f);
+			PropTick(a_f);
 		}
 		Snapshot s;
 		if (inGame) {
@@ -551,6 +642,88 @@ namespace lc::Missions
 			s.phoneCall = S::IS_MOBILE_PHONE_CALL_ONGOING();
 			s.onMission = S::GET_MISSION_FLAG();
 		}
+		// GTA's help text asking for a context action (drive/Prompt.h): Input lets that control through and
+		// keeps the prompt key from Minecraft while it shows.
+		int prompt = -1;
+		if (inGame && addr.help && *reinterpret_cast<const std::int32_t*>(addr.help + kHelpShown) != 0) {
+			const auto* text = reinterpret_cast<const std::uint16_t*>(addr.help + kHelpText);
+			prompt = drive::PromptControl(text, kHelpTextChars);
+			std::uint32_t hash = 2166136261u;
+			for (std::size_t i = 0; i < kHelpTextChars && text[i]; ++i) {
+				hash = (hash ^ text[i]) * 16777619u;
+			}
+			if (hash != lastHelpHash) {
+				lastHelpHash = hash;
+				char ascii[160];
+				std::size_t n = 0;
+				for (std::size_t i = 0; i < kHelpTextChars && text[i] && n < sizeof(ascii) - 1; ++i) {
+					ascii[n++] = text[i] < 0x80 && text[i] >= 0x20 ? static_cast<char>(text[i]) : '?';
+				}
+				ascii[n] = 0;
+				LC_LOG("GTA's help text: \"%s\" (asks for %s%s)", ascii, prompt >= 0 ? "INPUT_" : "no control", prompt >= 0 ? pad::kControlNames[prompt] : "");
+			}
+		} else {
+			lastHelpHash = 0;
+		}
+		const int action = Cfg().contextActions && drive::IsContextAction(prompt) ? prompt : -1;
+		if (action != state.prompt) {
+			LC_LOG("%s", action >= 0 ? "a context action is offered: GTA gets its control (and the prompt key, not Minecraft) while it shows" : "the context action is gone");
+		}
+		state.prompt = action;
+		Input::SetPrompt(action);
+		// DebugFakePrompt=<s>: s seconds into puppet mode GTA's help box shows "Press ~INPUT_PICKUP~ ..." through
+		// the game's own setter (what PRINT_HELP calls: 0x8ABA20 on the box, called at 0xB54A58, checked), as
+		// a shop or the bowling alley would. While the context key is down (DebugContextKey) the pad's
+		// INPUT_PICKUP is logged as scripts read it (IS_CONTROL_PRESSED), with Minecraft's screen state.
+		static float fakeT = 0.0f;
+		if (Cfg().debugFakePrompt > 0.0f && fakeT >= 0.0f && inGame && a_f.puppeting && (fakeT += a_f.paused ? 0.0f : a_f.dt) >= Cfg().debugFakePrompt) {
+			fakeT = -1.0f;
+			const std::uint8_t* call = Abs(0xB54A53);
+			std::int32_t        rel = 0;
+			std::memcpy(&rel, call + 6, sizeof rel);
+			const auto target = reinterpret_cast<std::uintptr_t>(call + 10) + rel;
+			if (addr.help && call[0] == 0xB9 && HoldsAbs(call + 1, kHelp) && call[5] == 0xE8 && target == reinterpret_cast<std::uintptr_t>(Abs(0x8ABA20))) {
+				static std::uint16_t text[64];
+				const char*          ascii = "Press ~INPUT_PICKUP~ to test the context key.";
+				std::size_t          n = 0;
+				for (; ascii[n] && n < 63; ++n) {
+					text[n] = static_cast<std::uint8_t>(ascii[n]);
+				}
+				text[n] = 0;
+				using SetHelp = void(__thiscall*)(const void*, const std::uint16_t*, int, int, int, int, int, int, int, int, int, int, int, int, int);
+				reinterpret_cast<SetHelp>(target)(addr.help, text, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, -1);
+				LC_LOG("DebugFakePrompt: GTA's help box set");
+			} else {
+				LC_LOG("DebugFakePrompt: the help box setter isn't where 1.0.8.0 has it");
+			}
+		}
+		if (Cfg().debugContextKey && inGame) {
+			static bool wasDown = false;
+			const bool  down = S::IS_CONTROL_PRESSED(0, INPUT_PICKUP);
+			if (down != wasDown) {
+				wasDown = down;
+				LC_LOG("DebugContextKey: GTA's pad reads INPUT_PICKUP %s (puppeting %d, a Minecraft screen open %d)", down ? "DOWN" : "up", a_f.puppeting ? 1 : 0,
+					Game::State().mcScreenOpen.load() ? 1 : 0);
+			}
+		}
+		// DebugContextKey: 1.5 s into an offered context action while puppeting, the context key is pressed
+		// (a real key event) for 0.15 s.
+		static float keyT = 0.0f;
+		static int   keyStep = 0;  // 0 waiting, 1 held, 2 done
+		if (Cfg().debugContextKey && keyStep < 2) {
+			keyT = (action >= 0 && a_f.puppeting) || keyStep == 1 ? keyT + (a_f.paused ? 0.0f : a_f.dt) : 0.0f;
+			if (keyStep == 0 && keyT >= 1.5f) {
+				Input::SendTestKey(Cfg().ContextKeyDik(), true);
+				keyStep = 1;
+				keyT = 0.0f;
+				LC_LOG("DebugContextKey: context key down (offered: INPUT_%s)", pad::kControlNames[action]);
+			} else if (keyStep == 1 && keyT >= 0.15f) {
+				Input::SendTestKey(Cfg().ContextKeyDik(), false);
+				keyStep = 2;
+				LC_LOG("DebugContextKey: context key up");
+			}
+		}
+
 		// Our own CameraMode=scripted camera is no mission's.
 		const bool scriptCam = s.cams && a_f.ownScriptCam == 0;
 

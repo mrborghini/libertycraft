@@ -66,6 +66,10 @@ namespace lc::Input
 		// (select, back, dialling). Minecraft gets none of them then, except key-ups (it may have
 		// seen the key go down before the phone came out).
 		std::atomic<bool> phoneOut{ false };
+		// A context action GTA's help text offers (SetPrompt): its pad control, -1 none. promptKeyHeld: the
+		// context key went down to GTA (its key-up goes there too).
+		std::atomic<int>  promptControl{ -1 };
+		std::atomic<bool> promptKeyHeld{ false };
 
 		bool IsArrowKey(std::uint32_t a_dik) { return a_dik == 0xC8 || a_dik == 0xD0 || a_dik == 0xCB || a_dik == 0xCD; }
 		bool IsPhoneKey(std::uint32_t a_dik)
@@ -248,6 +252,16 @@ namespace lc::Input
 				}
 				if (dik == kDikEscape || dik == kDikGrave) {
 					return false;  // the game's (pause menu, console mods)
+				}
+				// A context action is offered ("Press E to ..."): its key is GTA's, not Minecraft's inventory.
+				if (dik == Config::Get().ContextKeyDik() && dik != 0 && (promptControl.load(std::memory_order_relaxed) >= 0 || promptKeyHeld.load())) {
+					if (down && !repeat) {
+						promptKeyHeld = true;
+						LC_LOG("context key pressed: to GTA (its offered action), not Minecraft");
+					} else if (!down) {
+						promptKeyHeld = false;
+					}
+					return false;
 				}
 				if (IsPhoneKey(dik)) {
 					if (!down) {
@@ -629,7 +643,7 @@ namespace lc::Input
 		} phoneTest;
 
 		const PhoneTest::Step kPhoneSteps[] = {
-			{ 'p', 0x11, 0, "W" }, { 'p', 0x02, 0, "1" }, { 'p', 0x1C, 0, "Enter" }, { 'p', 0x0E, 0, "Backspace" }, { 'p', kMouseLeft, 0, "left mouse" },
+			{ 'p', 0x11, 0, "W" }, { 'p', 0x12, 0, "E" }, { 'p', 0x02, 0, "1" }, { 'p', 0x1C, 0, "Enter" }, { 'p', 0x0E, 0, "Backspace" }, { 'p', kMouseLeft, 0, "left mouse" },
 			{ 'p', 0xCB, 0, "Left" }, { 'p', 0xCD, 0, "Right" }, { 'p', 0xD0, 0, "Down" }, { 'p', 0xC8, 0, "Up (takes the phone out)" },
 			{ 'w', 0, 2.5f, nullptr }, { 'l', 0, 0, "phone out (home screen)" },
 			{ 't', 0x1C, 0, "Enter" }, { 'w', 0, 2.0f, nullptr }, { 'l', 0, 0, "menu" },
@@ -921,12 +935,16 @@ namespace lc::Input
 		// GTA's phone (PhoneKeys): its controls stay (no Minecraft screen open: then every key is Minecraft's).
 		const bool phone = Config::Get().phoneKeys && !st.mcScreenOpen.load(std::memory_order_relaxed);
 		const bool out = phoneOut.load(std::memory_order_relaxed);
+		const int  prompt = promptControl.load(std::memory_order_relaxed);
 		for (int i = 0; i < kControls; ++i) {
 			if (keepPause && i == INPUT_FRONTEND_PAUSE) {
 				continue;
 			}
 			if (phone && IsPhoneControl(i, out)) {
 				continue;
+			}
+			if (i == prompt) {
+				continue;  // the context action GTA's help text offers
 			}
 			// Axes rest at 128 (0 is a full push: a ped with player control on walked off at 1.8 m/s).
 			const std::uint8_t rest = IsAxisControl(i) ? 128 : 0;
@@ -997,6 +1015,16 @@ namespace lc::Input
 		UpdatePhone();
 		PhoneTestTick(a_dt);
 		InputScriptTick(a_dt);
+	}
+
+	void SendTestKey(std::uint32_t a_dik, bool a_down)
+	{
+		SendKey(a_dik, a_down);
+	}
+
+	void SetPrompt(int a_control)
+	{
+		promptControl.store(a_control, std::memory_order_relaxed);
 	}
 
 	bool PhoneOut()

@@ -1,9 +1,12 @@
 // drive/SceneLogic.h: when a mission script has the player (GTA drives him), and DriveLogic.h's
 // Why::kScript hand-over around it.
 #include "DriveLogic.h"
+#include "drive/Prompt.h"
 #include "drive/SceneLogic.h"
 
 #include <cstdio>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -177,10 +180,42 @@ namespace
 		CHECK(out.resync);
 		CHECK(out.blocker == nullptr);
 	}
+
+	std::vector<std::uint16_t> Wide(const char* a_s)
+	{
+		std::vector<std::uint16_t> w;
+		for (const char* p = a_s; *p; ++p) {
+			w.push_back(static_cast<std::uint8_t>(*p));
+		}
+		w.push_back(0);
+		return w;
+	}
+
+	void PromptTokens()
+	{
+		using lc::drive::PromptControl;
+		auto t = Wide("Press ~INPUT_PICKUP~ to play.");
+		const int pickup = PromptControl(t.data(), t.size());
+		CHECK(pickup == 23);  // INPUT_PICKUP in ePadControls order
+		CHECK(lc::drive::IsContextAction(pickup));
+		t = Wide("Hold ~INPUT_ATTACK~ to swing, ~INPUT_PICKUP~ to pick up");
+		const int attack = PromptControl(t.data(), t.size());
+		CHECK(attack == 4);
+		CHECK(!lc::drive::IsContextAction(attack));  // hints for attacks, moves, the phone aren't context actions
+		t = Wide("Go to the ~y~bowling alley~s~.");
+		CHECK(PromptControl(t.data(), t.size()) == -1);
+		t = Wide("~INPUT_NO_SUCH_THING~");
+		CHECK(PromptControl(t.data(), t.size()) == -1);
+		t = Wide("~INPUT_PICK");  // cut off at the buffer's end
+		CHECK(PromptControl(t.data(), t.size() - 1) == -1);
+		CHECK(PromptControl(nullptr, 10) == -1);
+		CHECK(std::string(lc::pad::kControlNames[3]) == "ENTER");
+	}
 }
 
 int main()
 {
+	PromptTokens();
 	TakesOverAtOnceAndLetsGoAfterTheHold();
 	GapsBetweenShotsDontHandBack();
 	IneligibleForgetsEverything();

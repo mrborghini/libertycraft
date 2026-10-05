@@ -305,6 +305,63 @@ namespace lc::NikoBody
 			return found;
 		}
 
+		// What Niko holds or carries stays visible under the body (the bowling ball, a bag, his phone): hiding
+		// him hides it too (CPed's SetVisible, vtable +0x30 = 0x93B8E0 on 1.0.8.0, passes the visibility on to
+		// the four entities at +0xD68: his weapon and props), and objects a script attached to him are drawn
+		// with him. Those are shown again; they sit at his hands, where the body's arms reach.
+		constexpr std::uint32_t kPedSetVisible = 0x93B8E0;
+		constexpr std::size_t   kPedProps = 0xD68;
+		int                     propsChecked = -1;  // -1 not yet, 0 unavailable, 1 available
+		std::uint64_t           propsShownLogged = 0;
+
+		void SetEntityVisible(void* a_entity, bool a_visible)
+		{
+			using SetVisible = void(__thiscall*)(void*, bool);
+			reinterpret_cast<SetVisible>((*reinterpret_cast<void***>(a_entity))[0x30 / 4])(a_entity, a_visible);
+		}
+
+		void ShowProps(int a_ped)
+		{
+			CPed* p = CPools::ms_pPedPool ? CPools::ms_pPedPool->GetAt(static_cast<std::uint32_t>(a_ped)) : nullptr;
+			if (!p) {
+				return;
+			}
+			const auto setVisible = AddressSetter::gBaseAddress + (kPedSetVisible - 0x400000u);
+			if (propsChecked < 0) {
+				static constexpr std::uint8_t kLoop[] = { 0x8D, 0xB1, 0x68, 0x0D, 0x00, 0x00, 0xBF, 0x04, 0x00, 0x00, 0x00 };
+				propsChecked = plugin::gameVer == plugin::VERSION_1080 &&
+				                       std::memcmp(reinterpret_cast<const void*>(setVisible + (0x93B8F6 - kPedSetVisible)), kLoop, sizeof kLoop) == 0
+				                   ? 1
+				                   : 0;
+				LC_LOG("%s", propsChecked ? "Niko's props stay visible under the Minecraft body (CPed +0xD68 and objects attached to him)"
+				                          : "WARNING: CPed's props aren't where 1.0.8.0 has them: what Niko holds hides with him under the body");
+			}
+			if (!propsChecked || reinterpret_cast<std::uintptr_t>((*reinterpret_cast<void***>(p))[0x30 / 4]) != setVisible) {
+				return;
+			}
+			int shown = 0;
+			auto* const* slots = reinterpret_cast<void* const*>(reinterpret_cast<const std::uint8_t*>(p) + kPedProps);
+			for (int i = 0; i < 4; ++i) {
+				if (slots[i]) {
+					SetEntityVisible(slots[i], true);
+					++shown;
+				}
+			}
+			if (auto* pool = CPools::ms_pObjectPool) {
+				for (int i = pool->FindNextUsed(0); i >= 0; i = pool->FindNextUsed(i + 1)) {
+					CObject* o = pool->Get(i);
+					if (o && o->m_pAttachedToEntity == reinterpret_cast<CEntity*>(p)) {
+						SetEntityVisible(o, true);
+						++shown;
+					}
+				}
+			}
+			if (shown && ::GetTickCount64() >= propsShownLogged) {
+				propsShownLogged = ::GetTickCount64() + 10000;
+				LC_LOG("%d prop(s) Niko holds or carries shown under the Minecraft body", shown);
+			}
+		}
+
 		std::uint32_t staleFrames = 0;
 		bool          lastStale = false;
 
@@ -731,6 +788,9 @@ namespace lc::NikoBody
 			S::SET_PED_ALPHA(a_ped, a_hide ? 0 : 255);
 		} else {
 			S::SET_CHAR_VISIBLE(a_ped, !a_hide);
+			if (a_hide && Config::Get().minecraftBodyProps) {
+				ShowProps(a_ped);
+			}
 		}
 	}
 

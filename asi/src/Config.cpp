@@ -121,7 +121,10 @@ namespace lc
 			"; Minecraft's mobs leave mission characters alone (no hunting them, no mob's hit or blast reaches them)\n"
 			"MissionPedsSafe=1\n"
 			"; GTA's cutscenes and the scripts' cameras pause Minecraft (its mobs and sounds)\n"
-			"ScenesPauseMinecraft=1\n";
+			"ScenesPauseMinecraft=1\n"
+			"; GTA's \"Press E to ...\" context actions work in Minecraft mode: while one is offered this key goes to GTA, not to Minecraft\n"
+			"ContextActions=1\n"
+			"ContextKey=E\n";
 
 		std::string Lower(std::string a_s)
 		{
@@ -334,10 +337,16 @@ namespace lc
 		if (auto v = get("scriptscenes")) scriptScenes = ToBool(*v, scriptScenes);
 		if (auto v = get("missionpedssafe")) missionPedsSafe = ToBool(*v, missionPedsSafe);
 		if (auto v = get("scenespauseminecraft")) scenesPauseMinecraft = ToBool(*v, scenesPauseMinecraft);
+		if (auto v = get("contextactions")) contextActions = ToBool(*v, contextActions);
+		if (auto v = get("contextkey")) contextKey = *v;
 		if (auto v = get("debugmissionprobe")) debugMissionProbe = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugmissionprobeab")) debugMissionProbeAB = ToBool(*v, debugMissionProbeAB);
 		if (auto v = get("debugmissionblips")) debugMissionBlips = ToBool(*v, debugMissionBlips);
 		if (auto v = get("debugphonecall")) debugPhoneCall = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugcontextkey")) debugContextKey = ToBool(*v, debugContextKey);
+		if (auto v = get("debugfakeprompt")) debugFakePrompt = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugprop")) debugProp = *v;
+		if (auto v = get("minecraftbodyprops")) minecraftBodyProps = ToBool(*v, minecraftBodyProps);
 		if (auto v = get("debugmissionwarp")) debugMissionWarp = Lower(*v);
 		if (auto v = get("minecraftbody")) minecraftBody = ToBool(*v, minecraftBody);
 		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
@@ -403,6 +412,7 @@ namespace lc
 		LC_LOG("config: MinecraftBody=%d MinecraftBodyCutscenes=%d MinecraftBodyVehicles=%d MinecraftBodyNikoMode=%d MinecraftBodyScale=%.2f MinecraftBodyHide=%s%s",
 			minecraftBody, minecraftBodyCutscenes, minecraftBodyVehicles, minecraftBodyNikoMode, minecraftBodyScale, minecraftBodyHide.c_str(),
 			debugBody ? " DebugBody=1" : "");
+		LC_LOG("config: ContextActions=%d ContextKey=%s (dik 0x%02X)", contextActions, contextKey.c_str(), ContextKeyDik());
 		LC_LOG("config: ScriptScenes=%d MissionPedsSafe=%d ScenesPauseMinecraft=%d%s%s%s", scriptScenes, missionPedsSafe, scenesPauseMinecraft,
 			debugMissionBlips ? " DebugMissionBlips=1" : "", debugMissionWarp.empty() ? "" : " DebugMissionWarp=", debugMissionWarp.c_str());
 		if (debugMissionProbe > 0.0f) {
