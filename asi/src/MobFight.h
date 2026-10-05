@@ -5,8 +5,9 @@
 // proto::kHitByMob, and Combat applies them as usual but hands the ped's reaction here instead of
 // treating the hit as the player's crime.
 //
-// Minecraft also tells us every 5 ticks where the hostile mobs near the player are and which ped each
-// one is after (proto::kEvMob, combat/HostMobs.java). Every 0.25 s (game thread):
+// Minecraft also tells us every 5 ticks where the mobs near the player are and which ped each one is
+// after (proto::kEvMob, combat/HostMobs.java): monsters, and golems, animals and villagers flagged
+// proto::kMobPassive, which only stop bullets unless they are after a ped. Every 0.25 s (game thread):
 //  - the ped a mob is after, and police within 25 m of such a mob (3 at most), deal with it: armed
 //    peds and police (a cop without a gun is given a pistol) shoot at the mob's chest, re-aimed every
 //    0.8 s as it moves (TASK_SHOOT_AT_COORD; DebugMobShoot=1: TASK_AIM_GUN_AT_COORD and

@@ -889,9 +889,16 @@ namespace lc::Combat
 			return ::NativeInvoke::Invoke<b8>(NATIVE_SWITCH_PED_TO_RAGDOLL, a_ped, a_minMs, a_maxMs, a_kind, 0, 0, 0);
 		}
 
-		void Knock(int a_ped, float a_gx, float a_gy, float a_force, float a_headingDeg, int a_variant)
+		// An iron golem's blow (proto::kHitLaunch) throws its victim up as well: at least this long a ragdoll,
+		// and this much upward force (x HitForce; about 9 m/s, some 4 m up, as Minecraft's 0.4 blocks a tick).
+		constexpr int   kLaunchRagdollMs = 2200;
+		constexpr float kLaunchUp = 5.0f;
+		// ... and back only half as hard (Minecraft: 0.4 blocks a tick back, 0.8 up): mostly up, not the usual shove.
+		constexpr float kLaunchSide = 2.5f;
+
+		void Knock(int a_ped, float a_gx, float a_gy, float a_force, float a_headingDeg, int a_variant, float a_up = -1.0f)
 		{
-			const float up = a_force * 0.3f;
+			const float up = a_up >= 0.0f ? a_up : a_force * 0.3f;
 			switch (a_variant) {
 			case 0:
 				S::APPLY_FORCE_TO_PED(a_ped, 3, a_gx * a_force, a_gy * a_force, up, 0.0f, 0.0f, 0.0f, 0, 0, 1, 1);
@@ -1442,8 +1449,9 @@ namespace lc::Combat
 					S::CLEAR_CHAR_TASKS_IMMEDIATELY(ped);
 					switched = S::SWITCH_PED_TO_RAGDOLL(ped, 4000, 4000, false, false, false, false);
 				}
-				const float force = HitShoveForce(a_ev.d, Cfg().hitForce);
-				Knock(ped, gx, gy, force, heading, kKnockVariant);
+				const bool  launch = (a_ev.flags & proto::kHitLaunch) != 0;
+				const float force = launch ? kLaunchSide * Cfg().hitForce : HitShoveForce(a_ev.d, Cfg().hitForce);
+				Knock(ped, gx, gy, force, heading, kKnockVariant, launch ? kLaunchUp * Cfg().hitForce : -1.0f);
 				++counters.ragdolls;
 				pendingKills.push_back({ ped, a_ev, before, 0.0f, 0, x, y, z, gx, gy });
 				LC_LOG("hit on %08X is lethal (%u of %u health): ragdolled (%s) and shoved (force %.1f) first, the killing damage follows", a_ev.formId, wouldDo,
@@ -1457,14 +1465,19 @@ namespace lc::Combat
 			}
 			int ragdollMs = 0;
 			if (Cfg().ragdollOnHit && !killed && PushDirToGta(a_ev.b, a_ev.c, gx, gy)) {
+				const bool launch = (a_ev.flags & proto::kHitLaunch) != 0;
 				ragdollMs = RagdollMs(a_ev.d, crit);
+				if (launch && ragdollMs > 0) {
+					ragdollMs = std::max(ragdollMs, kLaunchRagdollMs);
+				}
 				if (ragdollMs > 0) {
 					float x = 0, y = 0, z = 0, heading = 0;
 					S::GET_CHAR_COORDINATES(ped, &x, &y, &z);
 					S::GET_CHAR_HEADING(ped, &heading);
 					S::SWITCH_PED_TO_RAGDOLL(ped, ragdollMs, ragdollMs, false, false, false, false);
-					// Minecraft's knockback: 0.4 for a plain hit, more for sprint hits / Knockback.
-					const float force = HitShoveForce(a_ev.d, Cfg().hitForce);
+					// Minecraft's knockback: 0.4 for a plain hit, more for sprint hits / Knockback. An iron golem's
+					// blow throws the ped up instead (mostly upward, kLaunchUp, a little back).
+					const float force = launch ? kLaunchSide * Cfg().hitForce : HitShoveForce(a_ev.d, Cfg().hitForce);
 					int         variant = kKnockVariant;
 					if (Cfg().debugKnockbackVariant >= 0) {
 						if (knockVariantNext < 0) {
@@ -1473,7 +1486,7 @@ namespace lc::Combat
 						variant = knockVariantNext;
 						knockVariantNext = (knockVariantNext + 1) & 3;
 					}
-					Knock(ped, gx, gy, force, heading, variant);
+					Knock(ped, gx, gy, force, heading, variant, launch ? kLaunchUp * Cfg().hitForce : -1.0f);
 					++counters.ragdolls;
 					if (shoves.size() < 16) {
 						shoves.push_back({ ped, x, y, z, kKnockbackCheckSeconds, force, gx, gy, heading, variant });
@@ -1484,7 +1497,7 @@ namespace lc::Combat
 			S::GET_PED_TYPE(ped, &type);
 			LC_LOG("hit %s %08X for %.2f Minecraft -> %u GTA damage (%s): health %u -> %u%s%s%s%s", PedTypeName(type), a_ev.formId, a_ev.a, damage, how,
 				before, after, killed ? ", killed" : "", crit ? ", critical" : "", (a_ev.flags & proto::kHitProjectile) ? ", projectile" : "",
-				ragdollMs ? ", ragdoll" : "");
+				ragdollMs ? ((a_ev.flags & proto::kHitLaunch) ? ", ragdoll (thrown up)" : ", ragdoll") : "");
 			if (damage > 0) {
 				AfterAttack(ped, type, killed, a_frame, 0, CrimeForAttack(a_ev.flags, a_ev.weapon, type == kPedTypeCop));
 			}
@@ -2644,6 +2657,14 @@ namespace lc::Combat
 			float t = 0.0f, downFor = 0.0f;
 			int   knocks = 0;
 		} mobKnock;
+		// After a golem's throw (kHitLaunch) on Niko: his height for a second (logged once, as the throw's evidence).
+		struct LaunchWatch
+		{
+			float t = -1.0f, z0 = 0.0f, peak = 0.0f, next = 0.0f;
+			int   n = 0;
+			char  line[160] = "";
+		} launchWatch;
+		int launchLogs = 0;
 
 		void MobHitPlayer(const proto::McEvent& a_ev, const Frame& a_frame)
 		{
@@ -2666,10 +2687,17 @@ namespace lc::Combat
 			if (Cfg().ragdollOnHit && a_ev.d > 0.0f && dir && after > static_cast<unsigned>(kDeathHealth) && !S::IS_CHAR_IN_ANY_CAR(a_frame.ped)) {
 				float heading = 0.0f;
 				S::GET_CHAR_HEADING(a_frame.ped, &heading);
-				ragdollMs = RagdollMs(a_ev.d, false);
-				force = HitShoveForce(a_ev.d, Cfg().hitForce);
+				const bool launch = (a_ev.flags & proto::kHitLaunch) != 0;  // an iron golem's: thrown up
+				ragdollMs = launch ? std::max(RagdollMs(a_ev.d, false), kLaunchRagdollMs) : RagdollMs(a_ev.d, false);
+				force = launch ? kLaunchSide * Cfg().hitForce : HitShoveForce(a_ev.d, Cfg().hitForce);
 				S::SWITCH_PED_TO_RAGDOLL(a_frame.ped, ragdollMs, ragdollMs, false, false, false, false);
-				Knock(a_frame.ped, gx, gy, force, heading, kKnockVariant);
+				Knock(a_frame.ped, gx, gy, force, heading, kKnockVariant, launch ? kLaunchUp * Cfg().hitForce : -1.0f);
+				if (launch && launchLogs < 40 && launchWatch.t < 0.0f) {
+					float x = 0, y = 0, z = 0;
+					S::GET_CHAR_COORDINATES(a_frame.ped, &x, &y, &z);
+					launchWatch = LaunchWatch{};
+					launchWatch.t = 0.0f, launchWatch.z0 = z;
+				}
 				if (!mobKnock.active) {
 					mobKnock = MobKnockWatch{};
 					mobKnock.active = true;
@@ -2678,8 +2706,9 @@ namespace lc::Combat
 				++mobKnock.knocks;
 			}
 			if (ragdollMs) {
-				LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s, knocked over (ragdoll %d ms, push %.1f)",
-					a_ev.a, damage, how, before, after, projectile ? ", projectile" : "", ragdollMs, force);
+				LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s, knocked over (ragdoll %d ms, push %.1f%s)",
+					a_ev.a, damage, how, before, after, projectile ? ", projectile" : "", ragdollMs, force,
+					(a_ev.flags & proto::kHitLaunch) ? ", thrown up" : "");
 			} else {
 				LC_LOG("a Minecraft mob hit Niko (Niko mode) for %.1f Minecraft -> %u GTA damage (%s): health %u -> %u%s", a_ev.a, damage, how, before, after,
 					projectile ? ", projectile" : "");
@@ -2689,6 +2718,26 @@ namespace lc::Combat
 		// After mob knockdowns in Niko mode: logs when GTA IV has him on his feet again (or that it hasn't).
 		void WatchMobKnock(const Frame& a_frame)
 		{
+			if (launchWatch.t >= 0.0f) {
+				float x = 0, y = 0, z = 0;
+				if (a_frame.exists && a_frame.ped) {
+					S::GET_CHAR_COORDINATES(a_frame.ped, &x, &y, &z);
+				}
+				launchWatch.t += a_frame.dt;
+				const float up = z - launchWatch.z0;
+				launchWatch.peak = std::max(launchWatch.peak, up);
+				if (launchWatch.t >= launchWatch.next && launchWatch.n < 11) {
+					const std::size_t used = std::strlen(launchWatch.line);
+					std::snprintf(launchWatch.line + used, sizeof(launchWatch.line) - used, " %+.1f", up);
+					launchWatch.next += 0.1f;
+					++launchWatch.n;
+				}
+				if (launchWatch.t >= 1.0f) {
+					++launchLogs;
+					LC_LOG("Niko thrown up by an iron golem: his height over the next second (every 0.1 s, m):%s; peak %+.1f m", launchWatch.line, launchWatch.peak);
+					launchWatch.t = -1.0f;
+				}
+			}
 			if (!mobKnock.active) {
 				return;
 			}

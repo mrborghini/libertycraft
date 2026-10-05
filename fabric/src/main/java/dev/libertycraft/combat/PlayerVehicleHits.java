@@ -11,6 +11,7 @@ import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.animal.golem.IronGolem;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.Vec3;
 
@@ -74,11 +75,17 @@ public final class PlayerVehicleHits {
 		if (!projectile && source.getEntity() instanceof Mob mob) {
 			strength += (float) (0.5 * mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_KNOCKBACK));
 		}
-		Link.pushEvent(Proto.EV_MOB_HIT_PLAYER, 0, amount, px, pz, strength, projectile ? Proto.HIT_PROJECTILE : 0, HostActorEntity.weaponClass(source));
+		int flags = (projectile ? Proto.HIT_PROJECTILE : 0) | (launches(source) ? Proto.HIT_LAUNCH : 0);
+		Link.pushEvent(Proto.EV_MOB_HIT_PLAYER, 0, amount, px, pz, strength, flags, HostActorEntity.weaponClass(source));
 		if (logs++ < 100) {
 			LibertyCraft.LOG.info("[LibertyCraft] {} hit the player GTA IV drives for {}{}: GTA IV's player takes it", source.getEntity().getType().toShortString(),
 				String.format("%.1f", amount), projectile ? " (projectile)" : "");
 		}
+	}
+
+	/** An iron golem's own blow: IronGolem.doHurtTarget throws its victim up (0.4 blocks a tick) besides the knockback. */
+	static boolean launches(DamageSource source) {
+		return source.getEntity() instanceof IronGolem golem && source.getDirectEntity() == golem;
 	}
 
 	private static void hitVehicle(ServerPlayer player, DamageSource source, float amount) {

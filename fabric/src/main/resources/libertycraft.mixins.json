@@ -32,6 +32,7 @@
     "PathfindingContextMixin",
     "PlayerEdgeMixin",
     "PlayerJumpMixin",
+    "PlayerKnockbackMixin",
     "PressurePlateMixin",
     "ProjectileMixin",
     "ProjectileUtilMixin",

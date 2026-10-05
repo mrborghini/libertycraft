@@ -73,6 +73,7 @@ public final class HostCombat {
 		FabricDefaultAttributeRegistry.register(HOST_ACTOR, LivingEntity.createLivingAttributes());
 		ServerTickEvents.END_SERVER_TICK.register(HostCombat::serverTick);
 		PedTargets.init();
+		GolemTargets.init();
 		PlayerVehicleHits.init();
 		dev.libertycraft.world.MobSpawner.init();
 		dev.libertycraft.world.HostSky.init();
@@ -92,7 +93,7 @@ public final class HostCombat {
 		for (ServerPlayer player : players) {
 			pickUpNearby(player);
 		}
-		HostMobs.report(level, players.getFirst()); // the hostile mobs near the player, for GTA IV's peds
+		HostMobs.report(level, players.getFirst()); // the mobs near the player, for GTA IV's peds and bullets
 		if (Link.readActors(ACTORS, ACTORS_STAMP)) {
 			// Vehicles run mobs over first: it looks at where the mobs were before the stand-ins shove them.
 			VehicleRunOver.tick(level, ACTORS, ACTORS_STAMP[0], players);

@@ -168,6 +168,9 @@ public class HostActorEntity extends LivingEntity {
 		if (source.getDirectEntity() instanceof Projectile) {
 			this.pendingFlags |= Proto.HIT_PROJECTILE;
 		}
+		if (PlayerVehicleHits.launches(source)) {
+			this.pendingFlags |= Proto.HIT_LAUNCH; // an iron golem's blow throws the ped up
+		}
 		this.pendingWeapon = weaponClass(source);
 		if (source.is(net.minecraft.tags.DamageTypeTags.IS_FIRE)) {
 			this.pendingFlags |= Proto.HIT_FIRE;
@@ -276,6 +279,9 @@ public class HostActorEntity extends LivingEntity {
 			// it every time, and the police could never shoot back); a heavier one (a ravager, a sprinting
 			// Knockback enchantment) does, by what it has beyond that.
 			this.pushStrength = Math.max(0.0F, this.pushStrength - MOB_PLAIN_KNOCKBACK);
+			if ((this.pendingFlags & Proto.HIT_LAUNCH) != 0) {
+				this.pushStrength = Math.max(this.pushStrength, 0.4F); // except an iron golem's: it throws the ped
+			}
 		}
 		float[] hit = { this.pendingDamage, (float) this.pushX, (float) this.pushZ, this.pushStrength, Float.intBitsToFloat(this.pendingFlags),
 			Float.intBitsToFloat(this.pendingWeapon), 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F };

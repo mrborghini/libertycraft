@@ -3,6 +3,7 @@ package dev.libertycraft.combat;
 import dev.libertycraft.LibertyCraft;
 import dev.libertycraft.link.Link;
 import dev.libertycraft.link.Proto;
+import dev.libertycraft.world.HostDrive;
 import java.util.Comparator;
 import java.util.List;
 import net.minecraft.core.registries.Registries;
@@ -19,9 +20,13 @@ import org.jspecify.annotations.Nullable;
 /**
  * GTA IV's peds fight back against Minecraft's mobs, Minecraft's side.
  *
- * <p>Every 5 ticks the hostile mobs near the player go to GTA IV ({@link Proto#EV_MOB}: where each
- * one is, how big, and which ped it is after), so the host can have the ped (and police nearby) shoot
- * at it or run, and can test GTA IV's bullets against the mobs' boxes. A bullet that hits one comes
+ * <p>Every 5 ticks the mobs near the player go to GTA IV ({@link Proto#EV_MOB}: where each one is, how
+ * big, and which ped it is after), so the host can have the ped (and police nearby) shoot at it or run,
+ * and can test GTA IV's bullets against the mobs' boxes. Every mob counts, not only monsters: an iron
+ * golem, a wolf, a villager or a cow stops GTA IV's bullets and takes them too ({@link Proto#MOB_PASSIVE}:
+ * peds only deal with such a mob while it is after one of them), so a golem soaks up a police shootout and
+ * turns on the shooter. Not the player's own vehicle mount. Monsters and mobs after someone go first,
+ * then the nearest of the rest, {@link Proto#MAX_MOBS} at most. A bullet that hits one comes
  * back as {@link Proto#IN_MOB_HIT} and hurts the mob here as a shot from that ped's stand-in (so the
  * mob turns on the shooter, HurtByTargetGoal) or from the player (whose kill it is), scaled so a few
  * pistol shots kill a zombie (GTA IV's damage / {@code kMobDamageScale}).
@@ -36,26 +41,27 @@ public final class HostMobs {
 	private HostMobs() {
 	}
 
-	/** Server thread, every tick (HostCombat): reports the hostile mobs around {@code player}. */
+	/** Server thread, every tick (HostCombat): reports the mobs around {@code player}. */
 	static void report(ServerLevel level, ServerPlayer player) {
 		if (level.getGameTime() % EVERY != 0 || !Link.active()) {
 			return;
 		}
 		double r = Proto.MOB_RANGE;
-		List<Mob> mobs = level.getEntitiesOfClass(Mob.class, player.getBoundingBox().inflate(r), m -> m instanceof Enemy && m.isAlive() && !m.isRemoved());
+		List<Mob> mobs = level.getEntitiesOfClass(Mob.class, player.getBoundingBox().inflate(r),
+			m -> m.isAlive() && !m.isRemoved() && !HostDrive.isMount(m) && m.distanceToSqr(player) <= r * r);
 		if (mobs.isEmpty()) {
 			return;
 		}
-		mobs.sort(Comparator.comparingDouble(player::distanceToSqr));
+		mobs.sort(Comparator.comparingInt((Mob m) -> m instanceof Enemy || m.getTarget() != null ? 0 : 1).thenComparingDouble(player::distanceToSqr));
 		int sent = 0;
 		for (Mob mob : mobs) {
-			if (sent >= Proto.MAX_MOBS || mob.distanceToSqr(player) > r * r) {
+			if (sent >= Proto.MAX_MOBS) {
 				break;
 			}
 			LivingEntity target = mob.getTarget();
 			int formId = target instanceof HostActorEntity ped && !ped.isRemoved() ? ped.formId() : 0;
 			int width = Math.clamp(Math.round(mob.getBbWidth() * 100.0F), 1, 0xFFFF);
-			int flags = width | (target instanceof Player ? Proto.MOB_AFTER_PLAYER : 0);
+			int flags = width | (target instanceof Player ? Proto.MOB_AFTER_PLAYER : 0) | (mob instanceof Enemy ? 0 : Proto.MOB_PASSIVE);
 			if (!Link.pushEventLeaving(RESERVE, Proto.EV_MOB, formId, (float) mob.getX(), (float) mob.getY(), (float) mob.getZ(), mob.getBbHeight(), mob.getId(), flags)) {
 				break;
 			}

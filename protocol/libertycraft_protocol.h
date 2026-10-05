@@ -452,9 +452,10 @@ namespace libertycraft::proto
 		// flags = BumpFlags. Sent every tick of contact; the host pushes the ped out of the way, makes
 		// it stumble or knocks it down by the speed (and its own cooldowns).
 		kEvBump = 7,
-		// LibertyCraft addition (a new type; the layout and kVersion stay): a hostile Minecraft mob near the
-		// player, sent every 5 ticks for each one within kMobRange of the player (at most kMaxMobs, nearest
-		// first, and only while the ring is at most half full). flags = its entity id (Minecraft's),
+		// LibertyCraft addition (a new type; the layout and kVersion stay): a Minecraft mob near the player
+		// (any mob: monsters, and kMobPassive golems, animals and villagers), sent every 5 ticks for each one
+		// within kMobRange of the player (at most kMaxMobs: monsters and mobs after someone first, then the
+		// nearest of the rest, and only while the ring is at most half full). flags = its entity id (Minecraft's),
 		// formId = the ActorTable formId of the ped it is after (0: none, or the player), a/b/c = its feet
 		// (MC coords), d = its height (blocks), weapon = its width in hundredths of a block (bits 0 to 15)
 		// | MobFlags. The host makes GTA IV's peds deal with it (armed ones and police nearby shoot at it,
@@ -517,6 +518,10 @@ namespace libertycraft::proto
 	enum MobFlags : std::uint32_t
 	{
 		kMobAfterPlayer = 1u << 16,  // it is after the player
+		// LibertyCraft addition: not one of Minecraft's monsters (an iron or snow golem, an animal, a villager,
+		// a wolf, a horse). GTA IV's bullets stop at it and hurt it (kInMobHit) like a monster's; GTA IV's peds
+		// only deal with it while it is after one of them (formId set).
+		kMobPassive = 1u << 17,
 	};
 	inline constexpr float         kMobRange = 80.0f;  // blocks from the player
 	inline constexpr std::uint32_t kMaxMobs = 32;
@@ -558,6 +563,10 @@ namespace libertycraft::proto
 		// a creeper's blast), the player none of it. The host hurts the ped as usual, but it is no crime of
 		// the player's and the ped doesn't turn on the player.
 		kHitByMob = 1u << 5,
+		// LibertyCraft addition: the blow throws its victim up as well as back (an iron golem's: Minecraft adds
+		// 0.4 blocks a tick upward). The host knocks the ped (or, in a kEvMobHitPlayer, the player) over for at
+		// least 2 s and pushes it up hard.
+		kHitLaunch = 1u << 6,
 	};
 
 	// What landed a kEvHitActor (Skyrim plays that weapon class's impact effect and sounds).

@@ -52,6 +52,7 @@ namespace lc::MobFight
 			float x = 0, y = 0, z0 = 0, z1 = 0, half = 0.3f;  // GTA: middle, feet, top, half width
 			int   target = 0;                                // the ped it is after (script handle), 0: none
 			bool  afterPlayer = false;
+			bool  passive = false;  // not a monster (a golem, an animal): only bullets, unless it is after a ped
 			float age = 0.0f;
 		};
 		std::mutex       mobLock;  // mobs and shots: the game thread and GTA's bullet trace
@@ -485,6 +486,7 @@ namespace lc::MobFight
 		m.z1 = m.z0 + std::clamp(a_ev.d, 0.2f, 4.0f);
 		m.half = std::clamp(static_cast<float>(a_ev.weapon & 0xFFFFu) / 200.0f, 0.1f, 2.0f);
 		m.afterPlayer = (a_ev.weapon & proto::kMobAfterPlayer) != 0;
+		m.passive = (a_ev.weapon & proto::kMobPassive) != 0;
 		std::uint32_t handle = 0;
 		m.target = a_ev.formId && combat::HandleFromActorId(a_ev.formId, handle) ? static_cast<int>(handle) : 0;
 		std::lock_guard lock(mobLock);
@@ -529,6 +531,9 @@ namespace lc::MobFight
 			std::lock_guard lock(mobLock);
 			for (const Mob& m : mobs) {
 				const float d = (m.x - x) * (m.x - x) + (m.y - y) * (m.y - y);
+				if (m.passive && !m.target) {
+					continue;  // a cow or an idle golem didn't do it
+				}
 				if (d < best) {
 					best = d, culprit = m;
 				}

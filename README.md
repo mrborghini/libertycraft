@@ -173,11 +173,21 @@ Minecraft's mobs and GTA IV's city meet:
   counts: in Minecraft mode Minecraft's, while GTA IV drives you (Niko mode, a car) GTA IV's own.
 * **Mobs hurt Niko too.** In Niko mode a mob's blow, arrow or crossbow bolt takes GTA IV's health off
   Niko and knocks him over the way your hits knock peds over (`RagdollOnHit`, `HitForce`; a ravager's
-  blow throws him further), so a swarm can keep him down; he gets back up when it lets him. A creeper's
-  blast is GTA IV's own explosion.
+  blow throws him further), so a swarm can keep him down; he gets back up when it lets him. An iron
+  golem's blow throws him up into the air, as it throws you in Minecraft mode. A creeper's blast is GTA
+  IV's own explosion.
 * **Peds fight back.** Armed peds and police nearby shoot at a mob that goes after someone, and GTA IV's
   bullets hurt mobs (four pistol shots kill a zombie); other peds run, drivers drive off. `PedsFightMobs=0`
-  in `LibertyCraft.ini` turns this off.
+  in `LibertyCraft.ini` turns this off. GTA IV's bullets stop at every Minecraft mob near you, not only
+  monsters: an iron golem soaks up a shootout with its 100 health and turns on whoever shot it, and a cow
+  or a villager in the line of fire takes the bullet.
+* **Golems guard you.** Iron golems (and snow golems) and GTA IV's peds, set by `golemTargets` in
+  `config/libertycraft.properties`: `guard` (the default, like a wolf) attacks the peds and police who
+  attack you and the peds you attack; `cops` attacks police on sight as well; `hostile` attacks any ped on
+  sight; `vanilla` means golems only attack Minecraft mobs (vanilla's hostile-mob targeting, plus players
+  who anger them) and GTA IV's peds are never targets. Mission characters never are. As in Minecraft, a
+  golem you built never turns on you, and one from a spawn egg, a command or a village does when you hit
+  it. Its blow throws a ped (or you) up into the air; the ped's friends and the police shoot back.
 * **`/libertycraft mobs on|off`** (saved with the world, off by default) spawns mobs the Minecraft way:
   at night by GTA IV's clock hostile mobs 24 to 64 blocks from you on the street (up to 24 around you), by
   day now and then a few farm animals on GTA IV's grass. Undead burn in GTA IV's sun: Minecraft's time of

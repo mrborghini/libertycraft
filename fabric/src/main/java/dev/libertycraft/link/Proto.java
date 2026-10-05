@@ -139,6 +139,8 @@ public final class Proto {
 	 */
 	public static final int EV_MOB = 8;
 	public static final int MOB_AFTER_PLAYER = 1 << 16;
+	/** LibertyCraft: not a monster (a golem, an animal, a villager; kMobPassive): GTA IV's bullets hit it, peds leave it be unless it is after them. */
+	public static final int MOB_PASSIVE = 1 << 17;
 	public static final double MOB_RANGE = 80.0;
 	public static final int MAX_MOBS = 32;
 	/** LibertyCraft: Minecraft's time of day was set (kEvSetTime): a = GTA IV's hour for it (0 to 24, minutes as the fraction). */
@@ -180,6 +182,8 @@ public final class Proto {
 	public static final int HIT_EXPLOSION = 1 << 4;
 	/** LibertyCraft: mobs dealt all of this hit, the player none of it (kHitByMob): no crime, the ped doesn't turn on the player. */
 	public static final int HIT_BY_MOB = 1 << 5;
+	/** LibertyCraft: the blow throws its victim up too (an iron golem's, kHitLaunch): a long knockdown and a push upward. */
+	public static final int HIT_LAUNCH = 1 << 6;
 	public static final int WEAPON_UNARMED = 0;
 	public static final int WEAPON_BLADE = 1;
 	public static final int WEAPON_AXE = 2;
