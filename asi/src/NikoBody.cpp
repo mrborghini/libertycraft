@@ -11,6 +11,7 @@
 #include "Config.h"
 #include "Input.h"
 #include "Log.h"
+#include "Missions.h"
 
 #include <algorithm>
 #include <cmath>
@@ -476,6 +477,26 @@ namespace lc::NikoBody
 						copies += o && o->m_nModelIndex == targetObj->m_nModelIndex ? 1 : 0;
 					}
 				}
+				if (CPed* pp = FindPlayerPed(); pp && pp->m_pMatrix) {
+					// Other Nikos: peds of the player's model near the cutscene's, and its own scale now.
+					int  peds = 0;
+					auto* pool = CPools::ms_pPedPool;
+					for (int i = 0; pool && i < static_cast<int>(pool->m_nCount); ++i) {
+						CPed* q = pool->Get(i);
+						if (q && q != pp && q->m_pMatrix && q->m_nModelIndex == pp->m_nModelIndex) {
+							const auto& qp = q->m_pMatrix->pos;
+							peds += (qp.x - op.x) * (qp.x - op.x) + (qp.y - op.y) * (qp.y - op.y) < 40.0f * 40.0f ? 1 : 0;
+						}
+					}
+					const auto& r = targetObj->m_pMatrix->right;
+					LC_LOG("DebugBody: the cutscene's Niko is at scale %.3f now (%.2f wanted); %d other peds of the player's model within 40 m", std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z),
+						kGhostScale, peds);
+					int handle = 0;
+					S::GET_PLAYER_CHAR(static_cast<int>(S::GET_PLAYER_ID()), &handle);
+					LC_LOG("DebugBody: the player ped at %.2f %.2f %.2f (%.1f m from the cutscene's Niko), visible %d", pp->m_pMatrix->pos.x, pp->m_pMatrix->pos.y,
+						pp->m_pMatrix->pos.z, std::sqrt((pp->m_pMatrix->pos.x - op.x) * (pp->m_pMatrix->pos.x - op.x) + (pp->m_pMatrix->pos.y - op.y) * (pp->m_pMatrix->pos.y - op.y)),
+						handle ? S::IS_CHAR_VISIBLE(handle) : -1);
+				}
 				LC_LOG("DebugBody: cutscene object at %.2f %.2f %.2f, its pelvis bone at %.2f %.2f %.2f, camera %.2f %.2f %.2f; flags %08X alpha %u; %d objects of its model",
 					op.x, op.y, op.z, a_origin[0], a_origin[1], a_origin[2], cp.x, cp.y, cp.z, *reinterpret_cast<const std::uint32_t*>(reinterpret_cast<const std::uint8_t*>(targetObj) + 0x24),
 					targetObj->m_nAlpha, copies);
@@ -535,7 +556,8 @@ namespace lc::NikoBody
 		{
 			const float after = Config::Get().debugTrainRide;
 			static std::uint64_t start = 0, nextLog = 0;
-			static int           phase = 0, train = 0;
+			static int           phase = 0, train = 0, missionTrain = 0;
+			static bool          made = false;
 			auto*                pool = CPools::ms_pVehiclePool;
 			CPed*                ped = FindPlayerPed();
 			if (after <= 0.0f || !a_player || !pool || !ped || !ped->m_pMatrix) {
@@ -571,13 +593,45 @@ namespace lc::NikoBody
 					S::GET_CAR_SPEED(nearest, &speed);
 				}
 				LC_LOG("DebugTrainRide: %d train carriages, the nearest %d %.0f m away at %.1f m/s", count, nearest, nearest ? best : 0.0f, speed);
-				if (nearest && double(now - start) >= after * 1000.0) {
+				// None near by then: a mission train on the track point DebugTrainSpot names.
+				static bool requested = false;
+				float       tx = 0.0f, ty = 0.0f, tz = 0.0f;
+				int         cfg = 0;
+				const std::string& spot = Config::Get().debugTrainSpot;
+				if (!made && (!nearest || best > 200.0f) && double(now - start) >= after * 1000.0 && !spot.empty() &&
+					std::sscanf(spot.c_str(), "%f,%f,%f,%d", &tx, &ty, &tz, &cfg) >= 3) {
+					const unsigned lo = S::GET_HASH_KEY("subway_lo"), hi = S::GET_HASH_KEY("subway_hi");
+					if (!requested) {
+						requested = true;
+						CStreaming::ScriptRequestModel(static_cast<std::int32_t>(lo));
+						CStreaming::ScriptRequestModel(static_cast<std::int32_t>(hi));
+						S::SWITCH_RANDOM_TRAINS(true);
+						LC_LOG("DebugTrainRide: no train near; subway models requested, random trains on");
+					}
+					if (S::HAS_MODEL_LOADED(lo) && S::HAS_MODEL_LOADED(hi)) {
+						made = true;
+						int t = 0;
+						S::CREATE_MISSION_TRAIN(static_cast<unsigned>(cfg), tx, ty, tz, true, &t);
+						missionTrain = t;
+						LC_LOG("DebugTrainRide: CREATE_MISSION_TRAIN(%d) at %.1f %.1f %.1f: train %d", cfg, tx, ty, tz, t);
+					}
+					return;
+				}
+				if (nearest && best < 250.0f && double(now - start) >= after * 1000.0) {
 					S::WARP_CHAR_INTO_CAR_AS_PASSENGER(a_player, nearest, 0);
 					train = nearest;
 					phase = 1;
 					LC_LOG("DebugTrainRide: the player put into train carriage %d as a passenger", nearest);
 				}
 				return;
+			}
+			if (missionTrain && S::DOES_VEHICLE_EXIST(missionTrain)) {
+				// A mission train stands still unless told: off at 12 m/s, a subway's cruise.
+				S::SET_TRAIN_CRUISE_SPEED(missionTrain, 12.0f);
+				if (phase == 1) {
+					S::SET_TRAIN_SPEED(missionTrain, 12.0f);
+					phase = 2;
+				}
 			}
 			if (train && S::DOES_VEHICLE_EXIST(train)) {
 				S::GET_CAR_SPEED(train, &speed);
@@ -613,7 +667,11 @@ namespace lc::NikoBody
 		}
 		if (obj != targetObj || objHandle != targetObjHandle) {
 			if (hiddenObj && hiddenObj != objHandle) {
-				ShowObject(hiddenObj);
+				// (Only back to its size while the cutscene goes on: at its end, the screen fading out, the
+				// full-size Niko showed for a frame or two before the cutscene removed him.)
+				if (CCutsceneMgr::IsRunning() && S::IS_SCREEN_FADED_IN()) {
+					ShowObject(hiddenObj);
+				}
 				hiddenObj = 0;
 			}
 			if (obj) {
@@ -744,7 +802,9 @@ namespace lc::NikoBody
 			const B::V3 cam{ float(a_f.camPos[0] - origin[0]), float(a_f.camPos[1] - origin[1]), float(a_f.camPos[2] - origin[2]) };
 			// Seated (a car, a train's cinematic cameras inside the carriage) only the parts the camera is
 			// at go too: hiding all of it made the body vanish on a train ride whenever the camera came close.
-			const bool  scene = targetWhy == drive::Why::kCutscene || targetWhy == drive::Why::kScript;
+			// (A mission scene counts as a cutscene only while a script's camera shows it; with GTA's own
+			// camera behind him the parts near it go with the vehicles' wider margin.)
+			const bool  scene = targetWhy == drive::Why::kCutscene || (targetWhy == drive::Why::kScript && Missions::Current().scene);
 			inside = B::HideNearCamera(pose, cam, std::clamp(a_f.nearZ, 0.05f, 0.5f) + (scene ? 0.1f : 0.3f), targetWhy == drive::Why::kRagdoll);
 		}
 		if (inside) {

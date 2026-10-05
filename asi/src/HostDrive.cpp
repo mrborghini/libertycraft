@@ -1940,8 +1940,15 @@ namespace lc::HostDrive
 		// Minecraft holds its player until his ground has arrived; Niko stays hidden (Game leaves him so)
 		// under the Minecraft body standing on his skeleton meanwhile.
 		const bool resyncBody = a_f.resyncing && !a_f.puppeting && !out.hostDrives && !handingBack && logic.mode() == drive::Mode::kMinecraft;
-		const drive::Why bodyWhy = handingBack ? lastWhy : resyncBody ? drive::Why::kRagdoll : out.why;
-		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, bodyWhy, out.hostDrives || handingBack || resyncBody, a_f.mcInWorld);
+		// The screen fading out (a cutscene's or a mission scene's end, a script's warp) counts as not in game,
+		// so GTA "drove" no one for its frames: the body went off and Niko showed while it faded. The body stays
+		// as it was until the game is back (then the teleport handshake has the player, resyncBody).
+		static bool drovePrev = false;
+		const bool  fadeHold = a_f.loading && a_f.exists && !a_f.dead && !a_f.puppeting && drovePrev && lastWhy != drive::Why::kNone &&
+		                      logic.mode() == drive::Mode::kMinecraft && !out.hostDrives && !handingBack && !resyncBody;
+		drovePrev = out.hostDrives || handingBack || resyncBody || fadeHold;
+		const drive::Why bodyWhy = handingBack || fadeHold ? lastWhy : resyncBody ? drive::Why::kRagdoll : out.why;
+		const int  bodyPed = NikoBody::Target(a_f.exists && !a_f.dead ? a_f.ped : 0, bodyWhy, out.hostDrives || handingBack || resyncBody || fadeHold, a_f.mcInWorld);
 		static int loggedResync = 0;  // 0 none, 1 with the body, 2 without (no body from Minecraft yet)
 		const int  resyncState = resyncBody ? (bodyPed ? 1 : 2) : 0;
 		if (resyncState != loggedResync) {

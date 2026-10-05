@@ -43,7 +43,7 @@ public final class GtaMenuPause {
 	/** Every frame from HostClient.beginFrame, after the SkyState read. */
 	static void frame(Minecraft minecraft, boolean linked, Link.SkyState sky) {
 		boolean menu = linked && sky.menuOpen();
-		scene = linked && sky.scene() && !sky.loading();
+		scene = linked && sky.scene();  // (through a cutscene's fade-out too: the plugin holds it until the game is back)
 		boolean want = menu || scene;
 		if (want == active) {
 			return;
@@ -57,7 +57,17 @@ public final class GtaMenuPause {
 		boolean pausable = minecraft.hasSingleplayerServer() && !minecraft.getSingleplayerServer().isPublished();
 		if (want) {
 			cause = menu ? "GTA IV's pause menu opened" : "GTA IV shows a scene (a cutscene or a mission's camera)";
-			LibertyCraft.LOG.info("[LibertyCraft] {}: {}", cause, pausable ? "Minecraft pauses too, sounds paused" : "sounds paused (a world open to friends keeps running)");
+			String hidden = "";
+			if (!menu && minecraft.level != null && minecraft.player != null) {
+				int monsters = 0;
+				for (var e : minecraft.level.entitiesForRendering()) {
+					if (e instanceof net.minecraft.world.entity.monster.Enemy && e.distanceToSqr(minecraft.player) < 128.0 * 128.0) {
+						monsters++;
+					}
+				}
+				hidden = ", " + monsters + " hostile mob(s) near the player not drawn in GTA IV meanwhile";
+			}
+			LibertyCraft.LOG.info("[LibertyCraft] {}: {}{}", cause, pausable ? "Minecraft pauses too, sounds paused" : "sounds paused (a world open to friends keeps running)", hidden);
 		} else {
 			LibertyCraft.LOG.info("[LibertyCraft] over ({}): Minecraft goes on, sounds resumed", cause);
 		}

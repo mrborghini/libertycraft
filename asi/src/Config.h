@@ -231,7 +231,9 @@ namespace lc
 		// contacts, scroll and put it away again, and a log of which pad controls each key feeds.
 		bool debugPhone = false;
 		// Test hook: input events for Minecraft at set times after puppet mode first starts, '|'
-		// separated "seconds:kSCANCODE:1|0" (an SDL key down/up) or "seconds:mBUTTON:1|0" (SDL mouse button).
+		// separated "seconds:kSCANCODE:1|0" (an SDL key down/up) or "seconds:mBUTTON:1|0" (SDL mouse button);
+		// "Pseconds:..." counts from when GTA's phone first came out; "seconds:vYAW:PITCH" turns the look
+		// (degrees, Minecraft's: pitch down positive), "seconds:aYAW:PITCH" sets it.
 		std::string debugInputScript;
 		// Any vehicle running into the puppeted player (cars, bikes, boats, helicopters and their
 		// spinning rotors, planes, trains; or one of GTA's explosions hurting them) knocks them over:
@@ -299,6 +301,9 @@ namespace lc
 		// Test hook: N s into play the player is put into the nearest train carriage as a passenger
 		// (WARP_CHAR_INTO_CAR_AS_PASSENGER), and the ride is logged every 2 s.
 		float debugTrainRide = 0.0f;
+		// With it: "x,y,z,config" a point on a track; no train within 200 m by then: a mission train is
+		// made there (CREATE_MISSION_TRAIN with that train config).
+		std::string debugTrainSpot;
 		// ---- the blocky city (BlockyCity.h; collision/Rays.h) ----
 		// Collision triangles carry GTA's material of the surface they were probed on (kTriGtaMaterial),
 		// for the blocky city's blocks. Not in the default ini: DebugMaterials=1 logs the line probes'
@@ -321,6 +326,7 @@ namespace lc
 		float       debugMissionProbe = 0.0f;
 		bool        debugMissionProbeAB = false;  // ...twice: first with ScriptScenes off, then on
 		bool        debugMissionBlips = false;
+		float       debugPhoneCall = 0.0f;  // test hook: N s into play, 6 s of kSkyPhoneCall (Minecraft's sounds duck)
 		std::string debugMissionWarp;
 
 		static Config& Get();

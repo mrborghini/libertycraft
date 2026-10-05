@@ -35,6 +35,9 @@ namespace lc::Input
 	void Pad(CPad* a_pad);
 	// Mouse-look counts accumulated since the last call (raw mouse units).
 	void ConsumeLook(float& a_dx, float& a_dy);
+	// DebugInputScript's look turns ("v" entries): degrees of Minecraft yaw and pitch (down positive).
+	// True: an "a" entry, the look set to them instead.
+	bool ConsumeScriptLook(float& a_yaw, float& a_pitch);
 	// kInReleaseAll (focus left Minecraft). Safe from any thread.
 	void ReleaseAll();
 

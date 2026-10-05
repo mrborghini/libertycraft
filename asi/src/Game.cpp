@@ -372,8 +372,10 @@ namespace lc::Game
 			// GTA's weapon goes away (its HUD showed Niko's pistol next to Minecraft's sword), also one a
 			// script hands him meanwhile; the last one comes back in Niko mode (not while GTA only
 			// animates him for Minecraft mode: vehicles, getting back up).
+			// Not the phone: GTA holds it as WEAPON_OBJECT (46), and its camera as WEAPON_CAMERA; putting
+			// those away every frame fought the phone during a call.
 			unsigned weapon = 0;
-			if (S::GET_CURRENT_CHAR_WEAPON(a_ped, &weapon) && weapon != WEAPON_UNARMED) {
+			if (S::GET_CURRENT_CHAR_WEAPON(a_ped, &weapon) && weapon != WEAPON_UNARMED && weapon != WEAPON_OBJECT && weapon != WEAPON_CAMERA) {
 				holsteredWeapon = weapon;
 				S::SET_CURRENT_CHAR_WEAPON(a_ped, WEAPON_UNARMED, true);
 				LC_LOG("GTA weapon %u holstered while Minecraft drives", weapon);
@@ -991,6 +993,10 @@ namespace lc::Game
 			const float factor = s * s * s * 8.0f * 0.15f;
 			yaw = std::fmod(yaw + lookDx * factor, 360.0f);
 			pitch = std::clamp(pitch + lookDy * factor, -90.0f, 90.0f);
+			float turnYaw = 0.0f, turnPitch = 0.0f;  // (DebugInputScript)
+			const bool setLook = Input::ConsumeScriptLook(turnYaw, turnPitch);
+			yaw = std::fmod((setLook ? 0.0f : yaw) + turnYaw, 360.0f);
+			pitch = std::clamp((setLook ? 0.0f : pitch) + turnPitch, -90.0f, 90.0f);
 		}
 
 		// Minecraft holds its player after a teleport until our ground has arrived around them. If it's

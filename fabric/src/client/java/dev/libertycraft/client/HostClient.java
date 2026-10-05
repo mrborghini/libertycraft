@@ -466,18 +466,53 @@ public final class HostClient {
 			return; // GTA IV is paused (menu / alt-tab): don't block every frame waiting for it
 		}
 		hostStalled = false;
-		long deadline = System.nanoTime() + 25_000_000L;
-		// SkyState.seq advances by 2 per GTA IV frame (odd while writing).
-		while ((Link.skyStateSeq() >>> 1) == lastPacedSeq && System.nanoTime() < deadline) {
-			Thread.onSpinWait();
-			if (deadline - System.nanoTime() > 2_000_000L) {
-				Thread.yield();
+		long start = System.nanoTime();
+		long deadline = start + 25_000_000L;
+		// SkyState.seq advances by 2 per GTA IV frame (odd while writing). Its next frame is due one frame
+		// interval after the last: sleep in short naps until just before that, spin only the last moments
+		// (spinning, and yielding, through the whole wait kept a CPU core busy all the time). A frame that
+		// comes early is seen at the next nap's end, a quarter of a millisecond at most.
+		long due = lastSeqSeenNanos + hostFrameNanos;
+		boolean waited = false;
+		while ((Link.skyStateSeq() >>> 1) == lastPacedSeq) {
+			long now = System.nanoTime();
+			if (now >= deadline) {
+				break;
+			}
+			waited = true;
+			long early = due - now;
+			if (early > PACE_SPIN_NANOS) {
+				java.util.concurrent.locks.LockSupport.parkNanos(Math.min(early - PACE_SPIN_NANOS, PACE_NAP_NANOS));
+			} else if (-early > PACE_SPIN_NANOS) {
+				java.util.concurrent.locks.LockSupport.parkNanos(PACE_NAP_NANOS); // late (a long frame, a stall): no spinning
+			} else {
+				Thread.onSpinWait();
 			}
 		}
 		int seqNow = Link.skyStateSeq() >>> 1;
+		if (seqNow != lastPacedSeq) {
+			long now = System.nanoTime();
+			int frames = (seqNow - lastPacedSeq) & 0x7FFFFFFF;
+			// Learn GTA IV's frame interval from changes seen while waiting (seen late otherwise).
+			if (waited && lastSeqSeenWaiting && frames >= 1 && frames <= 4) {
+				long interval = (now - lastSeqSeenNanos) / frames;
+				if (interval > 1_000_000L && interval < 50_000_000L) {
+					hostFrameNanos += (interval - hostFrameNanos) / 8;
+				}
+			}
+			lastSeqSeenNanos = now;
+			lastSeqSeenWaiting = waited;
+		}
 		hostStalled = seqNow == lastPacedSeq;
 		lastPacedSeq = seqNow;
 	}
+
+	// paceFrame: when GTA IV's last frame was seen, how long its frames take (learnt), nap and spin lengths.
+	private static long lastSeqSeenNanos;
+	private static boolean lastSeqSeenWaiting;
+	private static long hostFrameNanos = 6_000_000L;
+	private static final long PACE_NAP_NANOS = 250_000L;
+	private static final long PACE_SPIN_NANOS = 100_000L;
 
 	private static void applyLinkedOptions() {
 		Minecraft minecraft = Minecraft.getInstance();

@@ -303,6 +303,11 @@ public final class Proto {
 	public static final long SH_HEIGHT = 0x04;
 	public static final long SH_FLAGS = 0x08;
 	public static final long SH_FRAME_ID = 0x10;
+	/** LibertyCraft: dirty tiles (kOverlayFlagTiles): the frame differs from SH_BASE_FRAME only in the SH_TILES tiles. */
+	public static final int OVERLAY_FLAG_TILES = 1 << 1;
+	public static final int OVERLAY_TILE_GRID = 16;
+	public static final long SH_BASE_FRAME = 0x18;
+	public static final long SH_TILES = 0x20;
 
 	// Input ring (relative to OFF_INPUT_RING)
 	public static final int INPUT_RING_ENTRIES = 4096;

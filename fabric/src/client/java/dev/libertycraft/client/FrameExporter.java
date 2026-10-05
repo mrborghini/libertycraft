@@ -6,8 +6,9 @@ import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.textures.GpuTexture;
 import dev.libertycraft.LibertyCraft;
-import dev.libertycraft.link.Proto;
 import dev.libertycraft.link.Link;
+import dev.libertycraft.link.OverlayShipper;
+import dev.libertycraft.link.Proto;
 import java.lang.foreign.MemorySegment;
 import net.minecraft.client.Minecraft;
 
@@ -17,6 +18,8 @@ import net.minecraft.client.Minecraft;
  *
  * The copy is asynchronous: a frame is captured into one of a few staging buffers and shipped
  * once the GPU says the copy finished, typically a frame later.
+ *
+ * <p>Only what changed is shipped (OverlayShipper: dirty tiles, unchanged frames skipped).
  */
 public final class FrameExporter {
 	private static final int STAGING = 3;
@@ -27,6 +30,34 @@ public final class FrameExporter {
 	private static final Staging[] staging = new Staging[STAGING];
 	private static long nextFrameId = 1;
 	private static boolean loggedFormat;
+
+	private static final OverlayShipper SHIPPER = new OverlayShipper();
+	private static final OverlayShipper.Target LINK = new OverlayShipper.Target() {
+		@Override
+		public MemorySegment memory() {
+			return Link.segment();
+		}
+
+		@Override
+		public int backSlot() {
+			return Link.overlayBackSlot();
+		}
+
+		@Override
+		public long backSlotOffset() {
+			return Link.overlayBackSlotOffset();
+		}
+
+		@Override
+		public boolean middleUnread() {
+			return Link.overlayMiddleUnread();
+		}
+
+		@Override
+		public void publish(int w, int h, long frameId, long baseFrameId, int[] tiles) {
+			Link.publishOverlay(w, h, true, frameId, baseFrameId, tiles);
+		}
+	};
 
 	private static final class Staging {
 		GpuBuffer buffer;
@@ -104,12 +135,13 @@ public final class FrameExporter {
 		}
 		MemorySegment shm = Link.segment();
 		if (shm != null) {
-			long bytes = (long) newest.width * newest.height * 4L;
 			try (GpuBufferSlice.MappedView view = newest.buffer.map(true, false)) {
-				MemorySegment src = MemorySegment.ofBuffer(view.data());
-				MemorySegment.copy(src, 0, shm, Link.overlayBackSlotOffset(), Math.min(bytes, src.byteSize()));
+				if (SHIPPER.ship(MemorySegment.ofBuffer(view.data()), newest.width, newest.height, newest.frameId, Link.generation(), LINK)
+					&& SHIPPER.shipped % 3000 == 0) {
+					LibertyCraft.LOG.info("[LibertyCraft] overlay: {} frames shipped ({} tiles of 256 on average), {} unchanged ones skipped", SHIPPER.shipped,
+						String.format("%.1f", (double) SHIPPER.tilesShipped / SHIPPER.shipped), SHIPPER.skipped);
+				}
 			}
-			Link.publishOverlay(newest.width, newest.height, true, newest.frameId);
 		}
 		// Anything older than what we just shipped is useless now.
 		for (Staging s : staging) {

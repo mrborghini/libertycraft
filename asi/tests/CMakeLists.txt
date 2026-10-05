@@ -56,3 +56,9 @@ add_executable(scene_test scene_test.cpp)
 target_include_directories(scene_test PRIVATE ../src)
 target_compile_options(scene_test PRIVATE -Wall -Wextra -O2)
 add_test(NAME scene_test COMMAND scene_test)
+
+# render/OverlayTiles.h: the overlay's dirty tiles (kOverlayFlagTiles) as the plugin reads them.
+add_executable(overlay_test overlay_test.cpp)
+target_include_directories(overlay_test PRIVATE ../src ../../protocol)
+target_compile_options(overlay_test PRIVATE -Wall -Wextra -O2)
+add_test(NAME overlay_test COMMAND overlay_test)

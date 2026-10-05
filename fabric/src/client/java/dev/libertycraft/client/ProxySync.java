@@ -36,7 +36,9 @@ final class ProxySync {
 					continue;
 				}
 				proxy.setSize(a.width(), a.height());
-				proxy.setPos(a.x(), a.y(), a.z());
+				if (proxy.getX() != a.x() || proxy.getY() != a.y() || proxy.getZ() != a.z()) {
+					proxy.setPos(a.x(), a.y(), a.z()); // (a new bounding box each time: not for the many that stand still)
+				}
 				proxy.xo = a.x();
 				proxy.yo = a.y();
 				proxy.zo = a.z();

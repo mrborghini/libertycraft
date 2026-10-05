@@ -337,6 +337,7 @@ namespace lc
 		if (auto v = get("debugmissionprobe")) debugMissionProbe = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugmissionprobeab")) debugMissionProbeAB = ToBool(*v, debugMissionProbeAB);
 		if (auto v = get("debugmissionblips")) debugMissionBlips = ToBool(*v, debugMissionBlips);
+		if (auto v = get("debugphonecall")) debugPhoneCall = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugmissionwarp")) debugMissionWarp = Lower(*v);
 		if (auto v = get("minecraftbody")) minecraftBody = ToBool(*v, minecraftBody);
 		if (auto v = get("minecraftbodycutscenes")) minecraftBodyCutscenes = ToBool(*v, minecraftBodyCutscenes);
@@ -349,6 +350,7 @@ namespace lc
 		if (auto v = get("debugbodyviewseconds")) debugBodyViewSeconds = std::max(0.5f, static_cast<float>(std::atof(v->c_str())));
 		if (auto v = get("debugbodyab")) debugBodyAB = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugtrainride")) debugTrainRide = static_cast<float>(std::atof(v->c_str()));
+		if (auto v = get("debugtrainspot")) debugTrainSpot = *v;
 
 		LC_LOG("config: Puppet=%d CameraMode=%s FovMode=%s MenuKey=%s (dik 0x%02X) Diagnostics=%d LogPerf=%d FreezePed=%d RootToFeet=%.2f (measure %d) ProbeFrom=%s ProbeHeight=%.1f CameraRows=%s",
 			puppet, cameraMode == CameraMode::kScripted ? "scripted" : "final", fovMode == FovMode::kHorizontal43 ? "horizontal43" : "vertical",
@@ -405,6 +407,9 @@ namespace lc
 			debugMissionBlips ? " DebugMissionBlips=1" : "", debugMissionWarp.empty() ? "" : " DebugMissionWarp=", debugMissionWarp.c_str());
 		if (debugMissionProbe > 0.0f) {
 			LC_LOG("config: DebugMissionProbe=%.0f%s", debugMissionProbe, debugMissionProbeAB ? " DebugMissionProbeAB=1" : "");
+		}
+		if (debugPhoneCall > 0.0f) {
+			LC_LOG("config: DebugPhoneCall=%.0f", debugPhoneCall);
 		}
 		if (debugViewportRoom) {
 			LC_LOG("config: DebugViewportRoom=%d", debugViewportRoom);

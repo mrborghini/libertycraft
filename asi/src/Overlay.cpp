@@ -6,6 +6,7 @@
 #include "Overlay.h"
 
 #include "render/D3D9Util.h"
+#include "render/OverlayTiles.h"
 #include "render/RenderMath.h"
 #include "render/Shaders.h"
 
@@ -13,6 +14,7 @@
 #include "Log.h"
 
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 namespace lc::Overlay
@@ -38,6 +40,9 @@ namespace lc::Overlay
 		std::uint32_t                frames = 0, uploads = 0;
 		double                       uploadMs = 0.0;
 		bool                         loggedFirst = false;
+		// What the texture lacks of the newest acquired frame (Minecraft sends dirty tiles: kOverlayFlagTiles).
+		render::overlaytiles::Reader tiles;
+		std::uint64_t                statUploads = 0, statWhole = 0, statTiles = 0;
 
 		double NowMs()
 		{
@@ -61,6 +66,7 @@ namespace lc::Overlay
 				texture = nullptr;
 				texW = texH = 0;
 				haveFrame = false;
+				tiles.Reset();
 				ready = initTried = false;
 				device = a_device;
 			}
@@ -96,6 +102,7 @@ namespace lc::Overlay
 			render::SafeRelease(texture);
 			texW = texH = 0;
 			haveFrame = false;
+			tiles.Reset();
 			if (FAILED(device->CreateTexture(a_w, a_h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &texture, nullptr))) {
 				LC_LOG("ERROR: overlay texture %ux%u failed", a_w, a_h);
 				return false;
@@ -106,7 +113,7 @@ namespace lc::Overlay
 			return true;
 		}
 
-		// Copies the current front slot into the texture.
+		// Copies the current front slot into the texture: the tiles it lacks, or all of it.
 		void CopyFront()
 		{
 			const double t0 = NowMs();
@@ -122,12 +129,38 @@ namespace lc::Overlay
 				if (!EnsureTexture(a_hdr->width, a_hdr->height)) {
 					return;
 				}
-				D3DLOCKED_RECT lr{};
-				if (FAILED(texture->LockRect(0, &lr, nullptr, 0))) {
-					return;
+				const std::uint32_t w = a_hdr->width, h = a_hdr->height, rowBytes = w * 4;
+				namespace ot = render::overlaytiles;
+				ot::Rect            r;
+				if (tiles.all || tiles.w != w || tiles.h != h) {
+					D3DLOCKED_RECT lr{};
+					if (FAILED(texture->LockRect(0, &lr, nullptr, 0))) {
+						return;
+					}
+					render::CopyRows(lr.pBits, lr.Pitch, a_pixels, rowBytes, h);
+					texture->UnlockRect(0);
+					++statWhole;
+				} else if (ot::Bounds(tiles.pending, w, h, r)) {
+					// One lock over the changed tiles' bounds (D3D uploads the locked rect); only those tiles copied.
+					D3DLOCKED_RECT lr{};
+					RECT           rect{ LONG(r.x0), LONG(r.y0), LONG(r.x1), LONG(r.y1) };
+					if (FAILED(texture->LockRect(0, &lr, &rect, 0))) {
+						return;
+					}
+					auto* bits = static_cast<std::uint8_t*>(lr.pBits);
+					ot::ForEachSpan(tiles.pending, w, h, [&](std::uint32_t a_x0, std::uint32_t a_x1, std::uint32_t a_y0, std::uint32_t a_y1) {
+						for (std::uint32_t y = a_y0; y < a_y1; ++y) {
+							std::memcpy(bits + std::size_t(y - r.y0) * lr.Pitch + std::size_t(a_x0 - r.x0) * 4, a_pixels + std::size_t(y) * rowBytes + a_x0 * 4,
+								std::size_t(a_x1 - a_x0) * 4);
+						}
+					});
+					texture->UnlockRect(0);
+					statTiles += tiles.pending.Count();
 				}
-				render::CopyRows(lr.pBits, lr.Pitch, a_pixels, a_hdr->width * 4, a_hdr->height);
-				texture->UnlockRect(0);
+				tiles.Uploaded();
+				++statUploads;
+				LC_LOG_EVERY(60000, "overlay: %llu uploads so far, %llu whole, the rest %.1f tiles of 256 on average", static_cast<unsigned long long>(statUploads),
+					static_cast<unsigned long long>(statWhole), statUploads > statWhole ? double(statTiles) / double(statUploads - statWhole) : 0.0);
 				flipY = (a_hdr->flags & 1) != 0;
 				haveFrame = true;
 				stale = false;
@@ -143,6 +176,7 @@ namespace lc::Overlay
 		if (link.AcquireOverlayFrame()) {
 			++frames;
 			stale = true;
+			link.WithFrontSlot([](const proto::OverlaySlotHdr* a_hdr, const std::uint8_t*) { tiles.Acquired(*a_hdr); });
 		}
 		if (!a_wanted || !stale || !a_device || !Init(a_device)) {
 			return;

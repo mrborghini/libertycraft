@@ -26,6 +26,8 @@ import net.minecraft.client.Minecraft;
  * fill ^-2 ^ ^5 ^2 ^4 ^9 minecraft:oak_planks hollow
  * # from ingame         the delay counts from when GTA IV is in game (not loading) instead of from linking
  * # wait 10             the commands below run 10 seconds later (as many waits as needed)
+ * # screen inventory    the client opens the inventory (or "chat", "pause"; "none" closes it)
+ * # hotbar 3            the client selects hotbar slot 3 (1 to 9)
  * tp @s ~ ~ ~4
  * ? execute if block ~ ~-1 ~ minecraft:glass    "?": the command's feedback goes to the log (a check)
  * </pre>
@@ -36,6 +38,7 @@ public final class DevAutorun {
 	private static boolean done;
 	private static long linkedSince;
 	private static final String WAIT = "\u0000wait ";
+	private static final String CLIENT = "\u0000client ";
 	// After a "# wait": the commands still to run, and when the next ones are due.
 	private static List<String> pending;
 	private static long pendingAt;
@@ -77,6 +80,8 @@ public final class DevAutorun {
 					fromIngame = true;
 				} else if (line.startsWith("# wait ")) {
 					commands.add(WAIT + (long) (Double.parseDouble(line.substring(7).strip()) * 1000));
+				} else if (line.startsWith("# screen ") || line.startsWith("# hotbar ")) {
+					commands.add(CLIENT + line.substring(2));
 				} else if (line.startsWith("? ")) {
 					commands.add(line); // a check: its feedback is logged
 				} else if (!line.isEmpty() && !line.startsWith("#")) {
@@ -107,6 +112,25 @@ public final class DevAutorun {
 		run(minecraft, commands);
 	}
 
+	/** A client-side step: a screen opened or closed, a hotbar slot selected. */
+	private static void client(Minecraft minecraft, String step) {
+		LibertyCraft.LOG.info("[LibertyCraft] autorun: {}", step);
+		var player = minecraft.player;
+		switch (step) {
+			case "screen inventory" -> minecraft.gui.setScreen(new net.minecraft.client.gui.screens.inventory.InventoryScreen(player));
+			case "screen chat" -> minecraft.gui.setScreen(new net.minecraft.client.gui.screens.ChatScreen("hello from the autorun", false));
+			case "screen pause" -> minecraft.gui.setScreen(new net.minecraft.client.gui.screens.PauseScreen(true));
+			case "screen none" -> minecraft.gui.setScreen(null);
+			default -> {
+				if (step.startsWith("hotbar ")) {
+					player.getInventory().setSelectedSlot(Math.clamp(Integer.parseInt(step.substring(7).strip()) - 1, 0, 8));
+				} else {
+					LibertyCraft.LOG.warn("[LibertyCraft] autorun: unknown step {}", step);
+				}
+			}
+		}
+	}
+
 	/** Runs commands up to the next "# wait" (the rest stays pending for later). */
 	private static void run(Minecraft minecraft, List<String> commands) {
 		var server = minecraft.getSingleplayerServer();
@@ -120,6 +144,10 @@ public final class DevAutorun {
 				pendingAt = System.currentTimeMillis() + Long.parseLong(command.substring(WAIT.length()));
 				LibertyCraft.LOG.info("[LibertyCraft] autorun: waiting {} s, then {} more command(s)", Long.parseLong(command.substring(WAIT.length())) / 1000.0, pending.size());
 				break;
+			}
+			if (command.startsWith(CLIENT)) {
+				client(minecraft, command.substring(CLIENT.length()));
+				continue;
 			}
 			now.add(command);
 		}

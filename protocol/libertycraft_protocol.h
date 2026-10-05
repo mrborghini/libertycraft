@@ -257,6 +257,19 @@ namespace libertycraft::proto
 	};
 	static_assert(sizeof(OverlaySlotHdr) == 0x40);
 
+	// LibertyCraft addition (a flag bit and the reserved bytes; the layout and kVersion stay SkyCraft's):
+	// dirty tiles. A slot always holds a whole frame, but with flags bit kOverlayFlagTiles the frame differs
+	// from the frame published as baseFrameId only in the tiles set in tiles[]: the frame is cut into a
+	// kOverlayTileGrid x kOverlayTileGrid grid of tiles ceil(width / 16) x ceil(height / 16) pixels (the
+	// last ones cut short), tile (tx, ty) of slot memory order (rows as stored, before any bottom-up flip)
+	// is bit (ty * 16 + tx) % 32 of tiles[(ty * 16 + tx) / 32]. A reader whose copy holds frame
+	// baseFrameId (and the same size) only needs those tiles; any other reader copies it all. Writers
+	// may also skip frames that are unchanged. Without the bit the frame says nothing about earlier ones.
+	inline constexpr std::uint32_t kOverlayFlagTiles = 1u << 1;
+	inline constexpr std::uint32_t kOverlayTileGrid = 16;
+	inline constexpr std::uint32_t kOverlayHdrBaseFrameOff = 0x18;  // u64 baseFrameId, in reserved[]
+	inline constexpr std::uint32_t kOverlayHdrTilesOff = 0x20;      // u32 tiles[8], in reserved[]
+
 	// ---- input ring @0x1000 (Skyrim produces, MC consumes) ----------------------------------
 	inline constexpr std::uint32_t kInputRingEntries = 4096;  // power of two
 	inline constexpr std::uint64_t kInputRingHeadOff = 0x00;  // u64, written by Skyrim

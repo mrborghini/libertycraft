@@ -138,6 +138,8 @@ namespace lc::Input
 		bool                       installLogged = false;
 		std::atomic<bool>          focused{ true };
 		std::atomic<std::int32_t>  lookDx{ 0 }, lookDy{ 0 };
+		std::atomic<int>           scriptYaw{ 0 }, scriptPitch{ 0 };  // DebugInputScript's look turns (degrees)
+		std::atomic<bool>          scriptAbsolute{ false };            // ("a": the look set, not turned)
 		wchar_t                    highSurrogate = 0;
 		// raw input
 		bool                       captured = false;
@@ -951,17 +953,36 @@ namespace lc::Input
 			LC_LOG("DebugInputScript: puppet mode is on; the script starts");
 		}
 		t += a_dt;
+		static float phoneAt = -1.0f;  // when GTA's phone first came out ("P" times count from there)
+		if (phoneAt < 0.0f && PhoneOut()) {
+			phoneAt = t;
+		}
 		while (at < spec.size()) {
 			const std::size_t end = std::min(spec.find('|', at), spec.size());
+			std::string       item = spec.substr(at, end - at);
+			const bool        fromPhone = !item.empty() && item[0] == 'P';
 			float             when = 0.0f;
 			char              kind = 0;
 			int               code = 0, down = 0;
-			if (std::sscanf(spec.substr(at, end - at).c_str(), "%f:%c%d:%d", &when, &kind, &code, &down) != 4) {
+			if (std::sscanf(item.c_str() + (fromPhone ? 1 : 0), "%f:%c%d:%d", &when, &kind, &code, &down) != 4) {
 				at = end + 1;
 				continue;
 			}
-			if (t < when) {
+			if (fromPhone ? (phoneAt < 0.0f || t - phoneAt < when) : t < when) {
 				return;
+			}
+			if (kind == 'v' || kind == 'a') {
+				if (kind == 'a') {
+					scriptYaw.store(code, std::memory_order_relaxed);
+					scriptPitch.store(down, std::memory_order_relaxed);
+					scriptAbsolute.store(true, std::memory_order_release);
+				} else {
+					scriptYaw.fetch_add(code, std::memory_order_relaxed);
+					scriptPitch.fetch_add(down, std::memory_order_relaxed);
+				}
+				LC_LOG("DebugInputScript: %.1f s: look %s %d degrees, pitch %d degrees (down positive)", t, kind == 'a' ? "set to yaw" : "turned", code, down);
+				at = end + 1;
+				continue;
 			}
 			Push(kind == 'm' ? proto::kInMouseButton : proto::kInKey, static_cast<std::uint16_t>(code), down);
 			LC_LOG("DebugInputScript: %.1f s: %s %d %s", t, kind == 'm' ? "mouse button" : "key", code, down ? "down" : "up");
@@ -981,6 +1002,14 @@ namespace lc::Input
 	bool PhoneOut()
 	{
 		return phoneOut.load(std::memory_order_relaxed);
+	}
+
+	bool ConsumeScriptLook(float& a_yaw, float& a_pitch)
+	{
+		const bool absolute = scriptAbsolute.exchange(false, std::memory_order_acquire);
+		a_yaw = static_cast<float>(scriptYaw.exchange(0, std::memory_order_relaxed));
+		a_pitch = static_cast<float>(scriptPitch.exchange(0, std::memory_order_relaxed));
+		return absolute;
 	}
 
 	void ConsumeLook(float& a_dx, float& a_dy)

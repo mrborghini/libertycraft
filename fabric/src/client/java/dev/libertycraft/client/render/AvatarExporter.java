@@ -374,7 +374,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		}
 		ByteBuffer header = ByteBuffer.allocate(8 + groups.size() * 16).order(ByteOrder.LITTLE_ENDIAN);
 		header.putInt(groups.size()).putInt(vertices);
-		ByteBuffer body = ByteBuffer.allocateDirect(vertices * Proto.REN_VERTEX_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+		ByteBuffer body = body(vertices * Proto.REN_VERTEX_BYTES);
 		int first = 0;
 		for (Group g : groups) {
 			int count = g.count() * 6;
@@ -522,7 +522,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 			header.putDouble(origin[0]).putDouble(origin[1]).putDouble(origin[2]);
 		}
 		header.putInt(used.size()).putInt(vertices);
-		ByteBuffer body = ByteBuffer.allocateDirect(vertices * Proto.REN_VERTEX_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+		ByteBuffer body = body(vertices * Proto.REN_VERTEX_BYTES);
 		int first = 0;
 		for (Batch b : used) {
 			int count = b.count / 4 * 6;
@@ -535,6 +535,18 @@ final class AvatarExporter implements SubmitNodeCollector {
 		if (Link.tryWriteRender(message, header, body)) {
 			this.shown = true;
 		}
+	}
+
+	// The triangles of a message, reused (render thread only; Link copies them into the ring at once): a
+	// fresh direct buffer for every avatar and scene message was hundreds of them a second.
+	private static ByteBuffer bodyBuffer = ByteBuffer.allocateDirect(1 << 16).order(ByteOrder.LITTLE_ENDIAN);
+
+	private static ByteBuffer body(int bytes) {
+		if (bodyBuffer.capacity() < bytes) {
+			bodyBuffer = ByteBuffer.allocateDirect(Math.max(bytes, bodyBuffer.capacity() * 2)).order(ByteOrder.LITTLE_ENDIAN);
+		}
+		bodyBuffer.clear().limit(bytes);
+		return bodyBuffer;
 	}
 
 	private void sendEmpty(int message, boolean withOrigin) {

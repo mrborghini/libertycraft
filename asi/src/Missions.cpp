@@ -147,6 +147,7 @@ namespace lc::Missions
 		Snapshot          last{};
 		bool              haveLast = false;
 		std::uint32_t     frameNo = 0;
+		bool              lastShown = false;  // a scene was shown last frame
 
 		void LogSnapshot(const Snapshot& a_s, const char* a_mode)
 		{
@@ -305,14 +306,14 @@ namespace lc::Missions
 		struct Warp
 		{
 			float t = 0.0f;
-			int   step = 0;  // 0 waiting, 1 loading the scene there, 2 done
+			int   step = 0;  // 0 waiting, 1 loading the scene there, 2 there, control off a moment more, 3 done
 			float to[3]{};
 			float wait = 0.0f;
 		} warp;
 
 		void WarpTick(const Frame& a_f)
 		{
-			if (Cfg().debugMissionWarp.empty() || warp.step >= 2 || !a_f.exists || a_f.loading || a_f.paused || a_f.dead) {
+			if (Cfg().debugMissionWarp.empty() || warp.step >= 3 || !a_f.exists || a_f.loading || a_f.paused || a_f.dead) {
 				return;
 			}
 			if (warp.step == 0) {
@@ -344,10 +345,13 @@ namespace lc::Missions
 				}
 				if (!pick) {
 					LC_LOG("DebugMissionWarp: no %s blip on the radar", want.c_str());
-					warp.step = 2;
+					warp.step = 3;
 					return;
 				}
 				warp.to[0] = pick->x, warp.to[1] = pick->y, warp.to[2] = pick->z;
+				// As a script warps the player: his control off meanwhile (in Minecraft mode GTA gets him, so
+				// puppet mode doesn't put him back where Minecraft has him).
+				S::SET_PLAYER_CONTROL(a_f.player, false);
 				S::REQUEST_COLLISION_AT_POSN(pick->x, pick->y, pick->z);
 				S::LOAD_SCENE(pick->x, pick->y, pick->z);
 				LC_LOG("DebugMissionWarp: to %s's blip at %.1f %.1f %.1f (%.0f m away)", SpriteName(pick->sprite), pick->x, pick->y, pick->z, best);
@@ -358,12 +362,20 @@ namespace lc::Missions
 			if ((warp.wait += a_f.dt) < 1.0f) {
 				return;
 			}
+			if (warp.step == 2) {
+				if (warp.wait >= 2.5f) {
+					S::SET_PLAYER_CONTROL(a_f.player, true);
+					LC_LOG("DebugMissionWarp: the player's control is back on");
+					warp.step = 3;
+				}
+				return;
+			}
 			float ground = 0.0f;
 			S::GET_GROUND_Z_FOR_3D_COORD(warp.to[0], warp.to[1], warp.to[2] + 2.0f, &ground);
 			const float z = ground != 0.0f ? ground + 1.0f : warp.to[2] + 1.0f;
 			S::SET_CHAR_COORDINATES(a_f.ped, warp.to[0], warp.to[1], z);
 			LC_LOG("DebugMissionWarp: the player is at %.1f %.1f %.1f (ground %.1f)", warp.to[0], warp.to[1], z, ground);
-			warp.step = 2;
+			warp.step = 2;  // (warp.wait goes on: control back on 1.5 s later)
 		}
 
 		// DebugMissionProbe=<s>: s seconds into play (on foot) a mission scene as a script plays one: the player
@@ -509,6 +521,7 @@ namespace lc::Missions
 					probe.round = 1;
 					probe.scenesOff = false;
 					probe.step = 0;
+					probe.shot = false;
 					probe.t = Cfg().debugMissionProbe - 8.0f;
 				}
 			}
@@ -552,7 +565,10 @@ namespace lc::Missions
 			signals |= s.taskType != -1 ? drive::kSigScriptTask : 0u;
 		}
 		const bool eligible = Cfg().scriptScenes && !probe.scenesOff && inGame && !a_f.dead && !a_f.inCar && !a_f.cutscene && a_f.minecraftMode && a_f.mcInWorld;
-		const bool shown = inGame && (a_f.cutscene || scriptCam);
+		// (Fading out at a cutscene's end counts as not in game: the scene goes on until the game is back, so
+		// Minecraft doesn't wake for the fade.)
+		const bool shown = (inGame && (a_f.cutscene || scriptCam)) || (a_f.exists && a_f.loading && !a_f.dead && lastShown);
+		lastShown = shown;
 		const auto out = logic.Step(signals, a_f.paused ? 0.0f : a_f.dt, eligible, shown);
 
 		const char* mode = !a_f.minecraftMode ? "Niko mode" : a_f.puppeting ? "puppeting" : a_f.inCar ? "in a vehicle" : "GTA drives";
@@ -564,6 +580,17 @@ namespace lc::Missions
 		state.scripted = out.scripted;
 		state.scene = out.scene && Cfg().scenesPauseMinecraft;
 		state.phoneCall = inGame && s.phoneCall;
+		// DebugPhoneCall=<s>: s seconds into play 6 s of a phone call as far as Minecraft is told (its duck).
+		static float callT = 0.0f;
+		if (Cfg().debugPhoneCall > 0.0f && inGame && callT >= 0.0f) {
+			callT += a_f.paused ? 0.0f : a_f.dt;
+			if (callT >= Cfg().debugPhoneCall + 6.0f) {
+				callT = -1.0f;
+				LC_LOG("DebugPhoneCall: over");
+			} else if (callT >= Cfg().debugPhoneCall) {
+				state.phoneCall = true;
+			}
+		}
 		static char why[160];
 		if (out.scripted) {
 			int n = 0;
@@ -614,6 +641,7 @@ namespace lc::Missions
 	{
 		logic.Reset();
 		state = State{};
+		lastShown = false;
 		haveLast = false;
 		shields.clear();  // (the peds and vehicles are going away)
 		pedMemo.clear();
@@ -695,7 +723,8 @@ namespace lc::Missions
 					continue;
 				}
 				const int handle = static_cast<int>(pool->GetIndex(v));
-				if (handle && IsMissionVehicle(handle)) {
+				// (A mission's own car counts empty too: the creeper that wrecked Jacob's car would fail it.)
+				if (handle && (IsMissionVehicle(handle) || (Cfg().missionPedsSafe && S::IS_CAR_A_MISSION_CAR(handle)))) {
 					ShieldOne(handle, true);
 					++vehicles;
 				}

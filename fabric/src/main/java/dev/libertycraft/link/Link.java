@@ -657,8 +657,27 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		return OFF_OVERLAY_PIXELS + overlayBack * OVERLAY_SLOT_BYTES;
 	}
 
+	/** The writer's back slot (0 to 2): where overlayBackSlotOffset points. */
+	public static int overlayBackSlot() {
+		return overlayBack;
+	}
+
+	/** True while the last published overlay frame hasn't been taken by GTA IV yet (it may never be). */
+	public static boolean overlayMiddleUnread() {
+		MemorySegment s = shm;
+		return s != null && ((int) INT.getAcquire(s, OFF_OVERLAY_CTL + OC_STATE) & OVERLAY_DIRTY) != 0;
+	}
+
 	/** Publishes the frame just written into the back slot. */
 	public static void publishOverlay(int width, int height, boolean bottomUp, long frameId) {
+		publishOverlay(width, height, bottomUp, frameId, 0L, null);
+	}
+
+	/**
+	 * Publishes the frame just written into the back slot; with {@code tiles} (Proto.OVERLAY_FLAG_TILES) it
+	 * differs from the frame published as {@code baseFrameId} only in those tiles (OverlayTiles).
+	 */
+	public static void publishOverlay(int width, int height, boolean bottomUp, long frameId, long baseFrameId, int @org.jspecify.annotations.Nullable [] tiles) {
 		MemorySegment s = shm;
 		if (s == null) {
 			return;
@@ -666,8 +685,12 @@ public abstract sealed class Link permits WinLink, PosixLink {
 		long hdr = OFF_OVERLAY_SLOT_HDR + overlayBack * SLOT_HDR_SIZE;
 		s.set(JAVA_INT, hdr + SH_WIDTH, width);
 		s.set(JAVA_INT, hdr + SH_HEIGHT, height);
-		s.set(JAVA_INT, hdr + SH_FLAGS, bottomUp ? 1 : 0);
+		s.set(JAVA_INT, hdr + SH_FLAGS, (bottomUp ? 1 : 0) | (tiles != null ? OVERLAY_FLAG_TILES : 0));
 		s.set(JAVA_LONG, hdr + SH_FRAME_ID, frameId);
+		s.set(JAVA_LONG, hdr + SH_BASE_FRAME, tiles != null ? baseFrameId : 0L);
+		for (int i = 0; i < 8; i++) {
+			s.set(JAVA_INT, hdr + SH_TILES + i * 4L, tiles != null ? tiles[i] : 0);
+		}
 		int old = (int) INT.getAndSet(s, OFF_OVERLAY_CTL + OC_STATE, overlayBack | OVERLAY_DIRTY);
 		overlayBack = old & 3;
 		LONG.getAndAdd(s, OFF_OVERLAY_CTL + OC_FRAMES_PUBLISHED, 1L);

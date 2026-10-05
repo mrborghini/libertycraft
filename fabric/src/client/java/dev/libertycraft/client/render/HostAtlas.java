@@ -44,6 +44,7 @@ final class HostAtlas {
 	}
 
 	private final java.util.List<Animation> animations = new java.util.ArrayList<>();
+	private ByteBuffer animBuffer = ByteBuffer.allocateDirect(64 * 64 * 4).order(ByteOrder.LITTLE_ENDIAN);
 
 	private HostAtlas(TextureAtlas blocks, TextureAtlas items, ResourceManager resources) {
 		TextureAtlasAccessor b = (TextureAtlasAccessor) blocks;
@@ -249,7 +250,8 @@ final class HostAtlas {
 	/**
 	 * Brings animated sprites to Minecraft's frame for this game tick, like its own texture
 	 * animation (blending frames where the sprite interpolates). Hands each changed sprite to
-	 * {@code send}; false from it means "not delivered, try again next time".
+	 * {@code send}; false from it means "not delivered, try again next time". The region's pixels are only
+	 * good during the call (one buffer serves every sprite).
 	 */
 	void animate(long tick, java.util.function.Predicate<Region> send) {
 		for (Animation a : this.animations) {
@@ -266,7 +268,10 @@ final class HostAtlas {
 			int next = (i + 1) % a.index.length;
 			float blend = a.interpolate ? (float) t / a.time[i] : 0.0F;
 			int pw = a.w + 2 * a.pad, ph = a.h + 2 * a.pad;
-			ByteBuffer out = ByteBuffer.allocateDirect(pw * ph * 4).order(ByteOrder.LITTLE_ENDIAN);
+			if (this.animBuffer.capacity() < pw * ph * 4) {
+				this.animBuffer = ByteBuffer.allocateDirect(pw * ph * 4).order(ByteOrder.LITTLE_ENDIAN);
+			}
+			ByteBuffer out = this.animBuffer.clear().limit(pw * ph * 4); // reused: send copies it at once
 			int fx0 = (a.index[i] % a.rowSize) * a.w, fy0 = (a.index[i] / a.rowSize) * a.h;
 			int fx1 = (a.index[next] % a.rowSize) * a.w, fy1 = (a.index[next] / a.rowSize) * a.h;
 			for (int y = -a.pad; y < a.h + a.pad; y++) {
