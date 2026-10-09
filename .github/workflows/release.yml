@@ -83,6 +83,10 @@ jobs:
         shell: powershell
         run: .\tools\tests\downgrade-assets.ps1
 
+      - name: Validate pinned Fabric API download
+        shell: powershell
+        run: .\tools\tests\fabric-api.ps1
+
       - name: Configure x86 Windows plugin
         working-directory: asi
         run: cmake --preset windows-release

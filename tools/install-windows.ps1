@@ -18,6 +18,9 @@ $script:BaseAssetsUrl = 'https://github.com/gillian-guide/GTAIVFullDowngradeAsse
 $script:BaseAssetsSha256 = 'dff2ad5da752157c466f7d5721a19132ac42a41298f959b4f89243e31c95150b'
 $script:DowngradeExecutableLength = 15628696
 $script:DowngradeExecutableVersion = '1.0.8.0'
+$script:FabricApiUrl = 'https://cdn.modrinth.com/data/P7dR8mSH/versions/bNnaTiuM/fabric-api-0.161.0%2B26.3.jar'
+$script:FabricApiSha512 = 'ed6b2586d6fde11fde8472f5a527c51e99b67026e46f94d4bfd85e7e28ce5ee299173ee16ad576ceb51f39f98d30a811086a6deb1a86a524859cc16e12da109d'
+$script:FabricApiJarName = 'fabric-api-0.161.0+26.3.jar'
 $script:Manifest = @{}
 $script:ManifestOrder = [System.Collections.Generic.List[string]]::new()
 $script:Game = $null
@@ -238,17 +241,17 @@ function Restore-GameFiles {
     }
 }
 
-function Get-Download([string]$Url, [string]$Destination, [string]$Sha256 = '', [switch]$Refresh) {
+function Get-Download([string]$Url, [string]$Destination, [string]$ExpectedHash = '', [string]$HashAlgorithm = 'SHA256', [switch]$Refresh) {
     if ($Refresh -and (Test-Path -LiteralPath $Destination)) { Remove-Item -LiteralPath $Destination -Force }
     if (-not (Test-Path -LiteralPath $Destination)) {
         Write-Info "Downloading $([IO.Path]::GetFileName($Destination))"
         Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
     }
-    if ($Sha256) {
-        $actual = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actual -ne $Sha256.ToLowerInvariant()) {
+    if ($ExpectedHash) {
+        $actual = (Get-FileHash -LiteralPath $Destination -Algorithm $HashAlgorithm).Hash.ToLowerInvariant()
+        if ($actual -ne $ExpectedHash.ToLowerInvariant()) {
             Remove-Item -LiteralPath $Destination -Force
-            Stop-Install "SHA-256 verification failed for $Destination"
+            Stop-Install "$HashAlgorithm verification failed for $Destination"
         }
     }
 }
@@ -356,9 +359,9 @@ function Setup-Prism([string]$PrismData) {
     }
     [IO.File]::WriteAllText((Join-Path $instance 'mmc-pack.json'), ($pack | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     $api = Join-Path $script:Stage 'fabric-api.jar'
-    Get-Download 'https://cdn.modrinth.com/data/P7dR8mSH/versions/bNnaTiuM/fabric-api-0.161.0%2B26.3.jar' $api 'ed6b2586d6fde11fde8472f5a527c51e99b67026e46f94d4bfd85e7e28ce5ee299173ee16ad576ceb51f39f98d30a811086a6deb1a86a524859cc16e12da109d'
+    Get-Download $script:FabricApiUrl $api $script:FabricApiSha512 -HashAlgorithm 'SHA512'
     Get-ChildItem -LiteralPath $mods -Filter 'fabric-api-*.jar' -File -ErrorAction SilentlyContinue | Remove-Item -Force
-    Copy-Item -LiteralPath $api -Destination (Join-Path $mods 'fabric-api-0.161.0+26.3.jar') -Force
+    Copy-Item -LiteralPath $api -Destination (Join-Path $mods $script:FabricApiJarName) -Force
     $mod = Join-Path $script:InstallRoot 'dist\mods'
     $jar = Get-ChildItem -LiteralPath $mod -Filter 'libertycraft-*.jar' -File | Select-Object -First 1
     if (-not $jar) { Stop-Install "LibertyCraft Fabric jar was not found in $mod" }
