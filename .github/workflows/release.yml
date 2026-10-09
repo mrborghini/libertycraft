@@ -161,7 +161,7 @@ jobs:
             [[ "$GITHUB_REF_NAME" == "$RELEASE_TAG" ]] || { echo 'Release tag mismatch.' >&2; exit 1; }
             exit 0
           fi
-          existing_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null || true)
+          existing_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha // empty' 2>/dev/null || true)
           if [[ -n $existing_sha ]]; then
             [[ "$existing_sha" == "$GITHUB_SHA" ]] || {
               echo "Tag $RELEASE_TAG already points to a different commit." >&2
@@ -173,7 +173,7 @@ jobs:
               -f "sha=$GITHUB_SHA"
           fi
 
-      - name: Create draft GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
