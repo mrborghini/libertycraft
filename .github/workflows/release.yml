@@ -5,19 +5,61 @@ on:
     branches: [main]
     tags: ['v*']
 
+concurrency:
+  group: libertycraft-release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
 jobs:
   build-windows:
     runs-on: windows-2022
-    env:
-      MOD_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}
+    outputs:
+      release_tag: ${{ steps.release_version.outputs.tag }}
+      mod_version: ${{ steps.release_version.outputs.version }}
     steps:
       - name: Check out source and IV-SDK
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          fetch-depth: 0
+
+      - name: Select release version
+        id: release_version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME
+            if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
+              throw "Release tags must use vMAJOR.MINOR.PATCH, optionally followed by a prerelease suffix: $tag"
+            }
+            $version = $Matches.version
+          } else {
+            $versions = foreach ($candidate in (git tag --list 'v[0-9]*')) {
+              if ($candidate -match '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
+                [pscustomobject]@{
+                  Major = [long]$Matches.major
+                  Minor = [long]$Matches.minor
+                  Patch = [long]$Matches.patch
+                }
+              }
+            }
+            $latest = $versions | Sort-Object Major, Minor, Patch -Descending | Select-Object -First 1
+            if ($latest) {
+              $version = '{0}.{1}.{2}' -f $latest.Major, $latest.Minor, ($latest.Patch + 1)
+            } else {
+              $properties = Get-Content 'fabric/gradle.properties' -Raw
+              if ($properties -notmatch '(?m)^version=(?<version>\d+\.\d+\.\d+)$') {
+                throw 'No stable version tag exists and fabric/gradle.properties has no stable version.'
+              }
+              $version = $Matches.version
+            }
+            $tag = "v$version"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building release $tag"
 
       - name: Set up Java 25
         uses: actions/setup-java@v6
@@ -49,7 +91,7 @@ jobs:
         working-directory: fabric
         shell: pwsh
         run: |
-          $version = $env:MOD_VERSION -replace '^v', ''
+          $version = '${{ steps.release_version.outputs.version }}'
           .\gradlew.bat build --no-daemon "-Pversion=$version"
 
       - name: Stage Windows release inputs
@@ -80,6 +122,9 @@ jobs:
   package-release:
     needs: build-windows
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.build-windows.outputs.release_tag }}
+      MOD_VERSION: ${{ needs.build-windows.outputs.mod_version }}
     permissions:
       contents: write
     steps:
@@ -102,18 +147,13 @@ jobs:
         run: |
           bash -n tools/install.sh tools/uninstall.sh tools/install-latest.sh tools/package-release.sh
           chmod +x tools/install-latest.sh tools/package-release.sh
-          if [[ $GITHUB_REF_TYPE == tag ]]; then
-            tools/package-release.sh "$GITHUB_REF_NAME"
-          else
-            tools/package-release.sh "0.0.0-${GITHUB_SHA:0:7}"
-          fi
+          tools/package-release.sh "$MOD_VERSION"
           cp tools/install-latest.sh dist/release/install-linux.sh
           (cd dist/release && sha256sum install-linux.sh >> SHA256SUMS)
           tar -tzf dist/release/libertycraft-linux.tar.gz | grep -Fx 'tools/install.sh'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.bat'
 
       - name: Create draft GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -126,7 +166,7 @@ jobs:
 
           Review this draft before publishing it. The setup scripts download the required third-party GTA IV files and configure the LibertyCraft Prism instance.
           EOF
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             dist/release/libertycraft-linux.tar.gz \
             dist/release/libertycraft-linux.tar.gz.sha256 \
             dist/release/libertycraft-windows.zip \
@@ -134,5 +174,5 @@ jobs:
             dist/release/install-linux.sh \
             dist/release/SHA256SUMS \
             dist/release/release-notes.md \
-            --draft --verify-tag --title "LibertyCraft $GITHUB_REF_NAME" \
+            --draft --target "$GITHUB_SHA" --title "LibertyCraft $RELEASE_TAG" \
             --notes-file dist/release/release-notes.md
