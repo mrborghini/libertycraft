@@ -29,8 +29,8 @@ This is a port of the idea (and most of the Minecraft-side code) of
 
 ### Windows release install
 
-1. Install GTA IV: The Complete Edition through Steam. Install Prism Launcher and sign in to
-   Minecraft Java Edition. Quit GTA IV and Prism Launcher before setup.
+1. Install GTA IV: The Complete Edition through Steam. Install [Prism Launcher](https://prismlauncher.org/)
+   and sign in to Minecraft Java Edition. Quit GTA IV and Prism Launcher before setup.
 2. Download and extract
    [`libertycraft-windows.zip`](https://github.com/mrborghini/libertycraft/releases/latest/download/libertycraft-windows.zip).
 3. Run `install-windows.bat`. It searches Steam libraries for GTA IV and the usual Prism data
@@ -49,8 +49,9 @@ latest FusionFix archives. Files it replaces are backed up under
 
 ### Linux release install
 
-1. Install GTA IV: The Complete Edition through Steam and enable Proton. Install Prism Launcher,
-   sign in to Minecraft Java Edition, and quit both launchers before setup.
+1. Install GTA IV: The Complete Edition through Steam and enable Proton. Install
+   [Prism Launcher](https://prismlauncher.org/), sign in to Minecraft Java Edition, and quit both
+   launchers before setup.
 2. In a terminal, run:
 
    ```sh
