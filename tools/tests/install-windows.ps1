@@ -6,6 +6,13 @@ function Assert-Equal([string]$Expected, [string]$Actual, [string]$Message) {
     if ($Expected -ne $Actual) { throw "$Message. Expected '$Expected', got '$Actual'." }
 }
 
+function Assert-FailsContaining([scriptblock]$Action, [string]$Expected, [string]$Message) {
+    $failure = $null
+    try { & $Action } catch { $failure = $_.Exception.Message }
+    if (-not $failure) { throw "$Message. Expected a failure containing '$Expected'." }
+    if ($failure -notlike "*$Expected*") { throw "$Message. Got '$failure', expected it to contain '$Expected'." }
+}
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('libertycraft-installer-tests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 try {
@@ -22,6 +29,12 @@ try {
     )
     Set-Content -LiteralPath (Join-Path $library 'steamapps\appmanifest_12210.acf') -Value '"AppState" { "installdir" "Grand Theft Auto IV" }'
     Set-Content -LiteralPath (Join-Path $game 'GTAIV.exe') -Value 'fake game executable'
+
+    $fakeExe = Join-Path $testRoot 'fake.exe'
+    Set-Content -LiteralPath $fakeExe -Value 'fake'
+    $fakeLength = (Get-Item -LiteralPath $fakeExe).Length
+    Assert-FailsContaining { Assert-ExecutableVersionAndSize $fakeExe 'Test executable' ($fakeLength + 1) '1.0.8.0' } "size $fakeLength bytes; expected $($fakeLength + 1) bytes" 'Executable size validation did not explain its failure'
+    Assert-FailsContaining { Assert-ExecutableVersionAndSize $fakeExe 'Test executable' $fakeLength '1.0.8.0' } "fixed file version '0.0.0.0'" 'Executable version validation did not explain its failure'
 
     $script:SteamRootForTest = $steam
     function Get-SteamRoots { return @($script:SteamRootForTest) }

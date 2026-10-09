@@ -79,6 +79,10 @@ jobs:
         shell: powershell
         run: .\tools\tests\install-windows.ps1
 
+      - name: Validate pinned GTA IV downgrade archive
+        shell: powershell
+        run: .\tools\tests\downgrade-assets.ps1
+
       - name: Configure x86 Windows plugin
         working-directory: asi
         run: cmake --preset windows-release

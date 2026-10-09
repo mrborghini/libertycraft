@@ -14,6 +14,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $script:InstallRoot 'dist'))) {
     $script:InstallRoot = Split-Path -Parent $PSScriptRoot
 }
 $script:BackupName = '_libertycraft_backup'
+$script:BaseAssetsUrl = 'https://github.com/gillian-guide/GTAIVFullDowngradeAssets/releases/download/Base/BaseAssets.zip'
+$script:BaseAssetsSha256 = 'dff2ad5da752157c466f7d5721a19132ac42a41298f959b4f89243e31c95150b'
+$script:DowngradeExecutableLength = 15628696
+$script:DowngradeExecutableVersion = '1.0.8.0'
 $script:Manifest = @{}
 $script:ManifestOrder = [System.Collections.Generic.List[string]]::new()
 $script:Game = $null
@@ -23,6 +27,23 @@ $script:Stage = Join-Path ([IO.Path]::GetTempPath()) ('libertycraft-' + [guid]::
 function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
 function Write-Info([string]$Message) { Write-Host "    $Message" }
 function Stop-Install([string]$Message) { throw $Message }
+
+function Get-ExecutableVersion([string]$Path) {
+    $version = (Get-Item -LiteralPath $Path).VersionInfo
+    return '{0}.{1}.{2}.{3}' -f $version.FileMajorPart, $version.FileMinorPart, $version.FileBuildPart, $version.FilePrivatePart
+}
+
+function Assert-ExecutableVersionAndSize([string]$Path, [string]$Description, [long]$ExpectedLength, [string]$ExpectedVersion) {
+    $file = Get-Item -LiteralPath $Path
+    if ($file.Length -ne $ExpectedLength) {
+        Stop-Install "$Description has size $($file.Length) bytes; expected $ExpectedLength bytes."
+    }
+    $version = Get-ExecutableVersion $Path
+    if ($version -ne $ExpectedVersion) {
+        $reportedVersion = $file.VersionInfo.FileVersion
+        Stop-Install "$Description has fixed file version '$version' (Windows reports '$reportedVersion'); expected $ExpectedVersion."
+    }
+}
 
 function Get-SteamRoots {
     $roots = [System.Collections.Generic.List[string]]::new()
@@ -348,8 +369,7 @@ function Setup-Prism([string]$PrismData) {
 
 function Invoke-Install {
     $script:Game = Find-GameDirectory $GameDir
-    $version = (Get-Item -LiteralPath (Join-Path $script:Game 'GTAIV.exe')).VersionInfo.FileVersion
-    if (-not $version) { $version = (Get-Item -LiteralPath (Join-Path $script:Game 'GTAIV.exe')).VersionInfo.ProductVersion }
+    $version = Get-ExecutableVersion (Join-Path $script:Game 'GTAIV.exe')
     if ($version -notmatch '^1\.2\.' -and $version -ne '1.0.8.0') {
         Write-Warning "GTAIV.exe reports version '$version'. The downgrade is intended for Complete Edition 1.2.x or 1.0.8.0."
         if ((Read-Host 'Continue anyway? [y/N]') -notmatch '^(y|yes)$') { Stop-Install 'Cancelled.' }
@@ -364,7 +384,7 @@ function Invoke-Install {
     $base = Join-Path $script:Cache 'BaseAssets.zip'
     $legacy = Join-Path $script:Cache 'GTAIV.EFLC.FusionFixLegacyAddon.zip'
     $fusion = Join-Path $script:Cache 'GTAIV.EFLC.FusionFix.zip'
-    Get-Download 'https://github.com/gillian-guide/GTAIVFullDowngradeAssets/releases/download/Base/BaseAssets.zip' $base 'dff2ad5da752157c466f7d5721a19132ac42a41298f959b4f89243e31c95150b'
+    Get-Download $script:BaseAssetsUrl $base $script:BaseAssetsSha256
     Get-Download 'https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/releases/latest/download/GTAIV.EFLC.FusionFixLegacyAddon.zip' $legacy '' -Refresh
     Get-Download 'https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/releases/latest/download/GTAIV.EFLC.FusionFix.zip' $fusion '' -Refresh
 
@@ -375,9 +395,7 @@ function Invoke-Install {
     Expand-ZipSelection $legacy $legacyDir @() @('xlive.dll')
     Expand-ZipSelection $fusion $fusionDir @('plugins/', 'update/') @('plugins/GTAIV.EFLC.FusionFix.asi', 'update/update.txt')
     $exe = Join-Path $baseDir '1080\GTAIV.exe'
-    if ((Get-Item -LiteralPath $exe).Length -ne 15628696 -or (Get-Item -LiteralPath $exe).VersionInfo.FileVersion -ne '1.0.8.0') {
-        Stop-Install 'Downloaded downgrade archive did not contain the expected GTA IV 1.0.8.0 executable.'
-    }
+    Assert-ExecutableVersionAndSize $exe 'Downloaded downgrade executable' $script:DowngradeExecutableLength $script:DowngradeExecutableVersion
 
     $otherPlugins = @(
         Get-ChildItem -LiteralPath $script:Game -Filter '*.asi' -File -ErrorAction SilentlyContinue
@@ -415,7 +433,7 @@ function Invoke-Install {
         Write-Step 'Configuring Minecraft and Fabric'
         Setup-Prism (Find-PrismDirectory)
     }
-    $installedVersion = (Get-Item -LiteralPath (Join-Path $script:Game 'GTAIV.exe')).VersionInfo.FileVersion
+    $installedVersion = Get-ExecutableVersion (Join-Path $script:Game 'GTAIV.exe')
     if ($installedVersion -ne '1.0.8.0' -or -not (Test-Path -LiteralPath (Join-Path $script:Game 'xlive.dll'))) {
         Stop-Install 'Final GTA IV verification failed. Review the install log and backup manifest.'
     }
