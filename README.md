@@ -38,8 +38,9 @@ This is a port of the idea (and most of the Minecraft-side code) of
    installs the loader and patches, copies LibertyCraft, and configures the Prism instance. If Steam
    is under a protected folder and Windows denies file access, run the batch file as administrator.
 4. Open Prism Launcher and start the `LibertyCraft` instance once. Prism downloads Minecraft 26.3,
-   Fabric, and Java 25. Sign in if asked. Start Minecraft before launching GTA IV from Steam so its
-   hidden window is ready before the game starts.
+   Fabric, and Java 25. Sign in if asked. For each play session, run `launch-windows.bat` from the
+   extracted release folder. It launches the Prism instance, waits for Minecraft's hidden window to
+   start, then launches GTA IV through Steam.
 5. To restore the GTA IV files changed by the installer, run `install-windows.bat -Uninstall` from
    the extracted folder. The Prism instance and its worlds are kept.
 

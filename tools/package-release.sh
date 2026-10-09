@@ -12,8 +12,9 @@ fi
 DIST="$ROOT/dist"
 [[ -f "$DIST/plugins/LibertyCraft.asi" ]] || { echo 'dist/plugins/LibertyCraft.asi is missing' >&2; exit 1; }
 compgen -G "$DIST/mods/libertycraft-*.jar" >/dev/null || { echo 'dist/mods/libertycraft-*.jar is missing' >&2; exit 1; }
-[[ -f "$ROOT/tools/install-windows.bat" && -f "$ROOT/tools/install-windows.ps1" ]] || {
-  echo 'Windows installer files are missing.' >&2; exit 1;
+[[ -f "$ROOT/tools/install-windows.bat" && -f "$ROOT/tools/install-windows.ps1" && \
+   -f "$ROOT/tools/launch-windows.bat" && -f "$ROOT/tools/launch-windows.ps1" ]] || {
+  echo 'Windows installer or launcher files are missing.' >&2; exit 1;
 }
 for file in install.sh uninstall.sh lib/common.sh lib/gamefiles.sh; do
   [[ -f "$ROOT/tools/$file" ]] || { echo "tools/$file is missing" >&2; exit 1; }
@@ -29,7 +30,8 @@ mkdir -p "$LINUX/tools/lib" "$LINUX/dist/plugins" "$LINUX/dist/mods" "$WINDOWS/d
 
 cp "$ROOT/tools/install.sh" "$ROOT/tools/uninstall.sh" "$LINUX/tools/"
 cp "$ROOT/tools/lib/common.sh" "$ROOT/tools/lib/gamefiles.sh" "$LINUX/tools/lib/"
-cp "$ROOT/tools/install-windows.bat" "$ROOT/tools/install-windows.ps1" "$WINDOWS/"
+cp "$ROOT/tools/install-windows.bat" "$ROOT/tools/install-windows.ps1" \
+  "$ROOT/tools/launch-windows.bat" "$ROOT/tools/launch-windows.ps1" "$WINDOWS/"
 cp "$DIST/plugins/LibertyCraft.asi" "$LINUX/dist/plugins/"
 cp "$DIST/plugins/LibertyCraft.asi" "$WINDOWS/dist/plugins/"
 for file in LibertyCraft.ini LibertyCraft.pdb; do

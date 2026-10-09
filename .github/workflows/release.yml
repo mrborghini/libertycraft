@@ -70,14 +70,20 @@ jobs:
       - name: Parse Windows installer
         shell: powershell
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\install-windows.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          foreach ($fileName in @('install-windows.ps1', 'launch-windows.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\$fileName", [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          }
 
       - name: Check Windows install detection and restore behavior
         shell: powershell
         run: .\tools\tests\install-windows.ps1
+
+      - name: Check Windows launch ordering helpers
+        shell: powershell
+        run: .\tools\tests\launch-windows.ps1
 
       - name: Validate pinned GTA IV downgrade archive
         shell: powershell
@@ -160,6 +166,9 @@ jobs:
           (cd dist/release && sha256sum install-linux.sh >> SHA256SUMS)
           tar -tzf dist/release/libertycraft-linux.tar.gz | grep -Fx 'tools/install.sh'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.bat'
+          unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.ps1'
+          unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'launch-windows.bat'
+          unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'launch-windows.ps1'
 
       - name: Create release tag
         env:
