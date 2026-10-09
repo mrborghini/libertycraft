@@ -47,6 +47,14 @@ The Windows installer downloads the same pinned GTA IV 1.0.8.0 assets as the Lin
 latest FusionFix archives. Files it replaces are backed up under
 `GTAIV/_libertycraft_backup/manifest.txt`.
 
+#### Windows launch troubleshooting
+
+If GTA IV shows `SecuLauncher: failed to start application. [2000]`, run `vcredist_x86.exe` from
+`steamapps/common/Grand Theft Auto IV/installers`, enable `.NET Framework 3.5` in Windows Features,
+and reboot. SecuROM lists these steps for this specific error code in its
+[GTA IV support FAQ](https://support.securom.com/pop_gtaiv.html). Other SecuROM or activation errors
+can have different causes, so include the full message and code when asking for help.
+
 ### Linux release install
 
 1. Install GTA IV: The Complete Edition through Steam and enable Proton. Install
