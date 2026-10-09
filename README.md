@@ -11,37 +11,9 @@ This is a port of the idea (and most of the Minecraft-side code) of
 > Liberty City with GTA's lighting, collision follows GTA IV's map, combat and crimes work both ways, and
 > your Minecraft character plays Niko in cutscenes and cars. See [Milestones](#milestones).
 
-## Screenshots
+## Installation
 
-![A Minecraft cabin, TNT and a pig on a Broker street under the El train](docs/screenshots/broker-build.jpg)
-*Real Minecraft blocks and mobs on a Broker street, lit by GTA IV's sun and hidden behind its world.*
-
-| | |
-|---|---|
-| ![TNT in Roman's apartment](docs/screenshots/apartment-tnt.jpg) | ![Blocky Liberty City, a block copy of Broker drawn by GTA IV](docs/screenshots/blocky-city.jpg) |
-| Blocks indoors, with the Minecraft HUD | Through a nether portal: Blocky Liberty City, with GTA's sky and traffic |
-| ![Driving a convertible as the Minecraft player](docs/screenshots/driving.jpg) | ![Bailing out of a moving car](docs/screenshots/bailout.jpg) |
-| Driving (F steals a car the GTA way) | Bailing out of a moving car: GTA's ragdoll, Minecraft's body |
-| ![Minecraft water flooding a Broker street](docs/screenshots/flood.jpg) | ![A car wrecked by crossbow fire](docs/screenshots/car-wreck.jpg) |
-| Minecraft water floods the street and stalls the cars | Crossbow fire wrecks a car (fireworks bring down helicopters) |
-
-## How it works
-
-```
- ┌──────────────────────────┐   shared-memory file (/dev/shm)   ┌──────────────────────────────┐
- │ Minecraft 26.3 + Fabric  │ ───── block meshes, HUD, state ──▶ │ GTA IV 1.0.8.0 (Proton)      │
- │ hidden window            │ ◀──── input, camera, collision ─── │ LibertyCraft.asi (IV-SDK)     │
- │ owns player physics,     │                                    │ draws blocks with D3D9,      │
- │ world, inventory         │                                    │ puppets Niko, samples terrain │
- └──────────────────────────┘                                    └──────────────────────────────┘
-```
-
-* `fabric/`: the Minecraft mod (fork of SkyCraft's, MIT).
-* `asi/`: the GTA IV plugin, built on [IV-SDK](https://github.com/Zolika1351/iv-sdk) (GPL-3.0).
-* `protocol/`: the shared-memory protocol both sides implement (byte-compatible with SkyCraft v11).
-* `tools/`: install/downgrade, build and launch scripts, plus Python stand-ins for either side.
-
-## Requirements
+### Requirements
 
 * **GTA IV: The Complete Edition** on Steam. LibertyCraft downgrades it to **1.0.8.0** (the
   version IV-SDK and ZolikaPatch support) and installs the ASI loader, FusionFix and ZolikaPatch.
@@ -54,8 +26,6 @@ This is a port of the idea (and most of the Minecraft-side code) of
 * Linux source builds need `xwin`, `clang` (clang-cl), `lld`, `llvm` (llvm-rc), `cmake`, `ninja`, and a JDK 25
   (Gradle fetches the rest). `tools/setup-toolchain.sh` checks them and prints the install line, e.g.
   `paru -S xwin clang lld cmake ninja jq 7zip unzip curl python jdk-openjdk`.
-
-## Installation
 
 ### Windows release install
 
@@ -109,7 +79,37 @@ Git tag on the pushed commit, and drafts a GitHub release with the Windows and L
 and checksums attached. The release stays a draft until someone reviews and publishes it. Pushing a
 `vMAJOR.MINOR.PATCH` tag directly builds and drafts that exact version.
 
-### Build from source
+## Screenshots
+
+![A Minecraft cabin, TNT and a pig on a Broker street under the El train](docs/screenshots/broker-build.jpg)
+*Real Minecraft blocks and mobs on a Broker street, lit by GTA IV's sun and hidden behind its world.*
+
+| | |
+|---|---|
+| ![TNT in Roman's apartment](docs/screenshots/apartment-tnt.jpg) | ![Blocky Liberty City, a block copy of Broker drawn by GTA IV](docs/screenshots/blocky-city.jpg) |
+| Blocks indoors, with the Minecraft HUD | Through a nether portal: Blocky Liberty City, with GTA's sky and traffic |
+| ![Driving a convertible as the Minecraft player](docs/screenshots/driving.jpg) | ![Bailing out of a moving car](docs/screenshots/bailout.jpg) |
+| Driving (F steals a car the GTA way) | Bailing out of a moving car: GTA's ragdoll, Minecraft's body |
+| ![Minecraft water flooding a Broker street](docs/screenshots/flood.jpg) | ![A car wrecked by crossbow fire](docs/screenshots/car-wreck.jpg) |
+| Minecraft water floods the street and stalls the cars | Crossbow fire wrecks a car (fireworks bring down helicopters) |
+
+## How it works
+
+```
+ ┌──────────────────────────┐   shared-memory file (/dev/shm)   ┌──────────────────────────────┐
+ │ Minecraft 26.3 + Fabric  │ ───── block meshes, HUD, state ──▶ │ GTA IV 1.0.8.0 (Proton)      │
+ │ hidden window            │ ◀──── input, camera, collision ─── │ LibertyCraft.asi (IV-SDK)     │
+ │ owns player physics,     │                                    │ draws blocks with D3D9,      │
+ │ world, inventory         │                                    │ puppets Niko, samples terrain │
+ └──────────────────────────┘                                    └──────────────────────────────┘
+```
+
+* `fabric/`: the Minecraft mod (fork of SkyCraft's, MIT).
+* `asi/`: the GTA IV plugin, built on [IV-SDK](https://github.com/Zolika1351/iv-sdk) (GPL-3.0).
+* `protocol/`: the shared-memory protocol both sides implement (byte-compatible with SkyCraft v11).
+* `tools/`: install/downgrade, build and launch scripts, plus Python stand-ins for either side.
+
+## Build from source
 
 ```sh
 tools/install.sh        # 1. downgrade GTA IV, install the ASI loader, ZolikaPatch, FusionFix,
