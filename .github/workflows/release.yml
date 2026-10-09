@@ -184,7 +184,7 @@ jobs:
 
           Linux: run `bash install-linux.sh` from this release's assets, or use the command in the README.
 
-          Review this draft before publishing it. The setup scripts download the required third-party GTA IV files and configure the LibertyCraft Prism instance.
+          The setup scripts download the required third-party GTA IV files and configure the LibertyCraft Prism instance.
           EOF
           gh release create "$RELEASE_TAG" \
             dist/release/libertycraft-linux.tar.gz \
@@ -194,5 +194,5 @@ jobs:
             dist/release/install-linux.sh \
             dist/release/SHA256SUMS \
             dist/release/release-notes.md \
-            --draft --verify-tag --title "LibertyCraft $RELEASE_TAG" \
+            --verify-tag --title "LibertyCraft $RELEASE_TAG" \
             --notes-file dist/release/release-notes.md

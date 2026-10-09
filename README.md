@@ -67,17 +67,17 @@ latest FusionFix archives. Files it replaces are backed up under
    `curl -fsSL https://github.com/mrborghini/libertycraft/releases/latest/download/install-linux.sh | bash -s -- --uninstall`.
    The Prism instance and its worlds are kept.
 
-The release download points to the latest **published** GitHub release. New tag builds remain drafts
-until reviewed and published.
+The release download points to the latest published GitHub release. The workflow publishes each
+successful release automatically, so both installers become available as soon as packaging finishes.
 
-### Draft releases from main
+### Releases from main
 
 Every push to `main` builds both platform packages. The workflow finds the highest stable `vMAJOR.MINOR.PATCH`
 tag and increments its patch number for the next release. If there are no version tags yet, it uses the
 version in `fabric/gradle.properties`. It builds the Fabric mod with that version, creates the matching
-Git tag on the pushed commit, and drafts a GitHub release with the Windows and Linux packages, installers,
-and checksums attached. The release stays a draft until someone reviews and publishes it. Pushing a
-`vMAJOR.MINOR.PATCH` tag directly builds and drafts that exact version.
+Git tag on the pushed commit, and publishes a GitHub release with the Windows and Linux packages,
+installers, and checksums attached. Pushing a `vMAJOR.MINOR.PATCH` tag directly builds and publishes
+that exact version.
 
 ## Screenshots
 
