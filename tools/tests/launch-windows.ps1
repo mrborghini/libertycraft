@@ -8,7 +8,7 @@ function Assert-Equal([string]$Expected, [string]$Actual, [string]$Message) {
 
 $marker = '[LibertyCraft] game window hidden'
 $oldLog = "old run`r`n$marker"
-$appendedLog = "$oldLog`r`nMinecraft started`r`n$marker"
+$appendedLog = "$oldLog`r`nMinecraft started"
 $newText = Get-NewLogText $oldLog $appendedLog
 if (Test-LibertyCraftReady $newText) { throw 'An old readiness marker was treated as a new Minecraft start.' }
 if (-not (Test-LibertyCraftReady "$newText`r`n$marker")) { throw 'A new readiness marker was not detected.' }
