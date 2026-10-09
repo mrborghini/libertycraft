@@ -153,6 +153,26 @@ jobs:
           tar -tzf dist/release/libertycraft-linux.tar.gz | grep -Fx 'tools/install.sh'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.bat'
 
+      - name: Create release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" == "$RELEASE_TAG" ]] || { echo 'Release tag mismatch.' >&2; exit 1; }
+            exit 0
+          fi
+          existing_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha' 2>/dev/null || true)
+          if [[ -n $existing_sha ]]; then
+            [[ "$existing_sha" == "$GITHUB_SHA" ]] || {
+              echo "Tag $RELEASE_TAG already points to a different commit." >&2
+              exit 1
+            }
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" \
+              -f "sha=$GITHUB_SHA"
+          fi
+
       - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -174,5 +194,5 @@ jobs:
             dist/release/install-linux.sh \
             dist/release/SHA256SUMS \
             dist/release/release-notes.md \
-            --draft --target "$GITHUB_SHA" --title "LibertyCraft $RELEASE_TAG" \
+            --draft --verify-tag --title "LibertyCraft $RELEASE_TAG" \
             --notes-file dist/release/release-notes.md
