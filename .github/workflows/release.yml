@@ -1,0 +1,138 @@
+name: Build and draft release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    env:
+      MOD_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-{0}', github.sha) }}
+    steps:
+      - name: Check out source and IV-SDK
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Parse Windows installer
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\install-windows.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+
+      - name: Check Windows install detection and restore behavior
+        shell: powershell
+        run: .\tools\tests\install-windows.ps1
+
+      - name: Configure x86 Windows plugin
+        working-directory: asi
+        run: cmake --preset windows-release
+
+      - name: Build x86 Windows plugin
+        working-directory: asi
+        run: cmake --build --preset windows-release --config Release --parallel
+
+      - name: Build Fabric mod
+        working-directory: fabric
+        shell: pwsh
+        run: |
+          $version = $env:MOD_VERSION -replace '^v', ''
+          .\gradlew.bat build --no-daemon "-Pversion=$version"
+
+      - name: Stage Windows release inputs
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'libertycraft-release-input'
+          New-Item -ItemType Directory -Force -Path (Join-Path $stage 'plugins'), (Join-Path $stage 'mods') | Out-Null
+          $asi = Get-ChildItem -Path 'asi\build\windows-release' -Filter 'LibertyCraft.asi' -File -Recurse | Select-Object -First 1
+          if (-not $asi) { throw 'CMake did not produce LibertyCraft.asi' }
+          Copy-Item $asi.FullName (Join-Path $stage 'plugins')
+          $pdb = Get-ChildItem -Path 'asi\build\windows-release' -Filter 'LibertyCraft.pdb' -File -Recurse | Select-Object -First 1
+          if ($pdb) { Copy-Item $pdb.FullName (Join-Path $stage 'plugins') }
+          $ini = Get-ChildItem -Path 'asi' -Filter 'LibertyCraft.ini' -File -Recurse | Select-Object -First 1
+          if ($ini) { Copy-Item $ini.FullName (Join-Path $stage 'plugins') }
+          $jar = Get-ChildItem -Path 'fabric\build\libs' -Filter 'libertycraft-*.jar' -File | Where-Object { $_.Name -notmatch '-(sources|dev)\.jar$' } | Select-Object -First 1
+          if (-not $jar) { throw 'Gradle did not produce the remapped Fabric jar' }
+          Copy-Item $jar.FullName (Join-Path $stage 'mods')
+          Write-Host "Staged $($asi.Name) and $($jar.Name)"
+
+      - name: Upload Windows build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: ${{ runner.temp }}/libertycraft-release-input
+          if-no-files-found: error
+          retention-days: 3
+
+  package-release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Run portable plugin tests
+        run: |
+          cmake -S asi/tests -B asi/build/tests
+          cmake --build asi/build/tests --parallel
+          ctest --test-dir asi/build/tests --output-on-failure
+
+      - name: Download Windows build outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: dist
+
+      - name: Check shell scripts and package installers
+        run: |
+          bash -n tools/install.sh tools/uninstall.sh tools/install-latest.sh tools/package-release.sh
+          chmod +x tools/install-latest.sh tools/package-release.sh
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            tools/package-release.sh "$GITHUB_REF_NAME"
+          else
+            tools/package-release.sh "0.0.0-${GITHUB_SHA:0:7}"
+          fi
+          cp tools/install-latest.sh dist/release/install-linux.sh
+          (cd dist/release && sha256sum install-linux.sh >> SHA256SUMS)
+          tar -tzf dist/release/libertycraft-linux.tar.gz | grep -Fx 'tools/install.sh'
+          unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.bat'
+
+      - name: Create draft GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > dist/release/release-notes.md <<'EOF'
+          ## Installation
+
+          Windows: download and extract `libertycraft-windows.zip`, then run `install-windows.bat`.
+
+          Linux: run `bash install-linux.sh` from this release's assets, or use the command in the README.
+
+          Review this draft before publishing it. The setup scripts download the required third-party GTA IV files and configure the LibertyCraft Prism instance.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            dist/release/libertycraft-linux.tar.gz \
+            dist/release/libertycraft-linux.tar.gz.sha256 \
+            dist/release/libertycraft-windows.zip \
+            dist/release/libertycraft-windows.zip.sha256 \
+            dist/release/install-linux.sh \
+            dist/release/SHA256SUMS \
+            dist/release/release-notes.md \
+            --draft --verify-tag --title "LibertyCraft $GITHUB_REF_NAME" \
+            --notes-file dist/release/release-notes.md

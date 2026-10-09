@@ -43,17 +43,64 @@ This is a port of the idea (and most of the Minecraft-side code) of
 
 ## Requirements
 
-* Linux with Steam + Proton (developed on Arch, Proton 11). Windows should work too but is untested.
-* **GTA IV: The Complete Edition** on Steam. The install script downgrades it to **1.0.8.0** (the
-  version IV-SDK and ZolikaPatch support) and installs FusionFix + ZolikaPatch.
+* **GTA IV: The Complete Edition** on Steam. LibertyCraft downgrades it to **1.0.8.0** (the
+  version IV-SDK and ZolikaPatch support) and installs the ASI loader, FusionFix and ZolikaPatch.
 * **Minecraft: Java Edition** (owned) with [Prism Launcher](https://prismlauncher.org/) and a
   Minecraft account signed in. Java 25 is picked up from Prism's own runtimes.
-* For the scripts: `bash`, `curl`, `unzip`, `python3`.
-* To build from source: `xwin`, `clang` (clang-cl), `lld`, `llvm` (llvm-rc), `cmake`, `ninja`, a JDK 25
+* Windows release installs use PowerShell 5.1, included with supported Windows versions. Windows
+  source builds need Visual Studio 2022 with the C++ and Clang tools, the Windows SDK, CMake, Git,
+  and a JDK 25.
+* Linux release installs need `bash`, `curl`, `unzip`, `python3`, `tar`, and `sha256sum`.
+* Linux source builds need `xwin`, `clang` (clang-cl), `lld`, `llvm` (llvm-rc), `cmake`, `ninja`, and a JDK 25
   (Gradle fetches the rest). `tools/setup-toolchain.sh` checks them and prints the install line, e.g.
   `paru -S xwin clang lld cmake ninja jq 7zip unzip curl python jdk-openjdk`.
 
-## Setup
+## Installation
+
+### Windows release install
+
+1. Install GTA IV: The Complete Edition through Steam. Install Prism Launcher and sign in to
+   Minecraft Java Edition. Quit GTA IV and Prism Launcher before setup.
+2. Download and extract
+   [`libertycraft-windows.zip`](https://github.com/mrborghini/libertycraft/releases/latest/download/libertycraft-windows.zip).
+3. Run `install-windows.bat`. It searches Steam libraries for GTA IV and the usual Prism data
+   folders. If it cannot find either folder, it asks for the path. The installer downgrades the game,
+   installs the loader and patches, copies LibertyCraft, and configures the Prism instance. If Steam
+   is under a protected folder and Windows denies file access, run the batch file as administrator.
+4. Open Prism Launcher and start the `LibertyCraft` instance once. Prism downloads Minecraft 26.3,
+   Fabric, and Java 25. Sign in if asked. Start Minecraft before launching GTA IV from Steam so its
+   hidden window is ready before the game starts.
+5. To restore the GTA IV files changed by the installer, run `install-windows.bat -Uninstall` from
+   the extracted folder. The Prism instance and its worlds are kept.
+
+The Windows installer downloads the same pinned GTA IV 1.0.8.0 assets as the Linux installer and the
+latest FusionFix archives. Files it replaces are backed up under
+`GTAIV/_libertycraft_backup/manifest.txt`.
+
+### Linux release install
+
+1. Install GTA IV: The Complete Edition through Steam and enable Proton. Install Prism Launcher,
+   sign in to Minecraft Java Edition, and quit both launchers before setup.
+2. In a terminal, run:
+
+   ```sh
+   curl -fsSL https://github.com/mrborghini/libertycraft/releases/latest/download/install-linux.sh | bash
+   ```
+
+   The installer downloads the latest published release, verifies its SHA-256 checksum, detects the
+   Steam and Prism locations, downgrades GTA IV, installs its loader and patches, and configures the
+   `LibertyCraft` Prism instance. It backs up replaced game files with a manifest. It does not install
+   Steam, Prism Launcher, or Minecraft accounts.
+3. Open Prism and start the `LibertyCraft` instance once so it can download Minecraft 26.3, Fabric,
+   and Java 25. Sign in if asked. Start Minecraft before launching GTA IV from Steam.
+4. To restore the game files, run
+   `curl -fsSL https://github.com/mrborghini/libertycraft/releases/latest/download/install-linux.sh | bash -s -- --uninstall`.
+   The Prism instance and its worlds are kept.
+
+The release download points to the latest **published** GitHub release. New tag builds remain drafts
+until reviewed and published.
+
+### Build from source
 
 ```sh
 tools/install.sh        # 1. downgrade GTA IV, install the ASI loader, ZolikaPatch, FusionFix,
@@ -63,8 +110,28 @@ tools/setup-toolchain.sh && tools/build.sh --install
 tools/launch.sh         # 3. start Minecraft (hidden) and GTA IV
 ```
 
-Every script takes `--dry-run` (show what would happen) and `--help`; `install.sh` and `build.sh`
-also take `--yes`. Re-running any of them is safe.
+On Windows, initialize the IV-SDK submodule, then build the plugin and Fabric mod:
+
+```bat
+git submodule update --init
+cd asi
+cmake --preset windows-release
+cmake --build --preset windows-release --config Release
+cd ..\fabric
+gradlew.bat build -Pversion=0.1.0
+cd ..
+mkdir dist\plugins 2>nul
+mkdir dist\mods 2>nul
+copy asi\build\windows-release\Release\LibertyCraft.asi dist\plugins\
+copy fabric\build\libs\libertycraft-0.1.0.jar dist\mods\
+```
+
+The Windows CMake preset builds the 32-bit plugin with Visual Studio's clang-cl toolset. The Linux
+cross-build remains available with `tools/setup-toolchain.sh` and `tools/build.sh`.
+
+The Linux install and build scripts support `--dry-run` and `--help`; `install.sh` and `build.sh`
+also take `--yes`. The Windows batch installer accepts `-GameDir` and `-PrismDir` to select paths
+directly, and `-Uninstall` to restore game files. Re-running either platform's installer is safe.
 
 What `tools/install.sh` does to the game folder (`…/steamapps/common/Grand Theft Auto IV/GTAIV`):
 

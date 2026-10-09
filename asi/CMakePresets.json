@@ -24,10 +24,20 @@
 			"inherits": "base",
 			"binaryDir": "${sourceDir}/build/debug",
 			"cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+		},
+		{
+			"name": "windows-release",
+			"displayName": "Release (Windows x86, Visual Studio clang-cl)",
+			"generator": "Visual Studio 17 2022",
+			"architecture": "Win32",
+			"toolset": "ClangCL",
+			"binaryDir": "${sourceDir}/build/windows-release",
+			"cacheVariables": { "CMAKE_CONFIGURATION_TYPES": "Release" }
 		}
 	],
 	"buildPresets": [
 		{ "name": "release", "configurePreset": "release" },
-		{ "name": "debug", "configurePreset": "debug" }
+		{ "name": "debug", "configurePreset": "debug" },
+		{ "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release" }
 	]
 }
