@@ -70,7 +70,7 @@ jobs:
       - name: Parse Windows installer
         shell: powershell
         run: |
-          foreach ($fileName in @('install-windows.ps1', 'launch-windows.ps1')) {
+          foreach ($fileName in @('install-windows.ps1', 'zolika-fix.ps1', 'launch-windows.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile("$PWD\tools\$fileName", [ref]$tokens, [ref]$errors) | Out-Null
@@ -167,6 +167,8 @@ jobs:
           tar -tzf dist/release/libertycraft-linux.tar.gz | grep -Fx 'tools/install.sh'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.bat'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'install-windows.ps1'
+          unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'zolika-fix.bat'
+          unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'zolika-fix.ps1'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'launch-windows.bat'
           unzip -Z1 dist/release/libertycraft-windows.zip | grep -Fx 'launch-windows.ps1'
 

@@ -50,6 +50,22 @@ try {
         Assert-Equal $prism (Find-PrismDirectory) 'Prism data folder detection failed'
     } finally { $env:APPDATA = $oldAppData }
 
+    $zolikaIni = Join-Path $testRoot 'ZolikaPatch.ini'
+    Set-Content -LiteralPath $zolikaIni -Value @('[Options]', 'SkipLauncher=1', '[Other]', 'SkipLauncher=1')
+    Set-IniOptions $zolikaIni $script:ZolikaOptionOverrides
+    $section = ''
+    $optionsSkipLauncher = $null
+    $otherSkipLauncher = $null
+    foreach ($line in Get-Content -LiteralPath $zolikaIni) {
+        if ($line -match '^\s*\[([^\]]+)\]') { $section = $Matches[1]; continue }
+        if ($line -match '^\s*SkipLauncher\s*=') {
+            if ($section -ieq 'Options') { $optionsSkipLauncher = $line }
+            if ($section -ieq 'Other') { $otherSkipLauncher = $line }
+        }
+    }
+    Assert-Equal 'SkipLauncher=0' $optionsSkipLauncher 'Windows setup did not disable ZolikaPatch SkipLauncher'
+    Assert-Equal 'SkipLauncher=1' $otherSkipLauncher 'ZolikaPatch override changed a key outside [Options]'
+
     $script:Game = Join-Path $testRoot 'Install Target'
     New-Item -ItemType Directory -Force -Path $script:Game | Out-Null
     $original = Join-Path $script:Game 'GTAIV.exe'

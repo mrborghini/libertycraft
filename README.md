@@ -35,8 +35,9 @@ This is a port of the idea (and most of the Minecraft-side code) of
    [`libertycraft-windows.zip`](https://github.com/mrborghini/libertycraft/releases/latest/download/libertycraft-windows.zip).
 3. Run `install-windows.bat`. It searches Steam libraries for GTA IV and the usual Prism data
    folders. If it cannot find either folder, it asks for the path. The installer downgrades the game,
-   installs the loader and patches, copies LibertyCraft, and configures the Prism instance. If Steam
-   is under a protected folder and Windows denies file access, run the batch file as administrator.
+   installs the loader and patches, copies LibertyCraft, disables ZolikaPatch's `SkipLauncher` option,
+   and configures the Prism instance. If Windows denies file access under the Steam folder, run the
+   batch file as administrator.
 4. Open Prism Launcher and start the `LibertyCraft` instance once. Prism downloads Minecraft 26.3,
    Fabric, and Java 25. Sign in if asked. For each play session, run `launch-windows.bat` from the
    extracted release folder. It launches the Prism instance, waits for Minecraft's hidden window to
@@ -60,6 +61,13 @@ If `launch-windows.bat` reports `Windows cannot find 'PROTON_LOG=1'`, open GTA I
 Properties, select **General**, and clear the **Launch Options** field. `PROTON_LOG=1 %command%`
 is only for Linux/Proton debugging. Clear it on Windows, then run `launch-windows.bat` again. You do
 not need to reinstall the mod.
+
+If GTA IV shows its warning screen, goes black, then closes before reaching the menu, run
+`zolika-fix.bat` from the extracted release folder with GTA IV closed. It finds the Steam game folder
+and sets ZolikaPatch's `SkipLauncher` option to `0`, which fixes the crash seen with that option enabled
+on Windows. The script saves the previous settings as
+`GTAIV/_libertycraft_backup/ZolikaPatch.ini.before-zolika-fix`. Then run `launch-windows.bat` again.
+If Steam detection does not find GTA IV, the script asks for the folder containing `GTAIV.exe`.
 
 ### Linux release install
 

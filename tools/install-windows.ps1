@@ -21,6 +21,17 @@ $script:DowngradeExecutableVersion = '1.0.8.0'
 $script:FabricApiUrl = 'https://cdn.modrinth.com/data/P7dR8mSH/versions/bNnaTiuM/fabric-api-0.161.0%2B26.3.jar'
 $script:FabricApiSha512 = 'ed6b2586d6fde11fde8472f5a527c51e99b67026e46f94d4bfd85e7e28ce5ee299173ee16ad576ceb51f39f98d30a811086a6deb1a86a524859cc16e12da109d'
 $script:FabricApiJarName = 'fabric-api-0.161.0+26.3.jar'
+# SkipLauncher crashes the Steam build of downgraded GTA IV on Windows.
+$script:ZolikaOptionOverrides = @(
+    'MiscFixes=0', 'BikeFeetFix=0', 'BikePhoneAnimsFix=0', 'BorderlessWindowed=0', 'BuildingAlphaFix=0',
+    'BuildingDynamicShadows=0', 'CarDynamicShadowFix=0', 'CarPartsShadowFix=0', 'CutsceneFixes=0',
+    'DoNotPauseOnMinimize=0', 'DualVehicleHeadlights=0', 'EmissiveLerpFix=0', 'EpisodicVehicleSupport=0',
+    'EpisodicWeaponSupport=0', 'ForceCarHeadlightShadows=0', 'ForceDynamicShadowsEverywhere=0',
+    'ForceShadowsOnObjects=0', 'HighFPSBikePhysicsFix=0', 'HighFPSSpeedupFix=0', 'HighQualityReflections=0',
+    'ImprovedShaderStreaming=0', 'MouseFix=0', 'NewMemorySystem=0', 'NoLiveryLimit=0', 'OutOfCommissionFix=0',
+    'PoliceEpisodicWeaponSupport=0', 'RemoveBoundingBoxCulling=0', 'ReversingLightFix=0', 'SkipIntro=0',
+    'SkipLauncher=0', 'SkipMenu=0'
+)
 $script:Manifest = @{}
 $script:ManifestOrder = [System.Collections.Generic.List[string]]::new()
 $script:Game = $null
@@ -418,7 +429,7 @@ function Invoke-Install {
     Install-File (Join-Path $baseDir 'ZolikaPatch\ZolikaPatch.asi') 'ZolikaPatch.asi'
     Install-File (Join-Path $baseDir 'ZolikaPatch\ZolikaPatch.ini') 'ZolikaPatch.ini' -KeepExisting
     $zolikaIni = Join-Path $script:Game 'ZolikaPatch.ini'
-    Set-IniOptions $zolikaIni @('MiscFixes=0', 'BikeFeetFix=0', 'BikePhoneAnimsFix=0', 'BorderlessWindowed=0', 'BuildingAlphaFix=0', 'BuildingDynamicShadows=0', 'CarDynamicShadowFix=0', 'CarPartsShadowFix=0', 'CutsceneFixes=0', 'DoNotPauseOnMinimize=0', 'DualVehicleHeadlights=0', 'EmissiveLerpFix=0', 'EpisodicVehicleSupport=0', 'EpisodicWeaponSupport=0', 'ForceCarHeadlightShadows=0', 'ForceDynamicShadowsEverywhere=0', 'ForceShadowsOnObjects=0', 'HighFPSBikePhysicsFix=0', 'HighFPSSpeedupFix=0', 'HighQualityReflections=0', 'ImprovedShaderStreaming=0', 'MouseFix=0', 'NewMemorySystem=0', 'NoLiveryLimit=0', 'OutOfCommissionFix=0', 'PoliceEpisodicWeaponSupport=0', 'RemoveBoundingBoxCulling=0', 'ReversingLightFix=0', 'SkipIntro=0', 'SkipMenu=0')
+    Set-IniOptions $zolikaIni $script:ZolikaOptionOverrides
     Install-File (Join-Path $legacyDir 'xlive.dll') 'xlive.dll'
     Install-Tree (Join-Path $fusionDir 'plugins') 'plugins' -KeepIni
     Install-Tree (Join-Path $fusionDir 'update') 'update'
