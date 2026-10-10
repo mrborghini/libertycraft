@@ -56,6 +56,11 @@ and reboot. SecuROM lists these steps for this specific error code in its
 [GTA IV support FAQ](https://support.securom.com/pop_gtaiv.html). Other SecuROM or activation errors
 can have different causes, so include the full message and code when asking for help.
 
+If `launch-windows.bat` reports `Windows cannot find 'PROTON_LOG=1'`, open GTA IV's Steam
+Properties, select **General**, and clear the **Launch Options** field. `PROTON_LOG=1 %command%`
+is only for Linux/Proton debugging. Clear it on Windows, then run `launch-windows.bat` again. You do
+not need to reinstall the mod.
+
 ### Linux release install
 
 1. Install GTA IV: The Complete Edition through Steam and enable Proton. Install
@@ -172,10 +177,11 @@ What `tools/install.sh` does to the game folder (`…/steamapps/common/Grand The
   Steam → GTA IV → Properties → Installed Files → **Verify integrity of game files** also reverts
   the downgrade (and so does a Steam update of the game; just run `tools/install.sh` again).
 
-Recommended Steam launch options (Properties → General): `PROTON_LOG=1 %command%` while developing
-(writes `~/steam-12210.log`). Logs: Minecraft `…/PrismLauncher/instances/LibertyCraft/minecraft/logs/latest.log`,
-the plugin `<gamedir>/LibertyCraft.log`. `tools/dev/run-gta-with-log.sh` starts the game through Proton
-directly with `PROTON_LOG=1`, without touching Steam's launch options.
+For Linux/Proton debugging only, set Steam launch options (Properties → General) to
+`PROTON_LOG=1 %command%` (writes `~/steam-12210.log`). Leave the field empty on Windows. Logs:
+Minecraft `…/PrismLauncher/instances/LibertyCraft/minecraft/logs/latest.log`, the plugin
+`<gamedir>/LibertyCraft.log`. `tools/dev/run-gta-with-log.sh` starts the game through Proton directly
+with `PROTON_LOG=1`, without touching Steam's launch options.
 
 ## Controls
 
