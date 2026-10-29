@@ -4,7 +4,7 @@ Creates the shared bridge file, streams a flat floor + a staircase of collision,
 (punch an NPC, build, shoot, drop and pick up an item), prints Minecraft's reported player state,
 and saves the overlay frame to a PNG.
 
-    python3 tools/fake_host.py [--link PATH] [--drive | --npc | --shield | --thorns] [seconds] [out.png] [atlas.png]
+    python3 tools/fake_host.py [--link PATH] [--drive | --npc | --shield | --thorns | --mobs] [seconds] [out.png] [atlas.png]
 
 --npc scripts Stream Q2's checks instead: a car (three vehicle pieces, kActorVehicle) and a ped stand
 next to the player; it punches the car and shoots it with the bow (one kEvHitActor per hit, on a vehicle
@@ -17,6 +17,9 @@ car through the player (it must shove the player along), then lights the floor w
 
 --thorns scripts a ped's blows (kInHurt from its stand-in) without and then with a Thorns III chestplate:
 only with it must kEvHitActor come back on the ped (Thorns hurting the attacker).
+
+--mobs scripts who a hostile mob goes for: a husk takes the nearer of the player and a ped, turns to
+the ped once it is clearly nearer, and turns back on the player who hits it (kEvMob's target).
 
 --drive scripts "GTA IV drives the player" instead (kSkyHostDrives / kSkyInVehicle): Niko mode on
 foot (Minecraft follows a walking target), a vehicle (Minecraft rides its mount - boat, horse, ... per
@@ -107,6 +110,7 @@ class Link:
         self.hits = []    # (form, damage, push x, push z, flags) of kEvHitActor
         self.points = []  # (form, x, y, z, yaw, pitch) of kEvHitPoint
         self.mobs = set()  # entity ids of the mobs kEvMob told us about
+        self.mob_state = {}  # entity id -> (after formId, x, y, z, height, weapon bits, when) of its latest kEvMob
 
     def heartbeat(self):
         struct.pack_into("<Q", self.m, 0x10, tick())
@@ -116,7 +120,9 @@ class Link:
     def drain_events(self):
         head, tail = struct.unpack_from("<Q", self.m, OFF_EVENTS)[0], struct.unpack_from("<Q", self.m, OFF_EVENTS + 0x40)[0]
         while tail < head:
-            typ, form, a, b, c, d, flags = struct.unpack_from("<IIffffI", self.m, OFF_EVENTS + 0x80 + (tail % 512) * 32)
+            typ, form, a, b, c, d, flags, weapon = struct.unpack_from("<IIffffII", self.m, OFF_EVENTS + 0x80 + (tail % 512) * 32)
+            if typ == 8:  # kEvMob: flags = its entity id, weapon = width | kMobAfterPlayer | kMobPassive
+                self.mob_state[flags] = (form, a, b, c, d, weapon, time.time())
             if typ == 11:  # kEvMobHitPlayer
                 print(f"  event from Minecraft: a mob hit the player GTA drives for {a:.1f} (push {b:.2f},{c:.2f} x{d:.2f}, flags {flags:#x})")
             elif typ in (9, 10):  # kEvSetTime / kEvSetWeather
@@ -692,6 +698,78 @@ class ThornsScenario(ShieldScenario):
         return False
 
 
+MOB_AFTER_PLAYER = 1 << 16  # kEvMob weapon bits: the mob is after the player (kMobAfterPlayer)
+
+
+class MobsScenario(ShieldScenario):
+    """Who a hostile mob goes for (PedTargets): the nearest of the player and GTA IV's peds, turning to
+    someone clearly nearer mid-chase, and to the player who hits it. A husk (no sunburn) 6 blocks ahead
+    must take the player over a ped 16 blocks from it; once the player is 14 blocks away and the ped a
+    block from it, the ped (and hit it, kEvHitActor flagged kHitByMob); hit by the player (/damage ... by
+    @s), the player again, the ped as near as it is. The player has Resistance V."""
+    PED = 0x4C000BBB
+    SUMMON, MOVE, HIT = 2.5, 6.0, 11.0  # when the summon, the player's /tp and the /damage are typed
+
+    def __init__(self, spawn):
+        super().__init__(spawn)
+        self.ped_x, self.ped_z = spawn[0] + 22.0, spawn[2]
+        self.known = None  # mob ids seen before the summon
+
+    def write_actors(self, link):
+        rec = struct.pack("<IIfffffffHH24s", self.PED, 1, self.ped_x, FLOOR_Y, self.ped_z, 90.0, 0.6, 1.8, 1.0, 0, 0, b"Cop")
+        struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2 + 1)
+        struct.pack_into("<I", link.m, OFF_ACTORS + 4, 1)
+        struct.pack_into("<Q", link.m, OFF_ACTORS + 8, time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 100)  # ActorTable.stamp
+        link.m[OFF_ACTORS + 0x40:OFF_ACTORS + 0x40 + 64] = rec
+        link.actor_seq += 1
+        struct.pack_into("<I", link.m, OFF_ACTORS, link.actor_seq * 2)
+
+    def husk(self, link):
+        """The summoned husk's latest kEvMob: a mob new since the summon, 1.95 blocks tall."""
+        if self.known is None:
+            return None
+        new = [s for i, s in link.mob_state.items() if i not in self.known and abs(s[4] - 1.95) < 0.06]
+        return max(new, key=lambda s: s[6]) if new else None
+
+    def describe(self, h, mc):
+        if h is None:
+            return "no husk reported"
+        form, x, y, z, height, bits, _ = h
+        who = "the player" if bits & MOB_AFTER_PLAYER else f"ped {form:08X}" if form else "nobody"
+        px, pz = mc["pos"][0], mc["pos"][2]
+        return (f"husk at {x:.1f} {z:.1f} after {who}; player {math.hypot(px - x, pz - z):.1f} blocks off, "
+                f"ped {math.hypot(self.ped_x - x, self.ped_z - z):.1f}")
+
+    def step(self, link, t, mc, dt):
+        self.command(link, t, 0.3, "/kill @e[type=minecraft:husk]")
+        self.command(link, t, 1.4, "/effect give @s minecraft:resistance 60 4 true")
+        if self.once(t, self.SUMMON, "known"):
+            self.known = set(link.mob_state)
+        # (Any NBT skips the summon's random spawn setup: no baby, no chicken jockey.)
+        self.command(link, t, self.SUMMON, "/summon minecraft:husk ~6 ~ ~ {PersistenceRequired:1b}")
+        h = self.husk(link)
+        if self.once(t, 5.5, "player"):
+            self.check("the husk takes the nearer player", h is not None and bool(h[5] & MOB_AFTER_PLAYER), self.describe(h, mc))
+        self.command(link, t, self.MOVE, "/tp @s ~-14 ~ ~")
+        if self.once(t, self.MOVE + 0.95, "ped_beside") and h is not None:
+            # The ped steps up beside it as the player goes, within its reach: mobs don't walk the
+            # stand-in's flat floor (no GTA IV paths here), and only the choice of target is tested.
+            self.ped_x, self.ped_z = h[1], h[3] + 1.0
+        if self.once(t, 9.0, "ped"):
+            ok = h is not None and h[0] == self.PED and not h[5] & MOB_AFTER_PLAYER
+            self.check("the husk turns to the ped, now clearly nearer", ok, self.describe(h, mc))
+        if self.once(t, self.HIT, "ped_hit"):
+            hits = [x for x in link.hits if x[0] == self.PED and x[4] & HIT_BY_MOB]
+            self.check("the husk's blows reach the ped (kHitByMob)", bool(hits), f"{len(hits)} mob hit event(s) on the ped")
+        self.command(link, t, self.HIT, "/damage @e[type=minecraft:husk,limit=1,sort=nearest] 1 minecraft:player_attack by @s")
+        if self.once(t, self.HIT + 3.0, "retaliate"):
+            self.check("hit by the player, the husk turns on them", h is not None and bool(h[5] & MOB_AFTER_PLAYER), self.describe(h, mc))
+        if t >= self.HIT + 3.5:
+            print(f"mobs summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
+            return True
+        return False
+
+
 def main():
     args = sys.argv[1:]
     path = BRIDGE
@@ -715,6 +793,10 @@ def main():
     if thorns:
         args.remove("--thorns")
         npc = True
+    mobs = "--mobs" in args
+    if mobs:
+        args.remove("--mobs")
+        npc = True
     seconds = float(args[0]) if len(args) > 0 else 90
     out = args[1] if len(args) > 1 else "overlay.png"
     atlas_out = args[2] if len(args) > 2 else None
@@ -735,7 +817,8 @@ def main():
     if drive:
         drive = DriveScenario(spawn, tseq)
     if npc:
-        npc = ThornsScenario(spawn) if thorns else ShieldScenario(spawn) if shield else NpcScenario(spawn)
+        npc = (MobsScenario(spawn) if mobs else ThornsScenario(spawn) if thorns else ShieldScenario(spawn) if shield
+               else NpcScenario(spawn))
     mc = link.read_mc()
     last_t = None
     while time.time() - start < seconds:

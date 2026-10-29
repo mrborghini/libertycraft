@@ -266,7 +266,8 @@ Minecraft's mobs and GTA IV's city meet:
   pillagers, witches and the rest go after peds on foot and cars with someone in them (yours too), with
   their own weapons: blows, arrows, potions, a creeper's blast, a ghast's fireball. They walk GTA IV's
   streets, stairs and ramps, don't see through its walls, and walk straight at what they can't find a
-  path to. Your survival player is still their target too; none of it is your crime.
+  path to. Each goes for whoever is nearest, you or a ped, and turns to someone clearly nearer
+  mid-chase; hit one and it comes for you. None of it is your crime.
 * **GTA IV's explosions reach Minecraft.** A car or a gas pump blowing up, a grenade, a rocket or a
   molotov hurts and throws Minecraft's mobs and, in Minecraft mode, you, like a Minecraft explosion of that
   size (a molotov or a burning car also sets them alight); it breaks no blocks. Only one of the two ever

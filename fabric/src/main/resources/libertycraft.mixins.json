@@ -28,6 +28,7 @@
     "MobSightMixin",
     "MobTargetSelectorAccessor",
     "NearestAttackableTargetGoalAccessor",
+    "NearestAttackableWitchTargetGoalAccessor",
     "PathNavigationMixin",
     "PathfindingContextMixin",
     "PlayerEdgeMixin",
