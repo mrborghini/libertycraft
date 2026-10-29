@@ -304,6 +304,13 @@ public final class HostCombat {
 			// Power attacks shove harder, like a sprint hit does in Minecraft.
 			player.knockback(0.5, attacker.getX() - player.getX(), attacker.getZ() - player.getZ(), source, damage);
 		}
+		if (hurt && attacker != null && (kind == Proto.HURT_MELEE || kind == Proto.HURT_PROJECTILE) && dev.libertycraft.net.LcNet.isHost(player)) {
+			// Thorns (and any other enchantment on what the victim wears) runs from the attacker's side in
+			// vanilla (Mob.doHurtTarget, AbstractArrow.onHitEntity), never from hurtServer, so GTA IV's blows
+			// and shots run it here: it hurts the attacker's stand-in, which forwards it to the real ped.
+			// Not for a guest: their attacker id is from their own GTA IV, not one of the host's stand-ins.
+			net.minecraft.world.item.enchantment.EnchantmentHelper.doPostAttackEffects(level, player, source);
+		}
 	}
 
 	/**

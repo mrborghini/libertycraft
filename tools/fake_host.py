@@ -4,7 +4,7 @@ Creates the shared bridge file, streams a flat floor + a staircase of collision,
 (punch an NPC, build, shoot, drop and pick up an item), prints Minecraft's reported player state,
 and saves the overlay frame to a PNG.
 
-    python3 tools/fake_host.py [--link PATH] [--drive | --npc | --shield] [seconds] [out.png] [atlas.png]
+    python3 tools/fake_host.py [--link PATH] [--drive | --npc | --shield | --thorns] [seconds] [out.png] [atlas.png]
 
 --npc scripts Stream Q2's checks instead: a car (three vehicle pieces, kActorVehicle) and a ped stand
 next to the player; it punches the car and shoots it with the bow (one kEvHitActor per hit, on a vehicle
@@ -14,6 +14,9 @@ car through the player (it must shove the player along), then lights the floor w
 
 --shield scripts GTA IV's hits (kInHurt) against a raised shield: from in front (blocked) and from behind
 (hurts), with a direction only and from a ped's stand-in, and checks Minecraft's vitals in McState.
+
+--thorns scripts a ped's blows (kInHurt from its stand-in) without and then with a Thorns III chestplate:
+only with it must kEvHitActor come back on the ped (Thorns hurting the attacker).
 
 --drive scripts "GTA IV drives the player" instead (kSkyHostDrives / kSkyInVehicle): Niko mode on
 foot (Minecraft follows a walking target), a vehicle (Minecraft rides its mount - boat, horse, ... per
@@ -640,6 +643,55 @@ class ShieldScenario(NpcScenario):
         return False
 
 
+HIT_BY_MOB = 1 << 5
+
+
+class ThornsScenario(ShieldScenario):
+    """GTA IV's blows (kInHurt from a ped's stand-in) against Thorns armour. Without a chestplate the
+    ped must take nothing back; with a Thorns III one (45% a hit) some but not all blows must send a
+    kEvHitActor to the ped: Thorns' 1 to 5 damage, pushed away from the player, the player's hit (not
+    a mob's). The ped strikes from alternate sides of where the player is, so the knockback doesn't
+    carry the player off the floor or out of the attacker's 24 m."""
+    PED = 0x4C000AAA
+    CONTROL = (2.0, 2.8, 3.6)
+    THORNS = tuple(6.5 + 0.8 * i for i in range(15))  # 16 ticks apart: past both sides' hurt immunity
+
+    def __init__(self, spawn):
+        super().__init__(spawn)
+        self.ped_x = spawn[0] + 1.5  # in front of the player (facing +X)
+
+    def ped_hits(self, link):
+        return [h for h in link.hits if h[0] == self.PED]
+
+    def step(self, link, t, mc, dt):
+        # (A kit chestplate may be on already: take it off for the control hits.)
+        self.command(link, t, 0.3, "/item replace entity @s armor.chest with minecraft:air")
+        # Full health: 18 blows of about 1 damage mustn't kill a player a previous run left hurt.
+        self.command(link, t, 1.4, "/effect give @s minecraft:instant_health 1 4")
+        for i, at in enumerate(self.CONTROL + self.THORNS):
+            if at - 0.4 <= t < at and mc["pos"][0] != 0.0:
+                self.ped_x = mc["pos"][0] + (1.5 if i % 2 == 0 else -1.5)
+            if self.once(t, at, f"hurt{at}"):
+                link.push_input(IN_HURT, HURT_MELEE, 500, self.PED, 0)  # 5 host damage = 1 Minecraft damage
+        if self.once(t, self.CONTROL[-1] + 0.8, "control"):
+            hits = self.ped_hits(link)
+            self.check("no Thorns: the ped takes nothing back", not hits, f"{len(hits)} hit event(s) on the ped")
+            self.marks["control_hits"] = len(hits)
+        self.command(link, t, 4.5, '/item replace entity @s armor.chest with minecraft:diamond_chestplate[minecraft:enchantments={"minecraft:thorns":3}]')
+        if self.once(t, self.THORNS[-1] + 0.8, "thorns"):
+            hits = self.ped_hits(link)[self.marks.get("control_hits", 0):]
+            # (All 15 at 45%: about 6 in a million. More likely Thorns ran more than once a blow.)
+            ok = 1 <= len(hits) < len(self.THORNS) and all(
+                1.0 - 1e-3 <= h[1] <= 5.0 + 1e-3 and abs(h[2]) > 0.9 and not h[4] & (HIT_BY_MOB | HIT_PROJECTILE) for h in hits)
+            self.check("Thorns III: the ped takes it back", ok, f"{len(hits)} hit event(s) from {len(self.THORNS)} blows: "
+                       f"{[(round(h[1], 2), round(h[2], 2), round(h[3], 2), h[4]) for h in hits]} (want some but not all, 1 to 5 damage, "
+                       "pushed along x away from the player, the player's)")
+        if t >= self.THORNS[-1] + 1.0:
+            print(f"thorns summary: {'PASS' if all(self.results) else 'FAIL'} ({sum(self.results)}/{len(self.results)})")
+            return True
+        return False
+
+
 def main():
     args = sys.argv[1:]
     path = BRIDGE
@@ -658,6 +710,10 @@ def main():
     shield = "--shield" in args
     if shield:
         args.remove("--shield")
+        npc = True
+    thorns = "--thorns" in args
+    if thorns:
+        args.remove("--thorns")
         npc = True
     seconds = float(args[0]) if len(args) > 0 else 90
     out = args[1] if len(args) > 1 else "overlay.png"
@@ -679,7 +735,7 @@ def main():
     if drive:
         drive = DriveScenario(spawn, tseq)
     if npc:
-        npc = ShieldScenario(spawn) if shield else NpcScenario(spawn)
+        npc = ThornsScenario(spawn) if thorns else ShieldScenario(spawn) if shield else NpcScenario(spawn)
     mc = link.read_mc()
     last_t = None
     while time.time() - start < seconds:

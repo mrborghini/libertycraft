@@ -160,6 +160,9 @@ public class HostActorEntity extends LivingEntity {
 			return;
 		}
 		this.pendingDamage += dmg;
+		if (source.is(net.minecraft.world.damagesource.DamageTypes.THORNS)) {
+			dev.libertycraft.LibertyCraft.LOG.info("[LibertyCraft] thorns hit {} for {}", this.getName().getString(), dmg);
+		}
 		if (source.getEntity() instanceof net.minecraft.world.entity.Mob) {
 			this.hitByMob = true; // a zombie's blow, a skeleton's arrow, a creeper's blast (PedTargets)
 		} else {
@@ -240,6 +243,9 @@ public class HostActorEntity extends LivingEntity {
 
 	/** Which kind of GTA IV weapon impact this hit should look and sound like. */
 	static int weaponClass(DamageSource source) {
+		if (source.is(net.minecraft.world.damagesource.DamageTypes.THORNS)) {
+			return Proto.WEAPON_UNARMED; // the wearer's armour, not what they hold (a sword would make it a stabbing)
+		}
 		if (source.getDirectEntity() instanceof net.minecraft.world.entity.projectile.arrow.ThrownTrident) {
 			return Proto.WEAPON_PIERCE;
 		}
