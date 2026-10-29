@@ -725,7 +725,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 	private @Nullable Batch batchFor(RenderType renderType) {
 		RenderTypeAccessor type = (RenderTypeAccessor) renderType;
 		String name = type.libertycraft$name();
-		if (name.contains("glint") || name.contains("outline") || name.contains("shadow")) {
+		if (name.contains("outline") || name.contains("shadow")) {
 			return null;
 		}
 		Object binding = ((RenderSetupAccessor) (Object) type.libertycraft$state()).libertycraft$textures().get("Sampler0");
@@ -733,6 +733,14 @@ final class AvatarExporter implements SubmitNodeCollector {
 			return null;
 		}
 		Identifier texture = ((TextureBindingAccessor) binding).libertycraft$location();
+		// The enchantment shimmer is left out, not what shimmers: an enchanted model (armour, a trident)
+		// comes as one render type with its own texture in Sampler0 and the shimmer in GlintSampler
+		// (armor_cutout_no_cull_glint, entity_solid_glint), and is kept, plain. Only a shimmer laid over
+		// something else (trimmed armour, a patterned shield) has the shimmer itself in Sampler0.
+		if (texture.equals(net.minecraft.client.renderer.feature.ItemFeatureRenderer.ENCHANTED_GLINT_ARMOR)
+			|| texture.equals(net.minecraft.client.renderer.feature.ItemFeatureRenderer.ENCHANTED_GLINT_ITEM)) {
+			return null;
+		}
 		if (texture.equals(TextureAtlas.LOCATION_BLOCKS)) {
 			return this.batch(0, UV_BLOCK_ATLAS, SOLID);
 		}
