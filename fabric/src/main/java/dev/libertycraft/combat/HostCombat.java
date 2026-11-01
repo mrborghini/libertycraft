@@ -240,20 +240,38 @@ public final class HostCombat {
 	}
 
 	/**
-	 * Items and stuck arrows on GTA IV ground rest on its collision voxels, which on steep or rough
-	 * terrain can sit a little off from where the player (on GTA IV's exact triangles) stands.
-	 * Touch them over a slightly bigger area than vanilla's so walking over them picks them up.
-	 * playerTouch applies all of Minecraft's own rules (pickup delay, owner, inventory space).
+	 * Dropped items, stuck arrows and XP orbs the player walks into. Vanilla's own touch (Player.aiStep)
+	 * misses them: the server gives the player no GTA IV ground (the client stands it on GTA IV's exact
+	 * triangles, HostCollider), so in its tick the player falls through the ground before vanilla looks
+	 * for what it touches, and is only put back where the client says after the tick. XP orbs, which
+	 * nothing else picked up, waited until a resync (GTA IV's pause menu) stopped the fall for a moment.
+	 * So the touch is done again here, after the tick, where the player is, over a slightly bigger area:
+	 * items and arrows rest on GTA IV's collision voxels, which on steep or rough terrain can sit a little
+	 * off from the triangles the player stands on. Like vanilla, one XP orb a tick at most, picked at
+	 * random. playerTouch applies all of Minecraft's own rules (pickup delay, owner, inventory space,
+	 * the delay between orbs, Mending).
 	 */
 	private static void pickUpNearby(ServerPlayer player) {
 		if (!player.isAlive() || player.isSpectator()) {
 			return;
 		}
+		List<Entity> orbs = null;
 		for (Entity entity : player.level().getEntities(player, player.getBoundingBox().inflate(1.25, 1.0, 1.25))) {
-			if (!entity.isRemoved() && (entity instanceof net.minecraft.world.entity.item.ItemEntity
-				|| entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow)) {
+			if (entity.isRemoved()) {
+				continue;
+			}
+			if (entity instanceof net.minecraft.world.entity.ExperienceOrb) {
+				if (orbs == null) {
+					orbs = new ArrayList<>();
+				}
+				orbs.add(entity);
+			} else if (entity instanceof net.minecraft.world.entity.item.ItemEntity
+				|| entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) {
 				entity.playerTouch(player);
 			}
+		}
+		if (orbs != null) {
+			net.minecraft.util.Util.getRandom(orbs, player.getRandom()).playerTouch(player);
 		}
 	}
 
