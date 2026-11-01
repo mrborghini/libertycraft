@@ -68,6 +68,10 @@ namespace lc::Combat
 	// Combat owns the puppeted ped's health (Combat=1): Game must leave it vulnerable.
 	bool OwnsPlayerHealth();
 
+	// Minecraft holds the player's health right now (Minecraft mode: puppeted, knocked over, in and around a
+	// vehicle); false in Niko mode, cutscenes and while loading.
+	bool HoldsPlayerHealth();
+
 	// A save / new game is loading: every ped handle we hold is about to be invalid.
 	void OnIngameStartup();
 }

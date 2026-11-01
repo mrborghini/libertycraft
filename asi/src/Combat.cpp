@@ -4055,6 +4055,11 @@ namespace lc::Combat
 		return Cfg().combat && !safetyInvincible;
 	}
 
+	bool HoldsPlayerHealth()
+	{
+		return owned.engaged;
+	}
+
 	void OnIngameStartup()
 	{
 		Release(false, "the game is loading", false);  // the ped is going away; CPlayerInfo's max goes back

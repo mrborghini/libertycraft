@@ -324,6 +324,7 @@ namespace lc
 		if (auto v = get("debuginputscript")) debugInputScript = *v;
 		if (auto v = get("ragdollonvehiclehit")) ragdollOnVehicleHit = ToBool(*v, ragdollOnVehicleHit);
 		if (auto v = get("debugbailout")) debugBailOut = ToBool(*v, debugBailOut);
+		if (auto v = get("debughighfall")) debugHighFall = static_cast<float>(std::atof(v->c_str()));
 		if (auto v = get("debugrunover")) debugRunOver = ToBool(*v, debugRunOver);
 		if (auto v = get("debugvehiclehit")) debugVehicleHit = Lower(*v);
 		if (auto v = get("debugcutscene")) debugCutscene = *v;

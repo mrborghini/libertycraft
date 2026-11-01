@@ -1,6 +1,7 @@
 // DriveLogic.h: who drives the player (Minecraft or GTA IV) through toggles, the vehicle key,
 // vehicles entered by scripts, and the hand-back after leaving a car.
 #include "DriveLogic.h"
+#include "drive/FallWatch.h"
 #include "drive/PropHit.h"
 #include "drive/VehicleHit.h"
 
@@ -602,6 +603,132 @@ static void TestPropHits()
 	CHECK(!P::CrashOf(false, 7.0f, south, 12.0f).knock);  // a landing
 }
 
+// ---- falls while GTA moves the player (drive/FallWatch.h) ----------------------------------------------
+namespace
+{
+	struct FallRun
+	{
+		lc::drive::FallWatch w;
+		int   reports = 0, protectedFrames = 0;
+		float landed = 0.0f, t = 0.0f, landedAt = -1.0f;
+		bool  protectAtImpact = false, protectAfterGuard = false;
+		static constexpr float kDt = 1.0f / 60.0f;
+
+		void Step(float a_z, bool a_watch = true, bool a_water = false)
+		{
+			const auto out = w.Tick(a_watch, kDt, a_z, a_water);
+			t += kDt;
+			protectedFrames += out.protect ? 1 : 0;
+			if (out.landed > 0.0f) {
+				++reports;
+				landed = out.landed;
+				landedAt = t;
+			}
+			if (landedAt >= 0.0f && t > landedAt + lc::drive::FallWatch::kGuardSeconds + 0.05f && out.protect) {
+				protectAfterGuard = true;
+			}
+		}
+		void Rest(float a_z, float a_seconds, bool a_water = false)
+		{
+			for (float s = 0.0f; s < a_seconds; s += kDt) {
+				Step(a_z, true, a_water);
+			}
+		}
+		// Thrown up at a_vUp (m/s) from a_z0, falling under gravity to a_ground; then at rest.
+		void Fly(float a_z0, float a_vUp, float a_ground, bool a_water = false)
+		{
+			float z = a_z0, v = a_vUp;
+			for (;;) {
+				v -= 9.8f * kDt;
+				z += v * kDt;
+				if (z <= a_ground) {
+					break;
+				}
+				const auto before = protectedFrames;
+				Step(z);
+				protectAtImpact = protectedFrames > before;  // the last frame in the air
+			}
+			Rest(a_ground, 1.5f, a_water);
+		}
+	};
+}
+
+static void TestFalls()
+{
+	using lc::drive::FallWatch;
+	{
+		// Knocked off a 30 m roof: protected before the landing, one fall of 30 m, protection over 0.5 s later.
+		FallRun r;
+		r.Rest(30.0f, 0.5f);
+		CHECK(r.protectedFrames == 0);
+		r.Fly(30.0f, 0.0f, 0.0f);
+		CHECK(r.protectAtImpact);
+		CHECK(r.reports == 1 && std::fabs(r.landed - 30.0f) < 0.3f);
+		CHECK(!r.protectAfterGuard);
+	}
+	{
+		// Thrown up about 3 m off a 7 m ledge, then down to the street: counted from the top (about 10 m).
+		FallRun r;
+		r.Rest(7.0f, 0.5f);
+		r.Fly(7.0f, 7.7f, 0.0f);
+		CHECK(r.reports == 1 && std::fabs(r.landed - 10.0f) < 0.6f);
+	}
+	{
+		// Tumbling down a slope at 2 m/s for 5 s: not a fall.
+		FallRun r;
+		float z = 20.0f;
+		for (float s = 0.0f; s < 5.0f; s += FallRun::kDt) {
+			z -= 2.0f * FallRun::kDt;
+			r.Step(z);
+		}
+		r.Rest(z, 1.0f);
+		CHECK(r.reports == 0 && r.protectedFrames == 0);
+	}
+	{
+		// Into water from 30 m: protected, but no fall for Minecraft.
+		FallRun r;
+		r.Rest(30.0f, 0.5f);
+		r.Fly(30.0f, 0.0f, 0.0f, true);
+		CHECK(r.protectAtImpact && r.reports == 0);
+	}
+	{
+		// A step down of half a metre: nothing.
+		FallRun r;
+		r.Rest(1.0f, 0.5f);
+		r.Fly(1.0f, 0.0f, 0.5f);
+		CHECK(r.reports == 0);
+	}
+	{
+		// The game warps him 50 m down (a resync): not a fall.
+		FallRun r;
+		r.Rest(60.0f, 0.5f);
+		r.Rest(10.0f, 1.0f);
+		CHECK(r.reports == 0 && r.protectedFrames == 0);
+	}
+	{
+		// Lifted 30 m in one frame (DebugHighFall), then falling: the fall counts from where he was put.
+		FallRun r;
+		r.Rest(5.0f, 0.5f);
+		r.Step(35.0f);
+		r.Fly(35.0f, 0.0f, 5.0f);
+		CHECK(r.reports == 1 && std::fabs(r.landed - 30.0f) < 0.3f);
+	}
+	{
+		// Half way down GTA lets go (puppet mode, a car): the fall is forgotten, nothing on the ground later.
+		FallRun r;
+		r.Rest(30.0f, 0.5f);
+		float z = 30.0f, v = 0.0f;
+		for (int i = 0; i < 90; ++i) {
+			v -= 9.8f * FallRun::kDt;
+			z += v * FallRun::kDt;
+			r.Step(z);
+		}
+		r.Step(z, false);
+		r.Rest(0.0f, 1.0f);
+		CHECK(r.reports == 0);
+	}
+}
+
 int main()
 {
 	TestDefaultMinecraftMode();
@@ -630,6 +757,7 @@ int main()
 	TestRotorStrike();
 	TestBlows();
 	TestPropHits();
+	TestFalls();
 	if (failures) {
 		std::fprintf(stderr, "drive_test: %d failure(s)\n", failures);
 		return EXIT_FAILURE;

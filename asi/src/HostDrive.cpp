@@ -5,8 +5,10 @@
 #define LC_MODULE "drive"
 #include "HostDrive.h"
 
+#include "Combat.h"
 #include "Config.h"
 #include "DriveLogic.h"
+#include "drive/FallWatch.h"
 #include "Game.h"
 #include "Log.h"
 #include "NikoBody.h"
@@ -207,6 +209,7 @@ namespace lc::HostDrive
 			float    gx = 0.0f, gy = 0.0f, force = 0.0f, wait = 0.0f, up = 0.3f;
 			int      ms = 0;
 			bool     rotors = false;  // a spinning rotor is near: GTA's own would chop him as he falls
+			float    lift = 0.0f;     // DebugHighFall: metres he is lifted before the ragdoll
 			KnockWay way = KnockWay::kClear;
 			char     what[96] = "";
 		};
@@ -223,6 +226,11 @@ namespace lc::HostDrive
 		KnockWay nextWay = KnockWay::kClear;  // DebugVehicleHit: how the test vehicle's knockdown is dealt
 		int      nextWayVehicle = 0;
 		float rotorProof = 0.0f;  // > 0: Niko is invincible this many seconds more (falling out of a rotor's reach)
+		// Falls while GTA has Niko in Minecraft mode (drive/FallWatch.h): GTA's landing from a height kills him
+		// outright, past Combat's buffer (DebugHighFall 30 m: 999 of 1000 health the frame before GTA's wasted
+		// flow). He falls invincible, and the drop goes to Minecraft as a Minecraft fall (kHurtFall).
+		drive::FallWatch fallWatch;
+		bool             fallProof = false;  // SET_CHAR_INVINCIBLE is on for a fall
 		float afterKnock = 0.0f;  // > 0: watching Niko this long after a knockdown's release
 		const char* roadRequest = nullptr;  // DebugRequestRoad
 		int   knockdowns = 0;  // for DriveLogic, this frame
@@ -232,7 +240,9 @@ namespace lc::HostDrive
 		bool  jackSeen = false;   // a ped is trying to drag him out (logged once per attempt)
 		char  uprightWhy[96] = "";  // the standing check's parts (logged when a recovery runs out of time)
 		float recoverClock = 0.0f;
-		// DebugBailOut / DebugRunOver
+		// DebugBailOut / DebugRunOver / DebugHighFall
+		float debugHighFallT = 0.0f;
+		bool  debugHighFallDone = false;
 		float debugBailT = 0.0f;
 		bool  debugBailed = false;
 		float debugRunT = 0.0f;
@@ -305,6 +315,7 @@ namespace lc::HostDrive
 			knock.force = std::min(a_force, hit::ForceForThrow(hit::kMaxThrowSpeed));
 			knock.up = a_up;
 			knock.rotors = false;
+			knock.lift = 0.0f;
 			knock.ms = a_ms;
 			knock.wait = 0.0f;
 			knock.way = KnockWay::kClear;
@@ -889,6 +900,61 @@ namespace lc::HostDrive
 		}
 
 		bool StartRelocation(int a_ped, const char* a_who, int a_interior, float a_aboveGround);
+
+		// Falls while GTA moves Niko on foot and Minecraft owns his health (Minecraft mode: knocked over, bailing
+		// out, getting back up; not Niko mode, where GTA owns it). See fallWatch.
+		void FallTick(const Frame& a_f)
+		{
+			const bool watch = Combat::HoldsPlayerHealth() && logic.mode() == drive::Mode::kMinecraft && a_f.exists && !a_f.dead && !a_f.puppeting && !a_f.inCar;
+			float      x = 0.0f, y = 0.0f, z = 0.0f;
+			bool       water = false;
+			if (watch) {
+				S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
+				water = S::IS_CHAR_IN_WATER(a_f.ped);
+			}
+			const auto fall = fallWatch.Tick(watch, a_f.dt, z, water);
+			if (fall.started) {
+				LC_LOG("fall while GTA has Niko: from z %.1f (now %.1f, ragdoll %d), invincible until he has landed", fallWatch.top(), z,
+					S::IS_PED_RAGDOLL(a_f.ped) ? 1 : 0);
+			}
+			if (fall.landed > 0.0f) {
+				Game::ReportHurt(static_cast<std::uint16_t>(proto::kHurtOther), fall.landed, 0u, proto::kHurtFall);
+				LC_LOG("fall while GTA had Niko: %.1f m (landed at z %.1f%s), kept alive; to Minecraft as a Minecraft fall", fall.landed, z,
+					water ? ", in water" : "");
+			}
+			if (fall.protect && !fallProof && watch) {
+				S::SET_CHAR_INVINCIBLE(a_f.ped, true);
+				fallProof = true;
+			} else if (!fall.protect && fallProof) {
+				if (a_f.exists && !a_f.puppeting && rotorProof <= 0.0f) {
+					S::SET_CHAR_INVINCIBLE(a_f.ped, false);  // (puppet mode sets its own)
+				}
+				fallProof = false;
+				LC_LOG("fall: Niko can be hurt by GTA again");
+			}
+		}
+
+		// DebugHighFall: after 12 s of puppeting outdoors in Minecraft mode, Niko is lifted and knocked over
+		// with no push, once: he falls DebugHighFall metres in GTA's physics while GTA has him.
+		void DebugHighFallTick(const Frame& a_f)
+		{
+			if (Cfg().debugHighFall <= 0.0f || debugHighFallDone || !a_f.exists || a_f.dead) {
+				return;
+			}
+			int interior = 0;
+			S::GET_INTERIOR_FROM_CHAR(a_f.ped, &interior);
+			if (!a_f.puppeting || a_f.inCar || interior != 0 || logic.mode() != drive::Mode::kMinecraft || knock.pending) {
+				debugHighFallT = 0.0f;
+				return;
+			}
+			if ((debugHighFallT += a_f.dt) < 12.0f) {
+				return;
+			}
+			debugHighFallDone = true;
+			StartKnock(0.0f, 0.0f, 0.0f, 3000, "DebugHighFall", 0.0f);
+			knock.lift = Cfg().debugHighFall;
+			LC_LOG("DebugHighFall: Niko goes %.0f m up and falls (GTA has him)", Cfg().debugHighFall);
+		}
 
 		// DebugRunOver: every 40 s of puppeting (outdoors), a test car 15 m up the road drives at the player.
 		void DebugRunOverTick(const Frame& a_f)
@@ -1700,6 +1766,7 @@ namespace lc::HostDrive
 			}
 		}
 		WalkTestTick(a_f);
+		DebugHighFallTick(a_f);
 		if (active && DebugBailOutTick(a_f)) {
 			exitNow = true;
 			debugExitCheckT = 0.0f;
@@ -1835,7 +1902,17 @@ namespace lc::HostDrive
 					rotorProof = 1.0f;
 				}
 				afterKnock = 1.5f;
-				if (knock.way == KnockWay::kGtaHit) {
+				const bool lifting = knock.lift > 0.0f;
+				if (lifting) {
+					// DebugHighFall: lifted this frame, ragdolled the next (switched in the frame he is moved, the
+					// ragdoll doesn't take: he fell upright in GTA's falling animation).
+					float x = 0.0f, y = 0.0f, z = 0.0f;
+					S::GET_CHAR_COORDINATES(a_f.ped, &x, &y, &z);
+					S::SET_CHAR_COORDINATES_NO_OFFSET(a_f.ped, x, y, z + knock.lift);
+					LC_LOG("knocked over (%s): Niko lifted %.0f m first (GTA %.1f %.1f %.1f -> z %.1f)", knock.what, knock.lift, x, y, z, z + knock.lift);
+					knock.lift = 0.0f;
+					knock.wait = 0.0f;
+				} else if (knock.way == KnockWay::kGtaHit) {
 					LC_LOG("knocked over (%s): Niko left standing in the vehicle's way (GTA's own hit)", knock.what);
 				} else {
 					S::SWITCH_PED_TO_RAGDOLL(a_f.ped, knock.ms, knock.ms, false, false, false, false);
@@ -1844,15 +1921,16 @@ namespace lc::HostDrive
 					LC_LOG("knocked over (%s): Niko ragdolled for %d ms, pushed %.2f %.2f x %.1f (up %.1f)", knock.what, knock.ms, knock.gx, knock.gy, knock.force,
 						knock.force * knock.up);
 				}
-				knock.pending = false;
+				knock.pending = lifting;  // (lifted: the ragdoll next frame)
 			} else if (knock.wait > 1.0f) {
 				LC_LOG("knockdown dropped (%s): Niko wasn't free to fall within 1 s", knock.what);
 				knock.pending = false;
 			}
 		}
 		TraceTick(a_f, out.recovered);
+		FallTick(a_f);
 		if (rotorProof > 0.0f && (rotorProof -= a_f.dt) <= 0.0f) {
-			if (a_f.exists && !a_f.puppeting) {
+			if (a_f.exists && !a_f.puppeting && !fallProof) {
 				S::SET_CHAR_INVINCIBLE(a_f.ped, false);  // (puppet mode sets its own)
 			}
 			LC_LOG("knockdown: Niko can be hurt by GTA again (out of the rotor's reach)");

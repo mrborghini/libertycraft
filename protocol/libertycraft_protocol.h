@@ -349,6 +349,10 @@ namespace libertycraft::proto
 		// from the player toward what hurt it (an attacker, a car, a blast), so Minecraft can place the
 		// damage source there: a shield blocks what comes from in front.
 		kHurtHasDirection = 1u << 2,
+		// LibertyCraft addition (a flag bit only): the player fell while the host moved him (knocked over,
+		// bailing out of a vehicle). The hurt's amount (InputEvent a / 100) is the fall in metres (blocks),
+		// not host damage: Minecraft applies its own fall damage (Feather Falling, Protection, creative).
+		kHurtFall = 1u << 3,
 	};
 	inline constexpr std::uint32_t kHurtDirectionShift = 16;
 

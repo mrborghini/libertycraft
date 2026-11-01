@@ -253,6 +253,10 @@ namespace lc
 		// bails out of it; a test car is driven into the puppeted player every 40 s.
 		bool debugBailOut = false;
 		bool debugRunOver = false;
+		// Test hook (not in the default ini): after 12 s of puppeting outdoors (DebugWarpOutdoors gets him
+		// there), Niko is lifted this many metres and knocked over with no push, once: a fall in GTA's
+		// physics while GTA has him (HostDrive.cpp DebugHighFallTick).
+		float debugHighFall = 0.0f;
 		// Test hook (not in the default ini): vehicles of each kind run into the puppeted player in turn, a
 		// comma list of heli (flies at him), drop (comes down on him), rotor (its rotor reaches him: stand
 		// him on something first), bike, car. HostDrive.cpp DebugVehicleHitTick.
