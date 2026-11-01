@@ -24,7 +24,9 @@
 // has kept still for two scans, and becomes oriented boxes. A column's objects go into its
 // regions' kColTris / kColRegion with the map's; when they change (an object streamed in or out,
 // was knocked over, the player stands inside one) the regions they touch are sent again. Objects
-// that moved are not solid until they keep still and have been probed again. Object probes share
+// that moved are not solid until they keep still and have been probed again. Sliding doors (Doors.h) are
+// solid too, not probed (GTA's line probes see little of their glass) but their model box, rebuilt
+// wherever GTA slides them, so the glass blocks the player until it has slid out of the way. Object probes share
 // the 2.5 ms a frame (0.8 ms of it is theirs while columns are busy) and are logged separately.
 #pragma once
 
@@ -64,7 +66,8 @@ namespace lc
 			std::size_t   count;
 			bool          passable;  // left out of Minecraft's collision (SetObjectPassable)
 		};
-		// Each tracked object Minecraft collides with (solid, probed, keeping still).
+		// Each tracked object Minecraft collides with (solid, probed, keeping still); not sliding doors, which
+		// open for the player and aren't props to knock over.
 		void ForEachSolidObject(const std::function<void(const ObjectView&)>& a_visit) const;
 		// Leaves an object out of the collision Minecraft gets (or puts it back), at once: the regions it
 		// touches are sent again. It goes back by itself once it has moved (knocked over) and keeps still.

@@ -4,6 +4,7 @@
 #undef LC_MODULE
 #define LC_MODULE "collision"
 #include "Collision.h"
+#include "Doors.h"
 
 #include "Link.h"
 #include "Log.h"
@@ -97,6 +98,8 @@ namespace lc
 			bool                                         movedOnce = false;  // moved since first seen (knocked over): holds nothing back
 			bool                                         inside = false;     // the player is inside it: not solid for now
 			bool                                         passable = false;   // PropSmash: about to be run through (not solid until it moves)
+			// A sliding door (Doors::IsSlidingModel): solid, its model box where GTA has it (SlidingDoorShape).
+			bool                                         sliding = false;
 			Clock::time_point                            firstSeen{};
 			float                                        lo[3]{}, hi[3]{};   // MC bounds of the grown model box
 			std::shared_ptr<const std::vector<col::Tri>> tris;               // null: not probed (yet), or moving
@@ -147,7 +150,7 @@ namespace lc
 			std::uint32_t maxRaysFrame = 0;
 			// objects
 			double        objMs = 0.0, objMaxMs = 0.0, scanMs = 0.0;
-			std::uint32_t scans = 0, objProbed = 0, objCells = 0, objEmpty = 0, objBoxes = 0, objMoved = 0, objAborted = 0, objColumns = 0, objMaxRays = 0;
+			std::uint32_t scans = 0, objProbed = 0, objCells = 0, objEmpty = 0, objBoxes = 0, objMoved = 0, objSlid = 0, objAborted = 0, objColumns = 0, objMaxRays = 0;
 		} perf;
 
 		std::uint64_t Key2(int a_x, int a_z) { return (std::uint64_t(std::uint32_t(a_x)) << 32) | std::uint32_t(a_z); }
@@ -288,6 +291,35 @@ namespace lc
 			}
 		}
 
+		// A sliding door's shape: its model box where it stands (Describe's a_t.box), as one oriented box.
+		// GTA's line probes see little of these doors (the hospital's: one box 5 cm tall at the bottom, or
+		// none), while the model box is the leaf itself (1.6 x 0.16 x 2.7 m). Rebuilt as GTA slides it.
+		void SlidingDoorShape(TrackedObject& a_t, const void* a_key)
+		{
+			const auto& bx = a_t.box;
+			col::OBox   b{};
+			float       ul = std::sqrt(bx.axes[0][0] * bx.axes[0][0] + bx.axes[0][2] * bx.axes[0][2]);
+			ul = ul > 1e-4f ? ul : 1.0f;
+			b.o[0] = bx.o[0];
+			b.o[1] = bx.o[2];
+			b.u[0] = bx.axes[0][0] / ul;
+			b.u[1] = bx.axes[0][2] / ul;
+			b.v[0] = -b.u[1];
+			b.v[1] = b.u[0];
+			b.a0 = bx.lo[0];
+			b.a1 = bx.hi[0];
+			const float across = bx.axes[1][0] * b.v[0] + bx.axes[1][2] * b.v[1];  // its local y along v: +1 or -1 (upright)
+			b.b0 = across >= 0.0f ? bx.lo[1] : -bx.hi[1];
+			b.b1 = across >= 0.0f ? bx.hi[1] : -bx.lo[1];
+			b.y0 = bx.o[1] + bx.lo[2];
+			b.y1 = bx.o[1] + bx.hi[2];
+			a_t.boxes.assign(1, b);
+			auto tris = std::make_shared<std::vector<col::Tri>>();
+			col::BoxTris(a_t.boxes, *tris);
+			a_t.hash = col::TrisHash(*tris) ^ static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(a_key));
+			a_t.tris = std::move(tris);
+		}
+
 		bool Moved(const float* a_was, const float* a_now)
 		{
 			for (int k = 0; k < 9; ++k) {
@@ -301,6 +333,22 @@ namespace lc
 				}
 			}
 			return false;
+		}
+
+		// A sliding door is solid (Doors: GTA slides it open as Niko comes near; passable, it let the player
+		// run through the shut glass). Its shape is probed once it keeps still, then follows its slide.
+		std::vector<std::int32_t> slidingLogged;
+		void MakeSlidingDoor(TrackedObject& a_t, const void* a_key)
+		{
+			a_t.cls = col::ObjClass::kSolid;
+			a_t.sliding = true;
+			SlidingDoorShape(a_t, a_key);
+			if (std::find(slidingLogged.begin(), slidingLogged.end(), a_t.model) == slidingLogged.end() && slidingLogged.size() < 50) {
+				slidingLogged.push_back(a_t.model);
+				const auto& b = a_t.boxes.front();
+				LC_LOG("objects: sliding door model %d hash 0x%08X: solid, its model box (%.2f..%.2f x %.2f..%.2f, y %.2f..%.2f) following its slide", a_t.model,
+					a_t.hashKey, b.a0, b.a1, b.b0, b.b1, b.y0, b.y1);
+			}
 		}
 
 		// Pose and bounds from the object's matrix and model; first sight: what kind of object.
@@ -320,6 +368,9 @@ namespace lc
 			}
 			a_t.hashKey = mi->m_nHash;
 			a_t.cls = col::Classify(a_t.box);
+			if (a_t.cls == col::ObjClass::kDoor && Doors::IsSlidingModel(a_t.hashKey)) {
+				MakeSlidingDoor(a_t, a_obj);
+			}
 			const auto type = mi->GetModelType();
 			if (type == MI_TYPE_WEAPON || type == MI_TYPE_VEHICLE || type == MI_TYPE_PED) {
 				a_t.skip = type == MI_TYPE_WEAPON ? "weapon/pickup model" : "vehicle/ped part";
@@ -449,6 +500,15 @@ namespace lc
 					std::memcpy(t.m, m, sizeof(m));
 					t.firstSeen = now;
 					Describe(t, obj, true);
+				} else if (t.sliding && !obj->m_pAttachedToEntity) {
+					// a sliding door: its model box goes where GTA slides it, solid all the way (never probed)
+					if (Moved(t.m, m)) {
+						std::memcpy(t.m, m, sizeof(m));
+						Describe(t, obj, false);
+						SlidingDoorShape(t, obj);
+						++perf.objSlid;
+					}
+					++t.still;
 				} else if (Moved(t.m, m) || (obj->m_pAttachedToEntity && !t.skip)) {
 					std::memcpy(t.m, m, sizeof(m));
 					Describe(t, obj, false);
@@ -467,6 +527,9 @@ namespace lc
 					++t.still;
 				}
 				t.seen = objScanNo;
+				if (t.cls == col::ObjClass::kDoor && !t.skip && Doors::IsSlidingModel(t.hashKey)) {
+					MakeSlidingDoor(t, obj);  // (its model was seen sliding since)
+				}
 				if (obj->m_pAttachedToEntity) {
 					t.still = 0;  // held by a ped or hanging off a car: not until it's let go and still
 				}
@@ -476,6 +539,9 @@ namespace lc
 						inside = true;
 						break;
 					}
+				}
+				if (t.sliding && inside != t.inside) {
+					LC_LOG("objects: sliding door 0x%08X: the player is %s it (%s solid)", t.hashKey, inside ? "inside" : "out of", inside ? "not" : "");
 				}
 				t.inside = inside;
 			}
@@ -620,10 +686,10 @@ namespace lc
 			const auto& r = col::objectRays;
 			LC_LOG("collision objects %.0fs: %zu tracked: %u solid (%u probed, %u waiting or moving, %u kept outside the area, %u around the player), %u doors, %u tiny, %u huge/bad, %u skipped; "
 				   "probed %u (%u cells, %u boxes, %u empty, max %u rays), %u rays (%u hits: %u on target, %u others skipped, %u unknown), "
-				   "probe time %.1f ms (%.3f ms/frame, max %.2f), %u scans %.3f ms avg, %u column updates, %u moved, %u aborted",
+				   "probe time %.1f ms (%.3f ms/frame, max %.2f), %u scans %.3f ms avg, %u column updates, %u moved, %u sliding door moves followed, %u aborted",
 				a_secs, objects.size(), solid, probed, waiting, outside, inside, doors, tiny, huge, skipped, perf.objProbed, perf.objCells, perf.objBoxes, perf.objEmpty,
 				perf.objMaxRays, r.rays, r.hits, r.target, r.other, r.unknown, perf.objMs, perf.frames ? perf.objMs / perf.frames : 0.0, perf.objMaxMs, perf.scans,
-				perf.scans ? perf.scanMs / perf.scans : 0.0, perf.objColumns, perf.objMoved, perf.objAborted);
+				perf.scans ? perf.scanMs / perf.scans : 0.0, perf.objColumns, perf.objMoved, perf.objSlid, perf.objAborted);
 			col::objectRays = {};
 		}
 
@@ -1019,7 +1085,8 @@ namespace lc
 	void Collision::ForEachSolidObject(const std::function<void(const ObjectView&)>& a_visit) const
 	{
 		for (const auto& [ptr, t] : objects) {
-			if (!Solid(t) || !t.tris || t.boxes.empty()) {
+			// (not sliding doors: they open for the player; PropSmash knocked a sprinted-into one over)
+			if (!Solid(t) || !t.tris || t.boxes.empty() || t.sliding) {
 				continue;
 			}
 			a_visit(ObjectView{ ptr, t.model, t.hashKey, t.boxes.data(), t.boxes.size(), t.passable });

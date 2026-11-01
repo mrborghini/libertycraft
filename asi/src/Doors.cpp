@@ -356,10 +356,12 @@ namespace lc::Doors
 			if (a_d.sliding) {
 				if (Config::Get().diagnostics && dist < LeafLength(a_d) + 1.5f && (a_d.diagT -= a_dt) <= 0.0f) {
 					a_d.diagT = 0.25f;
-					const auto& o = a_obj->m_pMatrix->pos;
-					const float mx = o.x - a_d.shut[9], my = o.y - a_d.shut[10];
-					LC_LOG("door 0x%08X (sliding) near: player %.2f m from where its origin stood shut, slid %.2f m, turned %.1f deg, puppeting %d", a_d.modelHash, dist,
-						std::sqrt(mx * mx + my * my), turned, a_puppeting);
+					const auto&  o = a_obj->m_pMatrix->pos;
+					const float  mx = o.x - a_d.shut[9], my = o.y - a_d.shut[10];
+					const float* across = a_d.wide == 0 ? a_d.shut + 3 : a_d.shut;  // the leaf's other horizontal axis
+					LC_LOG("door 0x%08X (sliding) near: player %.2f m from where its origin stood shut, %+.2f m across its plane, slid %.2f m, turned %.1f deg, "
+						   "puppeting %d",
+						a_d.modelHash, dist, px * across[0] + py * across[1], std::sqrt(mx * mx + my * my), turned, a_puppeting);
 				}
 				if (a_d.pushing) {
 					if (a_d.way == kSpin) {
@@ -463,6 +465,8 @@ namespace lc::Doors
 			Trace(a_d, turned, need, dist, a_dt);
 		}
 	}
+
+	bool IsSlidingModel(std::uint32_t a_hash) { return SlidingModel(a_hash); }
 
 	void Tick(const Frame& a_frame)
 	{

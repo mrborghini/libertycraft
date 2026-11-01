@@ -46,6 +46,10 @@ namespace lc::Doors
 	// Game thread, once a frame (Game::Tick).
 	void Tick(const Frame& a_frame);
 
+	// A sliding door's model (the hospitals' main doors, or seen sliding this session). Collision makes
+	// them solid, their shape following the slide. Game thread.
+	bool IsSlidingModel(std::uint32_t a_hash);
+
 	// ---- push geometry (plan view, radians, relative to the hinge) --------------------------------
 
 	inline float WrapPi(float a_r)
