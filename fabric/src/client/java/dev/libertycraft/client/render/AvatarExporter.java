@@ -17,6 +17,7 @@ import dev.libertycraft.world.HostDrive;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -94,6 +95,8 @@ final class AvatarExporter implements SubmitNodeCollector {
 	private static final Direction[] FACES_AND_NONE = { null, Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST };
 	private static final double SCENE_RANGE = 64.0;
 	private static final int SCENE_MAX_ENTITIES = 48;
+	// Dropped and thrown items and XP orbs: their own budget, so a pile of drops can't push mobs out.
+	private static final int SCENE_MAX_SMALL = 128;
 	private static final double BLOCK_ENTITY_RANGE = 48.0;
 	private static final int SCENE_MAX_BLOCK_ENTITIES = 256;
 	private static boolean warnedBlockEntity;
@@ -407,16 +410,23 @@ final class AvatarExporter implements SubmitNodeCollector {
 		dispatcher.prepare(camera, minecraft.crosshairPickEntity);
 		CameraRenderState cameraState = minecraft.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
 		PoseStack pose = new PoseStack();
-		int entities = 0;
+		int entities = 0, small = 0;
 		// The mount the player rides while GTA IV drives a car is hidden unless showVehicleMount=true.
 		Entity hiddenMount = HostDriveClient.riding(player) && !HostDrive.showVehicleMount() ? player.getVehicle() : null;
 		for (Entity e : level.entitiesForRendering()) {
-			if (e == player || e == hiddenMount || (!HostDrive.showVehicleMount() && HostDrive.isMount(e)) || e instanceof ItemEntity || e instanceof AbstractArrow || e instanceof ItemSupplier || e instanceof HostActorEntity
+			// Dropped items, thrown ones and XP orbs go through Minecraft's own renderers too: 3D items that
+			// spin and bob, thrown ones turned to the camera, orbs (submitCustomGeometry).
+			boolean little = e instanceof ItemEntity || e instanceof ItemSupplier || e instanceof net.minecraft.world.entity.ExperienceOrb;
+			if (e == player || e == hiddenMount || (!HostDrive.showVehicleMount() && HostDrive.isMount(e)) || e instanceof AbstractArrow || e instanceof HostActorEntity
 				|| (dev.libertycraft.client.GtaMenuPause.scene() && e instanceof net.minecraft.world.entity.monster.Enemy)  // (a GTA IV cutscene: no monsters in it)
-				|| e.distanceToSqr(cam) > SCENE_RANGE * SCENE_RANGE || entities >= SCENE_MAX_ENTITIES) {
+				|| e.distanceToSqr(cam) > SCENE_RANGE * SCENE_RANGE || (little ? small >= SCENE_MAX_SMALL : entities >= SCENE_MAX_ENTITIES)) {
 				continue;
 			}
-			entities++;
+			if (little) {
+				small++;
+			} else {
+				entities++;
+			}
 			try {
 				EntityRenderState state = dispatcher.extractEntity(e, partialTick);
 				dispatcher.submit(state, cameraState, state.x - origin[0], state.y - origin[1], state.z - origin[2], pose, this);
@@ -526,7 +536,7 @@ final class AvatarExporter implements SubmitNodeCollector {
 		int first = 0;
 		for (Batch b : used) {
 			int count = b.count / 4 * 6;
-			header.putInt(b.texture).putInt(first).putInt(count).putInt(b.translucent ? 1 : 0);
+			header.putInt(b.texture).putInt(first).putInt(count).putInt((b.translucent ? 1 : 0) | (b.billboard ? Proto.BATCH_BILLBOARD : 0));
 			b.writeTriangles(body);
 			first += count;
 		}
@@ -564,8 +574,13 @@ final class AvatarExporter implements SubmitNodeCollector {
 	// ---- batches ---------------------------------------------------------------------------------
 
 	private Batch batch(int texture, int uvMode, int flags) {
-		long key = ((long) texture << 16) | ((long) uvMode << 8) | flags;
-		return this.batches.computeIfAbsent(key, k -> new Batch(texture, uvMode, flags));
+		return this.batch(texture, uvMode, flags, false);
+	}
+
+	/** {@code billboard}: particles laid out in the camera's plane, which GTA IV turns to its own camera (Proto.BATCH_BILLBOARD). */
+	private Batch batch(int texture, int uvMode, int flags, boolean billboard) {
+		long key = ((long) texture << 17) | (billboard ? 1L << 16 : 0L) | ((long) uvMode << 8) | flags;
+		return this.batches.computeIfAbsent(key, k -> new Batch(texture, uvMode, flags, billboard));
 	}
 
 	/** Triangles for one texture and one kind of surface. Vertices arrive as quads. */
@@ -574,15 +589,17 @@ final class AvatarExporter implements SubmitNodeCollector {
 		final int uvMode;
 		final int flags;
 		final boolean translucent;
+		final boolean billboard;
 		int[] data = new int[8 * 256];
 		int[] tags = new int[256];  // per vertex, ragdoll export only: the part (TAG_*)
 		int count;
 
-		Batch(int texture, int uvMode, int flags) {
+		Batch(int texture, int uvMode, int flags, boolean billboard) {
 			this.texture = texture;
 			this.uvMode = uvMode;
 			this.flags = flags;
 			this.translucent = (flags & 2) != 0;
+			this.billboard = billboard;
 		}
 
 		void clear() {
@@ -646,10 +663,30 @@ final class AvatarExporter implements SubmitNodeCollector {
 		private boolean pending;
 		private float x, y, z, u, v;
 		private int color, light, overlay;
+		// Particles: quad i goes to facing if bit i is set (it faces the camera), else to fixed.
+		private @Nullable BitSet route;
+		private Batch facing, fixed;
+		private int routed;
 
 		void begin(Batch b) {
 			this.flush();
 			this.batch = b;
+			this.route = null;
+		}
+
+		/** Particles four vertices a quad, each quad to {@code facing} or {@code fixed} by its bit in {@code route}. */
+		void beginRouted(BitSet route, Batch facing, Batch fixed) {
+			this.flush();
+			this.route = route;
+			this.facing = facing;
+			this.fixed = fixed;
+			this.routed = 0;
+			this.batch = fixed;
+		}
+
+		void endRouted() {
+			this.flush();
+			this.route = null;
 		}
 
 		void flush() {
@@ -662,6 +699,9 @@ final class AvatarExporter implements SubmitNodeCollector {
 		@Override
 		public VertexConsumer addVertex(float x, float y, float z) {
 			this.flush();
+			if (this.route != null && (this.routed++ & 3) == 0) {
+				this.batch = this.route.get((this.routed - 1) >> 2) ? this.facing : this.fixed;
+			}
 			this.x = x;
 			this.y = y;
 			this.z = z;
@@ -988,28 +1028,39 @@ final class AvatarExporter implements SubmitNodeCollector {
 		}, 0.0F, 0.0F, 0.0F, state, state.blockPos, state.blockState, model, state.blockState.getSeed(state.randomSeedPos));
 	}
 
-	/** Particles: smoke, explosions, block debris, crits, ... in their atlas (particles, blocks or items). */
+	/**
+	 * Particles: smoke, explosions, block debris, crits, ... in their atlas (particles, blocks or items).
+	 * Those that face the camera come laid out in its plane (ParticleFacing) and go in billboard batches:
+	 * GTA IV turns them to its own camera every frame. The others (a shriek's flat rings) stay as they are.
+	 */
 	@Override
 	public void submitQuadParticleGroup(QuadParticleRenderState particles) {
 		this.capture.flush();
 		for (var layer : particles.layers()) {
 			Identifier texture = layer.textureAtlasLocation();
 			int flags = layer.translucent() ? PARTICLE_BLENDED : PARTICLE;
-			Batch batch;
+			int id, uvMode;
 			if (texture.equals(TextureAtlas.LOCATION_BLOCKS)) {
-				batch = this.batch(0, UV_BLOCK_ATLAS, flags);
+				id = 0;
+				uvMode = UV_BLOCK_ATLAS;
 			} else if (texture.equals(TextureAtlas.LOCATION_ITEMS)) {
-				batch = this.batch(0, UV_ITEM_ATLAS, flags);
+				id = 0;
+				uvMode = UV_ITEM_ATLAS;
 			} else {
-				int id = textureId(texture);
+				id = textureId(texture);
+				uvMode = UV_RAW;
 				if (id < 0) {
 					continue;
 				}
-				batch = this.batch(id, UV_RAW, flags);
 			}
-			this.capture.begin(batch);
+			BitSet facing = ParticleFacing.of(particles, layer);
+			if (facing != null && !facing.isEmpty()) {
+				this.capture.beginRouted(facing, this.batch(id, uvMode, flags, true), this.batch(id, uvMode, flags));
+			} else {
+				this.capture.begin(this.batch(id, uvMode, flags));
+			}
 			particles.buildLayer(layer, this.capture);
-			this.capture.flush();
+			this.capture.endRouted();
 		}
 	}
 
@@ -1092,6 +1143,23 @@ final class AvatarExporter implements SubmitNodeCollector {
 
 	@Override
 	public void submitCustomGeometry(PoseStack poseStack, RenderType renderType, SubmitNodeCollector.CustomGeometryRenderer customGeometryRenderer) {
+		// Quads Minecraft draws by hand: XP orbs, a guardian's beam. Lines (a fishing line) and untextured
+		// geometry (lightning) are left out.
+		if (renderType.primitiveTopology() != com.mojang.renderpearl.api.pipeline.PrimitiveTopology.QUADS) {
+			return;
+		}
+		Batch batch = this.batchFor(renderType);
+		if (batch == null) {
+			return;
+		}
+		this.beginFree();
+		try {
+			this.capture.begin(batch);
+			customGeometryRenderer.render(poseStack.last(), this.capture);
+			this.capture.flush();
+		} finally {
+			this.endFree();
+		}
 	}
 
 	@Override

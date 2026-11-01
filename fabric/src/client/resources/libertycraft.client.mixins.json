@@ -20,6 +20,8 @@
     "MinecraftDigMixin",
     "MinecraftMixin",
     "MinecraftUseMixin",
+    "QuadParticleGroupMixin",
+    "QuadParticleRenderStateMixin",
     "RenderSetupAccessor",
     "RenderTypeAccessor",
     "ScreenMixin",

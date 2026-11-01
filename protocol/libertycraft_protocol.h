@@ -730,6 +730,11 @@ namespace libertycraft::proto
 	// LibertyCraft addition (a flag bit only): a cape or an elytra (on the body part). It hangs down the
 	// back past the hips, so a host posing the body seated hides it (it came out under a car's floor).
 	inline constexpr std::uint32_t kRagdollBack = 1u << 13;
+	// LibertyCraft addition (a flag bit only): a kRenScene batch of particles, each quad (6 vertices,
+	// triangles 0,1,2 and 0,2,3) laid out in its camera's plane: corners = centre + (x, y, 0), x right,
+	// y up, with the particle's roll already applied. The host turns every quad to face its own camera
+	// each frame (centre + x * right + y * up), so particles follow the camera that draws them.
+	inline constexpr std::uint32_t kBatchBillboard = 1u << 16;
 
 	struct RenLights
 	{

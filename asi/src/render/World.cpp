@@ -59,6 +59,7 @@ namespace lc::render
 		std::unordered_map<std::uint64_t, Section>            sections;
 		std::unordered_map<std::uint32_t, IDirect3DTexture9*> entityTextures;
 		Mesh                                                  avatar, scene, sceneRest, sceneMount;
+		Mesh                                                  sceneFacing;  // scene with its particles turned to this frame's camera
 		Mesh                                                  ragdoll, posedBody;  // kRenRagdoll as sent; posed on GTA's skeleton
 		std::atomic<bool>                                     bodyReady{ false };
 		std::uint32_t                                         ragdollMessages = 0;
@@ -580,7 +581,8 @@ namespace lc::render
 					OnMesh(avatar, a_data, a_bytes, false);
 					break;
 				case proto::kRenScene:
-					OnMesh(scene, a_data, a_bytes, true);
+					OnMesh(scene, a_data, a_bytes, true);  // scene.verts stay as received: the particles are turned from them
+					sceneFacing.verts.clear();             // copied whole on the next frame (BillboardQuads)
 					break;
 				case proto::kRenRagdoll:
 					OnRagdoll(a_data, a_bytes);
@@ -631,13 +633,21 @@ namespace lc::render
 			posedBody.origin[2] = o.z;
 			++stats.bodyFrames;
 		}
+		// Minecraft's particles (kBatchBillboard) face GTA's camera of this frame: their quads turned from
+		// the scene as received, the rest of it copied once per scene.
+		const Mesh* sceneNow = &scene;
+		float       camRight[3], camUp[3];
+		if (CameraRightUpFromClip(a_f.clip, camRight, camUp) && BillboardQuads(scene.batches, scene.verts, sceneFacing.verts, camRight, camUp)) {
+			sceneFacing.batches = scene.batches;
+			sceneNow = &sceneFacing;
+		}
 		// In a vehicle the rider is drawn at GTA's seat of this frame (a_f.feet), not where Minecraft
 		// last saw it (a frame or two behind: ~0.8 m at 50 m/s); its mount goes along.
-		const Mesh* sceneMain = &scene;
+		const Mesh* sceneMain = sceneNow;
 		double      mountOrigin[3]{};
 		const bool  mount = a_mountFrom && (a_f.flags & kFrameMountShift) && !scene.batches.empty();
 		if (mount) {
-			SplitMount(scene.batches, scene.verts, scene.origin, a_mountFrom, sceneRest.batches, sceneRest.verts, sceneMount.batches, sceneMount.verts);
+			SplitMount(sceneNow->batches, sceneNow->verts, scene.origin, a_mountFrom, sceneRest.batches, sceneRest.verts, sceneMount.batches, sceneMount.verts);
 			for (int i = 0; i < 3; ++i) {
 				mountOrigin[i] = scene.origin[i] + (a_f.feet[i] - a_mountFrom[i]);
 			}

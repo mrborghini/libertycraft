@@ -799,6 +799,241 @@ static void TestDarken()
 	NEAR(GtaNdl(p, n, l), 0.8 * 4.0 / 3.0 - 1.0 / 3.0, 1e-6);
 }
 
+// ---- particles facing GTA's camera (kBatchBillboard) -------------------------------------------
+static void ToMc(const float a_gta[3], float a_out[3])
+{
+	const McVec m = GtaToMc(a_gta[0], a_gta[1], a_gta[2]);
+	a_out[0] = float(m.x), a_out[1] = float(m.y), a_out[2] = float(m.z);
+}
+
+static float Dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+// A camera at a Minecraft yaw and pitch (degrees, LookBasis) rolled by a_roll degrees about its view
+// direction (right towards up), through ClipFromBasis (TheCamera's path in Render.cpp).
+static Mat4 LookClip(float a_yaw, float a_pitch, float a_roll, GtaBasis& a_b)
+{
+	a_b = LookBasis(a_yaw, a_pitch);
+	const float c = std::cos(a_roll * kDegToRad), s = std::sin(a_roll * kDegToRad);
+	float       r[3], u[3];
+	for (int k = 0; k < 3; ++k) {
+		r[k] = a_b.right[k] * c + a_b.up[k] * s;
+		u[k] = a_b.up[k] * c - a_b.right[k] * s;
+	}
+	std::memcpy(a_b.right, r, sizeof(r));
+	std::memcpy(a_b.up, u, sizeof(u));
+	return ClipFromBasis(a_b.right, a_b.forward, a_b.up, 50.0f * kDegToRad, 16.0f / 9.0f, 0.3f, 1500.0f);
+}
+
+// Clip position of a Minecraft position relative to the camera.
+static void ProjectMc(const Mat4& a_clip, const float a_mc[3], float a_out[4])
+{
+	const GtaVec g = McToGta(a_mc[0], a_mc[1], a_mc[2]);
+	Project(a_clip, float(g.x), float(g.y), float(g.z), a_out);
+}
+
+static void TestBillboardBasis()
+{
+	const float looks[][3] = { { 0, 0, 0 }, { 30, 20, 0 }, { -135, -50, 0 }, { 90, 85, 0 }, { 200, 10, 15 }, { -60, -30, -40 } };
+	for (const auto& l : looks) {
+		GtaBasis   b;
+		const Mat4 clip = LookClip(l[0], l[1], l[2], b);
+		float      r[3], u[3], er[3], eu[3], fwd[3];
+		CHECK(CameraRightUpFromClip(clip.m, r, u));
+		ToMc(b.right, er);
+		ToMc(b.up, eu);
+		ToMc(b.forward, fwd);
+		for (int k = 0; k < 3; ++k) {
+			NEAR(r[k], er[k], 1e-5);
+			NEAR(u[k], eu[k], 1e-5);
+		}
+		NEAR(Dot3(r, r), 1.0, 1e-5);
+		NEAR(Dot3(u, u), 1.0, 1e-5);
+		NEAR(Dot3(r, u), 0.0, 1e-5);
+		// On screen: 10 blocks ahead, a step along right lands right of the centre, along up above it.
+		float p[3], c[4];
+		for (int k = 0; k < 3; ++k) {
+			p[k] = fwd[k] * 10.0f + r[k];
+		}
+		ProjectMc(clip, p, c);
+		CHECK(c[0] / c[3] > 0.05f);
+		NEAR(c[1] / c[3], 0.0, 1e-5);
+		for (int k = 0; k < 3; ++k) {
+			p[k] = fwd[k] * 10.0f + u[k];
+		}
+		ProjectMc(clip, p, c);
+		NEAR(c[0] / c[3], 0.0, 1e-5);
+		CHECK(c[1] / c[3] > 0.05f);
+		// right x up is the camera's back, as Minecraft's camera frame has it (local +z, forward -z).
+		const float back[3] = { r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0] };
+		NEAR(Dot3(back, fwd), -1.0, 1e-5);
+	}
+
+	// GTA's grcViewport path: a RAGE camera (rows right, up, back) looking east, a right-handed
+	// projection (w = -z_view), off centre in x and y.
+	const float rgt[3] = { 0, -1, 0 }, up[3] = { 0, 0, 1 }, back[3] = { -1, 0, 0 };
+	Mat4        view = Identity();  // the camera's rotation transposed: columns right, up, back
+	for (int i = 0; i < 3; ++i) {
+		view.m[i][0] = rgt[i];
+		view.m[i][1] = up[i];
+		view.m[i][2] = back[i];
+	}
+	view.m[3][0] = 120.0f, view.m[3][1] = -40.0f, view.m[3][2] = 7.0f;  // CameraRelativeClip drops it
+	Mat4        proj{};
+	const float n = 0.3f, f = 1500.0f, ys = 1.0f / std::tan(0.4f), xs = ys / 1.5f;
+	proj.m[0][0] = xs;
+	proj.m[1][1] = ys;
+	proj.m[2][0] = 0.1f;
+	proj.m[2][1] = -0.05f;
+	proj.m[2][2] = f / (n - f);
+	proj.m[2][3] = -1.0f;
+	proj.m[3][2] = n * f / (n - f);
+	const Mat4 rel = CameraRelativeClip(view, proj);
+	float      r[3], u[3];
+	CHECK(CameraRightUpFromClip(rel.m, r, u));
+	NEAR(r[0], 0.0, 1e-5);  // GTA south = Minecraft +z
+	NEAR(r[1], 0.0, 1e-5);
+	NEAR(r[2], 1.0, 1e-5);
+	NEAR(u[0], 0.0, 1e-5);
+	NEAR(u[1], 1.0, 1e-5);
+	NEAR(u[2], 0.0, 1e-5);
+
+	float zero[4][4]{};
+	CHECK(!CameraRightUpFromClip(zero, r, u));
+	float nan[4][4]{};
+	std::memcpy(nan, rel.m, sizeof(nan));
+	nan[0][0] = std::nanf("");
+	CHECK(!CameraRightUpFromClip(nan, r, u));
+}
+
+// A particle as Minecraft's camera sees it after the mod's mixin: corners (-1,-1), (-1,1), (1,1),
+// (1,-1) times a_half, rolled by a_roll degrees, in the camera plane (z = the centre's), written as
+// triangles 0 1 2 0 2 3 like AvatarExporter's Batch.writeQuad.
+static void AddParticle(std::vector<Vertex>& a_v, const float a_c[3], float a_half, float a_roll, std::uint32_t a_color)
+{
+	const float cs = std::cos(a_roll * kDegToRad), sn = std::sin(a_roll * kDegToRad);
+	const float loc[4][2] = { { -1, -1 }, { -1, 1 }, { 1, 1 }, { 1, -1 } };
+	const float uv[4][2] = { { 0.25f, 0.5f }, { 0.25f, 0.375f }, { 0.375f, 0.375f }, { 0.375f, 0.5f } };
+	Vertex      q[4];
+	for (int k = 0; k < 4; ++k) {
+		const float x = a_half * (loc[k][0] * cs - loc[k][1] * sn), y = a_half * (loc[k][0] * sn + loc[k][1] * cs);
+		q[k] = Vertex{ a_c[0] + x, a_c[1] + y, a_c[2], uv[k][0], uv[k][1], a_color, 0xF0Fu, std::uint32_t(k) };
+	}
+	for (int k : { 0, 1, 2, 0, 2, 3 }) {
+		a_v.push_back(q[k]);
+	}
+}
+
+static bool SameVertices(const std::vector<Vertex>& a, const std::vector<Vertex>& b, std::size_t a_first, std::size_t a_count)
+{
+	return a.size() >= a_first + a_count && b.size() >= a_first + a_count && std::memcmp(&a[a_first], &b[a_first], a_count * sizeof(Vertex)) == 0;
+}
+
+// The billboard quad at a_first of a_dst, turned from a_src for the camera (r, u, fwd: Minecraft axes):
+// the same centre, its corners in the plane across the view (perpendicular to it), each corner's
+// offset along right and up the one it had along x and y (size and roll kept), and everything but the
+// position as received.
+static void CheckFacing(const std::vector<Vertex>& a_src, const std::vector<Vertex>& a_dst, std::size_t a_first, const float r[3], const float u[3],
+	const float fwd[3])
+{
+	auto centre = [&](const std::vector<Vertex>& v, float c[3]) {
+		const Vertex* q = &v[a_first];
+		c[0] = (q[0].x + q[1].x + q[2].x + q[5].x) * 0.25f;
+		c[1] = (q[0].y + q[1].y + q[2].y + q[5].y) * 0.25f;
+		c[2] = (q[0].z + q[1].z + q[2].z + q[5].z) * 0.25f;
+	};
+	float cs[3], cd[3];
+	centre(a_src, cs);
+	centre(a_dst, cd);
+	for (int k = 0; k < 3; ++k) {
+		NEAR(cd[k], cs[k], 1e-4);
+	}
+	for (std::size_t k = 0; k < 6; ++k) {
+		const Vertex& s = a_src[a_first + k];
+		const Vertex& d = a_dst[a_first + k];
+		const float   o[3] = { d.x - cd[0], d.y - cd[1], d.z - cd[2] };
+		NEAR(Dot3(o, fwd), 0.0, 1e-4);
+		NEAR(Dot3(o, r), s.x - cs[0], 1e-4);
+		NEAR(Dot3(o, u), s.y - cs[1], 1e-4);
+		CHECK(d.u == s.u && d.v == s.v && d.color == s.color && d.light == s.light && d.flags == s.flags);
+	}
+	// Still triangles 0 1 2 0 2 3, and the edges as long as they were.
+	const Vertex* d = &a_dst[a_first];
+	const Vertex* s = &a_src[a_first];
+	CHECK(d[3].x == d[0].x && d[3].y == d[0].y && d[3].z == d[0].z);
+	CHECK(d[4].x == d[2].x && d[4].y == d[2].y && d[4].z == d[2].z);
+	auto len = [](const Vertex& a, const Vertex& b) { return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)); };
+	NEAR(len(d[0], d[1]), len(s[0], s[1]), 1e-4);
+	NEAR(len(d[1], d[2]), len(s[1], s[2]), 1e-4);
+	NEAR(len(d[0], d[2]), len(s[0], s[2]), 1e-4);
+}
+
+static void TestBillboardQuads()
+{
+	GtaBasis    b;
+	const Mat4  clip = LookClip(30.0f, 20.0f, 0.0f, b);
+	float       r[3], u[3], fwd[3];
+	CHECK(CameraRightUpFromClip(clip.m, r, u));
+	ToMc(b.forward, fwd);
+	// The scene origin is the camera here; a particle 8 blocks ahead, another one rolled 30 degrees
+	// off to the side, between an entity quad and a cube face of another texture.
+	const float ahead[3] = { fwd[0] * 8.0f, fwd[1] * 8.0f, fwd[2] * 8.0f };
+	const float aside[3] = { ahead[0] + 2.0f, ahead[1] - 1.0f, ahead[2] + 0.5f };
+	std::vector<Vertex> src;
+	AddQuad(src, 3.0f, 0);
+	AddParticle(src, ahead, 0.1f, 0.0f, 0xFF8040C0u);
+	AddParticle(src, aside, 0.25f, 30.0f, 0x80FFFFFFu);
+	AddQuad(src, -2.0f, kFlagCutout);
+	// A billboard batch that isn't a quad list (v3 != v0) keeps its vertices.
+	AddParticle(src, ahead, 0.5f, 0.0f, 0xFFFFFFFFu);
+	src[src.size() - 3].x += 1.0f;
+	const std::vector<proto::RenBatch> batches = { { 0, 0, 6, 0 }, { 0, 6, 12, proto::kBatchBillboard | 1u }, { 5, 18, 6, 0 },
+		{ 0, 24, 6, proto::kBatchBillboard }, { 0, 28, 60, proto::kBatchBillboard } };  // the last runs past the end: clipped
+
+	std::vector<Vertex> dst;
+	CHECK(BillboardQuads(batches, src, dst, r, u) == 2);
+	CHECK(dst.size() == src.size());
+	CHECK(SameVertices(src, dst, 0, 6));    // the entity quad
+	CHECK(SameVertices(src, dst, 18, 12));  // the cube face and the malformed billboard
+	CheckFacing(src, dst, 6, r, u, fwd);
+	CheckFacing(src, dst, 12, r, u, fwd);
+	// The unrolled particle on screen: corner (-1,-1) left of and below its centre, (1,1) right and above.
+	float cc[4], lo[4], hi[4];
+	ProjectMc(clip, ahead, cc);
+	const float p0[3] = { dst[6].x, dst[6].y, dst[6].z }, p2[3] = { dst[8].x, dst[8].y, dst[8].z };
+	ProjectMc(clip, p0, lo);
+	ProjectMc(clip, p2, hi);
+	CHECK(lo[0] / lo[3] < cc[0] / cc[3] && lo[1] / lo[3] < cc[1] / cc[3]);
+	CHECK(hi[0] / hi[3] > cc[0] / cc[3] && hi[1] / hi[3] > cc[1] / cc[3]);
+	const float ys = 1.0f / std::tan(25.0f * kDegToRad), xs = ys / (16.0f / 9.0f);  // LookClip's lens
+	NEAR((hi[0] / hi[3] - cc[0] / cc[3]) / xs, (hi[1] / hi[3] - cc[1] / cc[3]) / ys, 1e-5);   // square on screen
+	NEAR((hi[0] / hi[3] - cc[0] / cc[3]) / xs, 0.1 / cc[3], 1e-5);                             // 0.1 blocks across the view
+
+	// The next frame, another camera: the quads are turned again from the scene as received.
+	GtaBasis   b2;
+	const Mat4 clip2 = LookClip(-120.0f, -40.0f, 10.0f, b2);
+	CHECK(CameraRightUpFromClip(clip2.m, r, u));
+	ToMc(b2.forward, fwd);
+	const Vertex* before = dst.data();
+	CHECK(BillboardQuads(batches, src, dst, r, u) == 2);
+	CHECK(dst.data() == before);  // written in place, no copy
+	CHECK(SameVertices(src, dst, 0, 6));
+	CHECK(SameVertices(src, dst, 18, 12));
+	CheckFacing(src, dst, 6, r, u, fwd);
+	CheckFacing(src, dst, 12, r, u, fwd);
+
+	// No billboard batch: nothing to do, a_dst untouched.
+	const std::vector<proto::RenBatch> plain = { { 0, 0, 6, 0 }, { 0, 6, 12, 1u } };
+	std::vector<Vertex>                none;
+	CHECK(BillboardQuads(plain, src, none, r, u) == 0);
+	CHECK(none.empty());
+	// A new scene of another size is copied whole first.
+	std::vector<Vertex> small(src.begin(), src.begin() + 12);
+	const std::vector<proto::RenBatch> smallB = { { 0, 0, 6, 0 }, { 0, 6, 6, proto::kBatchBillboard } };
+	CHECK(BillboardQuads(smallB, small, dst, r, u) == 1);
+	CHECK(dst.size() == 12 && SameVertices(small, dst, 0, 6));
+	CheckFacing(small, dst, 6, r, u, fwd);
+}
+
 int main()
 {
 	TestSectionKey();
@@ -817,6 +1052,8 @@ int main()
 	TestShadowCasters();
 	TestRayBasis();
 	TestDarken();
+	TestBillboardBasis();
+	TestBillboardQuads();
 	if (failures) {
 		std::fprintf(stderr, "render_test: %d failure(s)\n", failures);
 		return 1;

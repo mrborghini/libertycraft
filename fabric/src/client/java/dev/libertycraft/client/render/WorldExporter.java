@@ -28,8 +28,6 @@ import net.minecraft.util.ARGB;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.projectile.ItemSupplier;
 import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.entity.projectile.arrow.Arrow;
 import net.minecraft.world.entity.projectile.arrow.SpectralArrow;
@@ -41,7 +39,6 @@ import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.server.level.BlockDestructionProgress;
 import net.minecraft.world.level.CardinalLighting;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -57,8 +54,9 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 /**
  * Ships what Minecraft would draw in the world to GTA IV, which draws it in its own frame (so it is
  * locked to the world and hidden behind GTA IV geometry): block and fluid meshes built by Minecraft's
- * own block renderer (models, tint, smooth lighting), the texture atlas, arrows and dropped items,
- * and the targeted-block outline. Render thread only.
+ * own block renderer (models, tint, smooth lighting), the texture atlas, arrows, ground shadows and the
+ * targeted-block outline. Dropped and thrown items go with the scene (AvatarExporter): Minecraft's own
+ * renderers draw them there, as 3D models. Render thread only.
  */
 public final class WorldExporter {
 	private static final int SECTIONS_PER_FRAME = 12;
@@ -409,12 +407,6 @@ public final class WorldExporter {
 				if (uv != null) {
 					ENTITIES.add(new Link.WorldEntity(kind, e.getId(), (float) p.x, (float) p.y, (float) p.z, yaw, pitch, 1.0F, null, uv, 0));
 				}
-			} else if (e instanceof ItemEntity item) {
-				float bob = Mth.sin((item.getAge() + partialTick) / 10.0F + item.bobOffs) * 0.1F + 0.1F;
-				float spin = ItemEntity.getSpin(item.getAge() + partialTick, item.bobOffs) * Mth.RAD_TO_DEG;
-				addItem(minecraft, level, e, item.getItem(), p.add(0, bob, 0), spin);
-			} else if (e instanceof ItemSupplier supplier) {
-				addItem(minecraft, level, e, supplier.getItem(), p.add(0, e.getBbHeight() * 0.5 - 0.25, 0), 0.0F);
 			} else if (e instanceof net.minecraft.world.entity.LivingEntity && !(e instanceof dev.libertycraft.combat.HostActorEntity) && !e.isInvisible()
 				&& (e != minecraft.player || minecraft.gameRenderer.mainCamera().isDetached())) {
 				// Players and mobs: GTA IV darkens the ground softly under their feet.
@@ -423,32 +415,6 @@ public final class WorldExporter {
 		}
 		addCracks(level);
 		Link.writeWorldEntities(ENTITIES, selection(minecraft, level));
-	}
-
-	/**
-	 * A dropped item the way Minecraft shows it: blocks as small spinning cubes with their own face
-	 * textures, everything else as its icon. {@code p} is the item's resting point (bottom).
-	 */
-	private static void addItem(Minecraft minecraft, ClientLevel level, Entity e, ItemStack stack, Vec3 p, float yaw) {
-		if (stack.getItem() instanceof BlockItem blockItem) {
-			BlockState state = blockItem.getBlock().defaultBlockState();
-			if (state.getRenderShape() == RenderShape.MODEL
-				&& Block.isShapeFullBlock(state.getShape(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO))) {
-				float[] faces = cubeFaces(minecraft, state);
-				if (faces != null) {
-					float size = 0.25F;
-					int tint = cubeTint(minecraft, state);
-					ENTITIES.add(new Link.WorldEntity(
-						Proto.WE_BLOCK, e.getId(), (float) p.x, (float) (p.y + size * 0.5 + 0.02), (float) p.z, yaw, 0.0F, size, null, faces, tint
-					));
-					return;
-				}
-			}
-		}
-		float[] uv = iconUv(minecraft, level, stack);
-		if (uv != null) {
-			ENTITIES.add(new Link.WorldEntity(Proto.WE_ITEM, e.getId(), (float) p.x, (float) p.y + 0.25F, (float) p.z, yaw, 0.0F, 0.5F, null, uv, 0));
-		}
 	}
 
 	/** Side, top and bottom atlas rects of a full-cube block's model, cached per block state. */
@@ -476,16 +442,6 @@ public final class WorldExporter {
 			}
 			return out;
 		});
-	}
-
-	/** Grass and leaves are grey in the atlas; Minecraft tints them. RGBA8, 0 for none. */
-	private static int cubeTint(Minecraft minecraft, BlockState state) {
-		var sources = minecraft.getBlockColors().getTintSources(state);
-		if (sources.isEmpty() || sources.getFirst() == null) {
-			return 0;
-		}
-		int argb = sources.getFirst().color(state);
-		return 0xFF000000 | (argb & 0xFF) << 16 | (argb & 0xFF00) | (argb >> 16 & 0xFF);
 	}
 
 	/** Cracks over blocks being mined (ours and anyone else's). */

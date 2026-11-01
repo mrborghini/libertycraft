@@ -500,6 +500,107 @@ namespace lc::render
 		}
 	};
 
+	// ---- particles facing GTA's camera (kBatchBillboard) ---------------------------------------
+	// The camera's right and up (unit, Minecraft axes) from a camera-relative clip matrix: column 0
+	// is how clip x grows (NDC +x is the screen's right), column 1 clip y (NDC +y is the screen's
+	// top) and column 3 w (the view direction, for left- and right-handed projections alike). Both
+	// are made orthogonal to the view direction (an off-centre projection adds some of it) and to
+	// each other, then turned from GTA's axes to Minecraft's: mc = (x, z, -y). False for a
+	// degenerate matrix.
+	inline bool CameraRightUpFromClip(const float a_clip[4][4], float a_right[3], float a_up[3])
+	{
+		double f[3], r[3], u[3];
+		for (int k = 0; k < 3; ++k) {
+			f[k] = a_clip[k][3];
+			r[k] = a_clip[k][0];
+			u[k] = a_clip[k][1];
+		}
+		auto dot = [](const double* a, const double* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+		auto unit = [&](double* a) {
+			const double len = std::sqrt(dot(a, a));
+			if (!(len > 1e-9) || !std::isfinite(len)) {
+				return false;
+			}
+			for (int k = 0; k < 3; ++k) {
+				a[k] /= len;
+			}
+			return true;
+		};
+		if (!unit(f)) {
+			return false;
+		}
+		const double rf = dot(r, f);
+		for (int k = 0; k < 3; ++k) {
+			r[k] -= rf * f[k];
+		}
+		if (!unit(r)) {
+			return false;
+		}
+		const double uf = dot(u, f), ur = dot(u, r);
+		for (int k = 0; k < 3; ++k) {
+			u[k] -= uf * f[k] + ur * r[k];
+		}
+		if (!unit(u)) {
+			return false;
+		}
+		a_right[0] = float(r[0]), a_right[1] = float(r[2]), a_right[2] = float(-r[1]);
+		a_up[0] = float(u[0]), a_up[1] = float(u[2]), a_up[2] = float(-u[1]);
+		return true;
+	}
+
+	// Turns every quad of the kBatchBillboard batches to face a camera. Such a quad (6 vertices,
+	// triangles 0 1 2 and 0 2 3, so corners v0 v1 v2 v5) arrives laid out in the plane of
+	// Minecraft's camera: corner = centre + (x, y, 0), x its right, y its up. Each corner becomes
+	// centre + x * a_right + y * a_up (+ z * (a_right x a_up), the camera's back, should a corner be
+	// off the plane), centre = the mean of the four corners: the quad keeps its centre, size and
+	// roll. a_right/a_up: unit, Minecraft axes (CameraRightUpFromClip).
+	// a_dst holds a_src as an earlier call copied it; when its size differs, a_src is copied whole
+	// first (a caller whose a_src changed clears a_dst). Only the positions of the billboard quads are
+	// written after that, everything else stays as copied. A quad not laid out as 0 1 2 0 2 3 keeps
+	// its vertices. Returns the number of quads turned; a_dst is left alone when no batch is a
+	// billboard batch.
+	inline std::size_t BillboardQuads(const std::vector<proto::RenBatch>& a_batches, const std::vector<Vertex>& a_src, std::vector<Vertex>& a_dst,
+		const float a_right[3], const float a_up[3])
+	{
+		bool any = false;
+		for (const auto& b : a_batches) {
+			any = any || (b.flags & proto::kBatchBillboard) != 0;
+		}
+		if (!any) {
+			return 0;
+		}
+		if (a_dst.size() != a_src.size()) {
+			a_dst = a_src;
+		}
+		const float back[3] = { a_right[1] * a_up[2] - a_right[2] * a_up[1], a_right[2] * a_up[0] - a_right[0] * a_up[2],
+			a_right[0] * a_up[1] - a_right[1] * a_up[0] };
+		auto same = [](const Vertex& a, const Vertex& b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
+		std::size_t turned = 0;
+		for (const auto& b : a_batches) {
+			if (!(b.flags & proto::kBatchBillboard)) {
+				continue;
+			}
+			const std::size_t end = std::min<std::size_t>(a_src.size(), std::size_t(b.first) + b.count);
+			for (std::size_t q = b.first; q + 6 <= end; q += 6) {
+				const Vertex* s = &a_src[q];
+				if (!same(s[3], s[0]) || !same(s[4], s[2])) {
+					continue;
+				}
+				const float c[3] = { (s[0].x + s[1].x + s[2].x + s[5].x) * 0.25f, (s[0].y + s[1].y + s[2].y + s[5].y) * 0.25f,
+					(s[0].z + s[1].z + s[2].z + s[5].z) * 0.25f };
+				for (int k = 0; k < 6; ++k) {
+					const float dx = s[k].x - c[0], dy = s[k].y - c[1], dz = s[k].z - c[2];
+					Vertex&     d = a_dst[q + k];
+					d.x = c[0] + dx * a_right[0] + dy * a_up[0] + dz * back[0];
+					d.y = c[1] + dx * a_right[1] + dy * a_up[1] + dz * back[1];
+					d.z = c[2] + dx * a_right[2] + dy * a_up[2] + dz * back[2];
+				}
+				++turned;
+			}
+		}
+		return turned;
+	}
+
 	// ---- overlay -----------------------------------------------------------------------------
 	// Where Minecraft's crosshair (15 GUI pixels) and the attack indicator under it (16 x 16 from
 	// 9 GUI pixels below the centre) are, in back buffer pixels: {x0, y0, x1, y1}; empty if none.

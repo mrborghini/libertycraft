@@ -232,6 +232,8 @@ public final class Proto {
 	public static final int RAGDOLL_HELD = 1 << 12;
 	/** LibertyCraft: kRenRagdoll RenBatch flags bit 13: a cape or an elytra (on the body part), hidden by a host posing the body seated. */
 	public static final int RAGDOLL_BACK = 1 << 13;
+	/** LibertyCraft: kRenScene RenBatch flags bit 16: particles in their camera's plane; the host turns each quad to its own camera. */
+	public static final int BATCH_BILLBOARD = 1 << 16;
 	public static final int LIGHT_STEADY = 0, LIGHT_FLAME = 1, LIGHT_LAVA = 2;
 	public static final int REN_VERTEX_BYTES = 32;
 
