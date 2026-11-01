@@ -240,6 +240,25 @@ public final class HostCombat {
 	}
 
 	/**
+	 * The player fell this many blocks while GTA IV moved him (knocked over, bailing out of a vehicle): the
+	 * host kept GTA from killing him on landing and hands the fall over, so Minecraft's own fall damage
+	 * applies, as for a fall in Minecraft mode (the safe distance, Feather Falling, Protection, creative, a
+	 * totem). While GTA drives the player only the host's hurts get through (HostDrive.applyingHostHurt).
+	 */
+	private static void fall(ServerPlayer player, float blocks) {
+		float healthBefore = player.getHealth();
+		boolean hurt;
+		dev.libertycraft.world.HostDrive.applyingHostHurt = true;
+		try {
+			hurt = player.causeFallDamage(blocks, 1.0F, player.damageSources().fall());
+		} finally {
+			dev.libertycraft.world.HostDrive.applyingHostHurt = false;
+		}
+		LibertyCraft.LOG.info("[LibertyCraft] GTA IV dropped the player {} blocks (a Minecraft fall): health {} -> {}{}", String.format("%.1f", blocks), healthBefore,
+			player.getHealth(), hurt ? "" : " (no damage)");
+	}
+
+	/**
 	 * Dropped items, stuck arrows and XP orbs the player walks into. Vanilla's own touch (Player.aiStep)
 	 * misses them: the server gives the player no GTA IV ground (the client stands it on GTA IV's exact
 	 * triangles, HostCollider), so in its tick the player falls through the ground before vanilla looks
@@ -298,6 +317,10 @@ public final class HostCombat {
 			return;
 		}
 		ServerLevel level = player.level();
+		if ((flags & Proto.HURT_FALL) != 0) {
+			fall(player, hostDamage);
+			return;
+		}
 		HostActorEntity attacker = PROXIES.get(attackerFormId);
 		if (attacker != null && attacker.distanceToSqr(player) > 24.0 * 24.0) {
 			attacker = null; // a guest's own NPC with the same form id as one of the host's

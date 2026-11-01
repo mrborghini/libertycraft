@@ -72,6 +72,8 @@ public final class Proto {
 	public static final int HURT_POWER_ATTACK = 2;
 	/** LibertyCraft: bits 16 to 24 hold the MC yaw (degrees) from the player toward what hurt it (kHurtHasDirection). */
 	public static final int HURT_HAS_DIRECTION = 1 << 2;
+	/** LibertyCraft: the player fell while the host moved him (knocked over, bailing out); the amount is the fall in blocks. */
+	public static final int HURT_FALL = 1 << 3;
 	public static final int HURT_DIRECTION_SHIFT = 16;
 
 	// Actor table (relative to OFF_ACTOR_TABLE)
