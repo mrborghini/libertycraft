@@ -17,6 +17,14 @@
 //     (SET_STATE_OF_CLOSEST_DOOR_OF_TYPE), unlocked again the moment the push ends.
 // A door GTA itself keeps locked (a mission door) is left alone.
 //
+// Sliding doors (a hospital's main doors) aren't pushed: GTA slides them open by itself as a ped comes
+// near, Niko included, and turning one about its origin spun it. Nothing in GTA's data tells them from
+// hinged doors (the same .ide flags, the origin at one end of the leaf), so they are known by what GTA
+// does to them: a door whose origin moves while it doesn't turn slides (SlidOpen); a hinged door's origin
+// is its hinge and never moves. A model seen sliding is never pushed again this session, and the hospital
+// doors are known from the start (a GTA ped walking through: both leaves slid 1.5 m, turned 0 degrees),
+// so running into one before it has begun to open doesn't spin it either.
+//
 // Doors are remembered by pool handle and found again every frame; a door whose object is gone
 // (streamed out, deleted, recreated) is forgotten, and no native ever runs on one.
 // Unity-built into dllmain.cpp (needs IV-SDK); the geometry below is SDK-free (tests/collision_test.cpp).
@@ -88,4 +96,8 @@ namespace lc::Doors
 
 	// Which side of the player the leaf is on (for PushRotation), while it doesn't touch them.
 	inline float LeafSide(float a_alpha, float a_px, float a_py) { return WrapPi(a_alpha - std::atan2(a_py, a_px)) >= 0.0f ? 1.0f : -1.0f; }
+
+	// GTA is sliding this door: its origin moved a_moved metres (plan view) from where it stood shut while
+	// it turned a_turnedDeg at most. (Sprinting into a hospital door, it has slid 5 to 8 cm by the touch.)
+	inline bool SlidOpen(float a_moved, float a_turnedDeg) { return a_moved > 0.02f && std::fabs(a_turnedDeg) < 1.0f; }
 }

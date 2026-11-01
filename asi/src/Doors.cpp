@@ -79,6 +79,7 @@ namespace lc::Doors
 			float         lastDist = 0.0f;      // m from the hinge, last frame
 			float         diagT = 0.0f;         // Diagnostics=1: s until the next "near the door" line
 			bool          proven = false;       // this door has turned by its way
+			bool          sliding = false;      // GTA slides it (Doors.h): never pushed
 			std::uint32_t seen = 0;
 		};
 
@@ -91,9 +92,14 @@ namespace lc::Doors
 		float             stateSign = 1.0f;  // which way a positive door-state ratio turns a door (learned)
 		int               logged = 0, traces = 0;
 		bool              handleChecked = false;
+		// Sliding door models (Doors.h): the hospitals' main doors from the start (nhospmaindoors,
+		// nhospmaindoors01), and any model seen sliding this session.
+		std::vector<unsigned> slidingModels = { 0x2C98AC38u, 0x386B242Cu };
+
+		bool SlidingModel(unsigned a_hash) { return std::find(slidingModels.begin(), slidingModels.end(), a_hash) != slidingModels.end(); }
 		struct Counters
 		{
-			unsigned pushes = 0, frames = 0, locked = 0, gone = 0, jumps = 0, failedWays = 0;
+			unsigned pushes = 0, frames = 0, locked = 0, gone = 0, jumps = 0, failedWays = 0, slides = 0;
 		} counters;
 
 		float Dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -109,6 +115,8 @@ namespace lc::Doors
 		}
 
 		int HandleOf(const CPool<CObject>& a_pool, int a_slot) { return (a_slot << 8) | a_pool.m_pFlags[a_slot]; }
+
+		float LeafLength(const struct Door& a_d);
 
 		// The door's object this frame, or null if it's gone: its slot is free or holds another
 		// generation (streamed out, deleted, recreated), another model, or it isn't where the door
@@ -130,7 +138,9 @@ namespace lc::Doors
 			}
 			const auto& p = obj->m_pMatrix->pos;
 			const float dx = p.x - a_d.shut[9], dy = p.y - a_d.shut[10], dz = p.z - a_d.shut[11];
-			if (!(dx * dx + dy * dy + dz * dz < 0.5f * 0.5f)) {
+			// (a sliding door moves along its track, as far as its leaf is long)
+			const float reach = a_d.sliding ? LeafLength(a_d) + 0.5f : 0.5f;
+			if (!(dx * dx + dy * dy + dz * dz < reach * reach)) {
 				return nullptr;  // (NaN fails too)
 			}
 			return obj;
@@ -217,11 +227,12 @@ namespace lc::Doors
 				d.wide = (box.hi[0] - box.lo[0]) >= (box.hi[1] - box.lo[1]) ? 0 : 1;
 				d.leafSign = std::fabs(box.lo[d.wide]) <= std::fabs(box.hi[d.wide]) ? 1.0f : -1.0f;
 				d.modelHash = mi->m_nHash;  // (= GET_OBJECT_MODEL: checked in game)
+				d.sliding = SlidingModel(d.modelHash);
 				if (logged < 30) {
 					++logged;
-					LC_LOG("door model %d hash 0x%08X handle 0x%X at GTA (%.2f %.2f %.2f) heading %.1f: %.2f wide (axis %d, leaf %+.0f), local (%.2f %.2f %.2f)..(%.2f %.2f %.2f)",
+					LC_LOG("door model %d hash 0x%08X handle 0x%X at GTA (%.2f %.2f %.2f) heading %.1f: %.2f wide (axis %d, leaf %+.0f), local (%.2f %.2f %.2f)..(%.2f %.2f %.2f)%s",
 						model, d.modelHash, handle, m[9], m[10], m[11], Heading(m), box.hi[d.wide] - box.lo[d.wide], d.wide, d.leafSign, lo[0], lo[1], lo[2], hi[0],
-						hi[1], hi[2]);
+						hi[1], hi[2], d.sliding ? ", a sliding door: GTA opens it, never pushed" : "");
 				}
 				doors.push_back(d);
 			}
@@ -324,7 +335,43 @@ namespace lc::Doors
 			const float dist = std::sqrt(px * px + py * py);
 			const float bottom = a_d.shut[11] + a_d.lo[2], top = a_d.shut[11] + a_d.hi[2];
 			const bool  level = a_feet[2] < top && a_feet[2] + kPlayerHeight > bottom;
-			float       need = 0.0f;
+			// GTA sliding it open (as Niko comes near, faster than the player when they walk): a sliding door.
+			if (!a_d.sliding && SlidingModel(a_d.modelHash)) {
+				a_d.sliding = true;  // (another door of its model was seen sliding)
+			}
+			if (!a_d.sliding) {
+				const auto& o = a_obj->m_pMatrix->pos;
+				const float mx = o.x - a_d.shut[9], my = o.y - a_d.shut[10];
+				if (SlidOpen(std::sqrt(mx * mx + my * my), turned)) {
+					a_d.sliding = true;
+					++counters.slides;
+					const bool known = SlidingModel(a_d.modelHash);
+					if (!known) {
+						slidingModels.push_back(a_d.modelHash);
+					}
+					LC_LOG("door 0x%08X slides (GTA moved it %.2f m along its track, turned %.1f deg): a sliding door%s, never pushed%s", a_d.modelHash,
+						std::sqrt(mx * mx + my * my), turned, known ? "" : " (this model from now on)", a_d.pushing ? "; the push stops" : "");
+				}
+			}
+			if (a_d.sliding) {
+				if (Config::Get().diagnostics && dist < LeafLength(a_d) + 1.5f && (a_d.diagT -= a_dt) <= 0.0f) {
+					a_d.diagT = 0.25f;
+					const auto& o = a_obj->m_pMatrix->pos;
+					const float mx = o.x - a_d.shut[9], my = o.y - a_d.shut[10];
+					LC_LOG("door 0x%08X (sliding) near: player %.2f m from where its origin stood shut, slid %.2f m, turned %.1f deg, puppeting %d", a_d.modelHash, dist,
+						std::sqrt(mx * mx + my * my), turned, a_puppeting);
+				}
+				if (a_d.pushing) {
+					if (a_d.way == kSpin) {
+						S::SET_OBJECT_INITIAL_ROTATION_VELOCITY(a_d.handle, 0.0f, 0.0f, 0.0f);
+					}
+					EndPush(a_d, turned, "it slides");
+				}
+				a_d.lastDist = dist;
+				Trace(a_d, turned, 0.0f, dist, a_dt);
+				return;
+			}
+			float need = 0.0f;
 			if (a_puppeting && level && !a_d.gameLocked) {
 				const float r = kPlayerRadius + HalfThickness(a_d);
 				if (a_d.side == 0.0f) {
@@ -460,8 +507,8 @@ namespace lc::Doors
 				++it;
 			}
 		}
-		LC_LOG_EVERY(60000, "doors: %zu near, %u pushes (%u frames), %u ways that didn't move a door, %u locked by GTA, %u gone while pushed, %u jumps; pushing by %s%s",
-			doors.size(), counters.pushes, counters.frames, counters.failedWays, counters.locked, counters.gone, counters.jumps, kWayNames[preferred],
-			settled ? "" : " (not tried yet)");
+		LC_LOG_EVERY(60000, "doors: %zu near, %u pushes (%u frames), %u ways that didn't move a door, %u locked by GTA, %u gone while pushed, %u jumps, %u seen sliding (%zu sliding models); pushing by %s%s",
+			doors.size(), counters.pushes, counters.frames, counters.failedWays, counters.locked, counters.gone, counters.jumps, counters.slides, slidingModels.size(),
+			kWayNames[preferred], settled ? "" : " (not tried yet)");
 	}
 }

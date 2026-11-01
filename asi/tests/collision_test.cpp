@@ -735,6 +735,22 @@ static void TestDoorPush()
 	CHECK(std::fabs(WrapPi(3.5f) - (3.5f - 2.0f * 3.14159265f)) < 1e-5f);
 }
 
+// Doors.h: a sliding door is told by GTA moving its origin while it doesn't turn.
+static void TestDoorSlides()
+{
+	using lc::Doors::SlidOpen;
+	// The hospital's main door 0.25 s into GTA's slide (a GTA ped walking through: 0.10 m, 0 deg).
+	CHECK(SlidOpen(0.10f, 0.0f));
+	CHECK(SlidOpen(0.05f, -0.4f));
+	// A hinged door swinging open: its origin (the hinge) stays put.
+	CHECK(!SlidOpen(0.0f, 30.0f));
+	CHECK(!SlidOpen(0.01f, 5.0f));
+	// A hinged door whose physics pivot is a little off its origin: it turns as its origin moves.
+	CHECK(!SlidOpen(0.05f, 12.0f));
+	// Standing shut.
+	CHECK(!SlidOpen(0.0f, 0.0f));
+}
+
 // The blocky city: triangles carry the GTA material their surface was probed on (kTriGtaMaterial).
 static void TestMaterials()
 {
@@ -778,6 +794,7 @@ int main()
 	TestBenchAndBin();
 	TestTiltedBin();
 	TestDoorPush();
+	TestDoorSlides();
 	TestMaterials();
 	if (failures) {
 		std::fprintf(stderr, "%d check(s) failed\n", failures);
